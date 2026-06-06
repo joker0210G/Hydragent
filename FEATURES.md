@@ -1,77 +1,563 @@
-# Project Features & Capabilities
+# Hydragent: Feature Matrix & Capability Catalog
 
-This document provides a detailed catalog of the features and capabilities built into the **Hydragent Unified AI Agent**, highlighting how they inherit and synthesize the best components of today's leading agents.
-
----
-
-## 🧠 1. Memory & Deep Personalization
-
-Hydragent implements a hybrid memory engine that merges structured database queries with unstructured semantic searches, optimized for data locality and privacy.
-
-### Hierarchical Memory Structure (*from memU*)
-Rather than using a flat vector database, memory is structured as a hierarchical file system layout:
-1.  **Folders (Categories)**: Auto-organized topics and themes created on-the-fly without manual tagging.
-2.  **Files (Memory Items)**: Specific facts, user preferences, and learned skills stored as discrete Markdown documents.
-3.  **Mount Points (Resources)**: Conversation transcripts and local files indexed semantically.
-
-### Dual-Mode Retrieval
-To minimize API token costs and maintain low latency:
-*   **Fast Context Phase**: Uses cheap, local, embedding-based similarity scoring to monitor system metrics, notifications, and inbox streams with millisecond latency, without invoking any LLM API.
-*   **Deep Reasoning Mode**: Switched automatically only when a high-signal pattern is detected, routing the query to frontier reasoning models (like Claude Sonnet).
-
-### Compaction & ReMe (*from OpenClaw / QwenPaw*)
-*   **Dreaming Consolidation**: A nightly task compresses episodic logs into concise relational nodes, links them to the semantic memory graph, and updates the core `SOUL.md` and `USER.md` prompt files.
-*   **ReMe Memory Kit**: Integrates a file-based journaling layout. Dynamic compaction splits context into a retention group (raw recent conversation turns) and a compaction group (summarized historical dialogue) before every inference cycle. Hybrid search utilizes both ChromaDB vector search and BM25 exact keyword matching, scoring 88.78% accuracy on HaluMem QA benchmarks.
+> A comprehensive breakdown of every capability in the **Hydragent Unified AI Agent**, with the source agent each feature was distilled from and the technical implementation approach.
 
 ---
 
-## 🔒 2. Security & Data Governance
+## Table of Contents
 
-Hydragent operates on a zero-trust architecture. We follow *IronClaw's* core rule: **Secrets must never reach the LLM**.
-
-*   **Boundary Key Injection**: API keys, credentials, and OAuth tokens are stored in an encrypted vault (`secrets.json.enc` using XChaCha20-Poly1305 + Argon2id). The vault parses outbound requests and injects headers/tokens at the network layer. The LLM never sees or processes raw credentials.
-*   **16-Layer Cryptographic Security** (*from OpenFang*):
-    *   *TEE Encrypted Memory*: Cloud executions run inside hardware-level Trusted Execution Environments (TEEs) on the NEAR AI Cloud.
-    *   *Ed25519 Signing*: All agent skill manifests are cryptographically verified before load.
-    *   *Merkle Audit Trails*: An immutable event log ledger tracks all actions executed by the agent.
-    *   *Taint Tracking*: Scans untrusted input fields to prevent prompt-injection attacks.
-    *   *Secret Zeroization*: Force-wipes API credentials from memory immediately after requests complete.
-*   **Enterprise Policy Integration** (*from Moltis / SGNL*): Connects with SGNL engines to evaluate tool capabilities against the user's active directory permissions, corporate device posture, and enterprise data fabric access policies.
-
----
-
-## 🔌 3. Unified Multi-Channel Gateway
-
-Hydragent separates the presentation layer from execution. A single gateway process coordinates user I/O across platforms:
-
-*   **Multi-Platform Decoupling**: Decouples chat channels from core model logic, routing text and attachments across 40+ adapters including Telegram, Discord, Slack, WhatsApp, and CLI.
-*   **Offline Heartbeats & Cron**: A persistent cron daemon wakes the agent at specified intervals to check inbox status, RSS feeds, or monitor system logs, initiating proactive actions.
+1. [Memory & Deep Personalization](#1-memory--deep-personalization)
+2. [Security & Data Governance](#2-security--data-governance)
+3. [Unified Multi-Channel Gateway](#3-unified-multi-channel-gateway)
+4. [Execution Sandbox & Tool Orchestration](#4-execution-sandbox--tool-orchestration)
+5. [Multi-Agent Swarm Orchestration](#5-multi-agent-swarm-orchestration)
+6. [Self-Improving Skill Engine](#6-self-improving-skill-engine)
+7. [Personalization & User Modeling](#7-personalization--user-modeling)
+8. [Multimodal Input & Sensing](#8-multimodal-input--sensing)
+9. [Multi-Model Council & Routing](#9-multi-model-council--routing)
+10. [RAG & Knowledge Base Integration](#10-rag--knowledge-base-integration)
+11. [Human-in-the-Loop & Ethics Controls](#11-human-in-the-loop--ethics-controls)
+12. [Edge & Embedded Deployment](#12-edge--embedded-deployment)
+13. [Evaluation & Observability](#13-evaluation--observability)
+14. [Plugin & Skill Marketplace](#14-plugin--skill-marketplace)
 
 ---
 
-## 🖥️ 4. Execution Sandbox & Tool Orchestration
+## 1. Memory & Deep Personalization
 
-Hydragent provides a rich runtime environment that gives the agent sandboxed access to real operating systems:
+Hydragent's memory system is its most differentiating layer — a multi-tier, self-compacting knowledge store that fuses design patterns from **memU**, **Vellum**, **Hermes Agent**, **QwenPaw**, **AnythingLLM**, and **Khoj**.
 
-*   **Headless Browser Bot**: Powered by *Playwright* in a separate Docker container. Hydragent can automate browser tasks, fill forms, and scrape web pages, using screen snapshots for vision-grounded navigation.
-*   **Local Code Sandbox**: Run Python, JavaScript, or Bash commands in a safe, metered runtime environment (*Daytona/E2B* inspired).
-*   **MCP Server Integration**: Direct compatibility with Anthropic's Model Context Protocol (MCP), allowing Hydragent to fetch resources, run prompt templates, and connect to remote databases or services seamlessly.
-*   **Three-Tier Permission Matrix** (*from Microsoft Scout*):
-    1.  *Auto-approve*: Harmless read-only commands (e.g., listing directory contents, git status) execute instantly.
-    2.  *Prompt*: Commands altering state (e.g., package installations, file writes, outbound requests) pause and await user verification.
-    3.  *Deny*: Destructive actions (e.g., system configuration deletion) are blocked at the code engine level.
-*   **Takeover Handoff**: If a GUI task becomes too complex or encounters a block, the agent triggers "Takeover Mode," sending a screen visual and a control link to the user for manual correction.
+### 1.1 Eight-Type Hierarchical Memory Model *(from Vellum + memU)*
+
+Rather than a single flat vector database, Hydragent implements a full taxonomy of memory types, each with its own storage backend, decay function, and retrieval pathway:
+
+| Memory Type | Description | Storage Backend | Decay Policy |
+|---|---|---|---|
+| **Episodic** | Timestamped conversation logs, daily activity journals | SQLite (append-only WAL) | Compressed after 7 days via Dreaming pipeline |
+| **Semantic** | Fact-nodes about the world, user's domain knowledge | ChromaDB vector index | Relevance-score weighted; pruned at 6 months |
+| **Procedural** | Learned skill programs, tool execution patterns | Markdown skill files (`skills/`) | Graded on 7-day Curator cycle |
+| **Emotional / Affective** | User sentiment history, tone preferences, comfort zones | SQLite profile table | Rolling 30-day window |
+| **Social** | Relationship graph — contacts, organizations, interaction history | SQLite graph schema | Persistent; manually curated |
+| **Spatial** | Locations, environments, geofenced contexts | GeoJSON flat files | Session-scoped unless explicitly saved |
+| **Temporal** | Recurring patterns, scheduled intents, circadian preferences | Cron-style YAML patterns | Active until user revokes |
+| **Declarative** | Explicit user instructions: "always respond in bullet points" | `USER.md` / `SOUL.md` Markdown files | Permanent until overwritten |
+
+### 1.2 Hierarchical File-System Layout *(from memU)*
+
+Memory is addressed like a file system, not a relational database. This allows both human-readable inspection and efficient LLM-native access:
+
+```
+memory/
+├── user/
+│   ├── preferences.md       # Declarative: tone, format, language preferences
+│   ├── relationships.md     # Social: named contacts and relationship context
+│   └── profile.json         # Structured profile seed (name, role, interests)
+├── episodic/
+│   ├── 2026-06-06.log       # Raw daily conversation log
+│   └── 2026-06-05.summary   # Compressed summary from Dreaming pipeline
+├── semantic/
+│   └── chroma_index/        # ChromaDB persistent vector store
+├── skills/
+│   ├── send_email.md        # Auto-generated skill: email composition
+│   ├── github_pr.md         # Auto-generated skill: pull request workflow
+│   └── curator.log          # Skill grading history
+└── SOUL.md                  # Agent core identity, values, behavioral rules
+```
+
+### 1.3 Dual-Mode Retrieval Engine *(from memU + QwenPaw ReMe)*
+
+The retrieval system operates in two modes to minimize API cost while maximizing context relevance:
+
+**Fast Context Phase** (always-on, zero LLM cost):
+- Lightweight local embedding model (e.g. `nomic-embed-text`) scores incoming messages against memory index
+- Monitors ambient signals: cron triggers, inbox notifications, RSS feeds, system metrics
+- Responds instantly for simple queries (< 5 ms latency) without any API call
+
+**Deep Reasoning Mode** (escalated on high-signal detection):
+- Activates when fast-phase similarity score exceeds threshold OR user intent requires multi-hop reasoning
+- Routes the full augmented context to a frontier reasoning model (Claude Sonnet / GPT-4o / Gemini Pro)
+- Injects ranked memory chunks (top-k BM25 + top-k vector) alongside the live conversation
+
+**Hybrid Search** — `BM25 exact keyword match` + `ChromaDB cosine similarity` fused via Reciprocal Rank Fusion (RRF), achieving **88.78% accuracy on HaluMem QA benchmarks** (matching QwenPaw ReMe baseline).
+
+### 1.4 Nightly "Dreaming" Compaction Pipeline *(from OpenClaw + memU)*
+
+Inspired by biological memory consolidation during sleep, Hydragent runs a nightly compaction job at 02:00 AM local time:
+
+```
+1. Read today's raw episodic log
+2. LLM Compaction Node:
+   a. Create condensed session summary (< 500 tokens)
+   b. Extract new user facts & preference signals
+   c. Identify new reusable skill patterns
+3. Update episodic DB with compressed summary
+4. For each extracted fact:
+   - If fact exists in Semantic DB → merge & update embedding
+   - If new → insert new semantic vector node
+5. Re-generate USER.md and SOUL.md with updated facts
+6. Grade and prune skills library (Curator)
+7. Sleep until next heartbeat
+```
+
+### 1.5 ReMe Compaction Kit *(from QwenPaw)*
+
+The ReMe subsystem handles the mid-session context window management problem:
+- **Retention Group**: Last N raw conversation turns (configurable, default: 15)
+- **Compaction Group**: Summarized historical dialogue beyond the retention window
+- Dynamic split point shifts based on available context budget, preventing context-window overflow during long sessions
 
 ---
 
-## 🤝 5. Multi-Agent Swarms & Orchestration
+## 2. Security & Data Governance
 
-To scale past single-task execution, Hydragent decomposes complex operations using multi-agent team patterns:
+Hydragent operates on a **zero-trust architecture**. The cardinal rule, borrowed from **IronClaw**: *Secrets must never reach the LLM*. Every security layer is additive — if one layer fails, the next contains the damage.
 
-*   **DAG Task Planning** (*from Manus / OpenCode*): Complex objectives are broken into a Directed Acyclic Graph. Work is split across specialized sub-agents:
-    *   *Plan Agent*: Read-only codebase explorer suggesting architectures.
-    *   *Build Agent*: Empowered with write permissions to modify local workspaces.
-    *   *Explore Agent*: Traverses project directories with language server (LSP) intelligence.
-    *   *Scout Agent*: Scans external documentation repositories.
-*   **Model Council Routing**: Tasks are dynamically routed to specialized models depending on the step.
-*   **Self-Healing Re-planning** (*from Devin*): Automatically captures compile or execution errors, constructs an updated execution path, and retries tasks autonomously.
+### 2.1 Boundary Key Injection & Encrypted Vault *(from IronClaw + NanoClaw)*
+
+```
+Orchestrator → Dispatcher: "Call GitHub API with {{GITHUB_TOKEN}}"
+                                           ↓
+                              [Vault decrypts key into memory]
+                                           ↓
+                              Dispatcher → Network: "Authorization: Bearer ghp_abc..."
+                                           ↓
+                              [Key zeroized from RAM immediately after response]
+```
+
+**Vault Implementation**:
+- Encryption: `XChaCha20-Poly1305` (authenticated encryption)
+- Key Derivation: `Argon2id` with tunable memory cost (default: 64 MB, 3 iterations)
+- Storage: Memory-mapped encrypted file (`secrets.json.enc`) — never written in plaintext
+- Access: Vault process runs in a separate OS process; orchestrator communicates via Unix socket with capability tokens
+
+### 2.2 16-Layer Cryptographic Security Pipeline *(from OpenFang)*
+
+| Layer | Mechanism | Purpose |
+|---|---|---|
+| L1 | XChaCha20-Poly1305 vault encryption | Credential protection at rest |
+| L2 | Argon2id key derivation | Brute-force resistance for vault passphrase |
+| L3 | Ed25519 skill/plugin manifest signing | Prevent loading of tampered skill files |
+| L4 | Merkle tree audit log | Immutable, tamper-evident action history |
+| L5 | Taint tracking on input fields | Prompt injection detection and blocking |
+| L6 | WASM capability restrictions | Zero filesystem/socket access for tool scripts |
+| L7 | Docker container namespacing | OS-level agent process isolation |
+| L8 | Secret zeroization after use | Prevent memory-scraping attacks |
+| L9 | Network egress allowlist | Blocks unauthorized outbound connections |
+| L10 | TEE hardware enclave (cloud) | Full process + memory encryption at boot |
+| L11 | OAuth-only credential brokering | No raw secret storage for 3rd-party APIs |
+| L12 | Workspace path scoping | LLM can only read/write within designated folder |
+| L13 | Action consent gates (3-tier) | User approval before state-mutating operations |
+| L14 | Session replay protection | Nonce-signed API request tokens |
+| L15 | SGNL enterprise policy enforcement | Active-directory + device posture verification |
+| L16 | Differential privacy in audit logs | Anonymized telemetry; no PII in log exports |
+
+### 2.3 TEE Execution Enclaves *(from IronClaw / NEAR AI Cloud)*
+
+For cloud deployments, the Hydragent runtime runs inside **Trusted Execution Environments (TEEs)**:
+- Supported platforms: NEAR AI Cloud (SGX), AWS Nitro Enclaves, Azure Confidential Computing
+- All runtime memory, keys, and process state are encrypted from boot to shutdown
+- Remote attestation allows users to cryptographically verify that the correct, unmodified code is running
+
+### 2.4 Microsoft Scout 3-Tier Permission Matrix *(from Microsoft Scout)*
+
+Every tool invocation is classified before execution:
+
+| Tier | Trigger Condition | Examples | User Action Required |
+|---|---|---|---|
+| **Auto-approve** | Read-only, no external side effects | `git status`, `ls`, `grep`, `echo` | None |
+| **Prompt** | State-mutating or external communication | `npm install`, `git commit`, HTTP POST, email send | Explicit approval button |
+| **Deny** | Destructive or system-critical | `rm -rf`, `sudo`, credential exposure, disk format | Blocked; user override required to unlock |
+
+### 2.5 Data Governance & Privacy Controls
+
+- **Local-first default**: All data stays on the user's machine unless explicitly configured otherwise
+- **Opt-in telemetry**: Anonymous usage statistics only; off by default
+- **Memory erasure**: `hydragent memory purge --type=episodic --before=30d` to delete data by category and age
+- **GDPR compliance tooling**: Export all personal data (`hydragent export --gdpr`), full deletion capability
+- **Data partitioning**: Personal vs. enterprise data stored in separate schemas; never co-mingled
+
+---
+
+## 3. Unified Multi-Channel Gateway
+
+A single Hydragent runtime instance communicates across **40+ channel adapters**, separating presentation from execution. Inspired by **OpenClaw** (68K+ GitHub stars), **ZeroClaw**, and **QwenPaw**.
+
+### 3.1 Supported Channels
+
+| Category | Platforms |
+|---|---|
+| **Messaging** | Telegram, WhatsApp, Discord, Slack, Signal, iMessage, Matrix, Mattermost |
+| **Social** | Twitter/X, Reddit, LinkedIn, Bluesky, Nostr |
+| **Email** | SMTP/IMAP (Gmail, Outlook, ProtonMail) |
+| **Voice** | Whisper STT + Coqui TTS (local), ElevenLabs TTS (cloud) |
+| **Work** | Microsoft Teams, DingTalk, Lark, QQ, WeChat Work |
+| **Developer** | CLI (terminal-native), GitHub webhooks, GitLab CI, Jira |
+| **Web** | Embedded web chat widget, REST webhook, WebSocket stream |
+| **IoT / Hardware** | MQTT broker, GPIO serial (for edge deployments) |
+
+### 3.2 Gateway Architecture
+
+```
+[Incoming Message: Telegram]
+         │
+         ▼
+[Channel Adapter] ─── Normalizes to internal IntentEvent schema
+         │
+         ▼
+[Event Bus (gRPC)] ─── Dispatches to Core Orchestrator
+         │
+         ▼ (Response)
+[Channel Adapter] ─── Formats response for Telegram markdown
+         │
+         ▼
+[Outgoing Message: Telegram]
+```
+
+### 3.3 Proactive Agent Mode *(from OpenClaw + memU)*
+
+Hydragent doesn't wait to be asked. A persistent heartbeat daemon enables:
+- **Cron-triggered tasks**: YAML-defined schedules (`"Every Monday 09:00 → Summarize weekly GitHub PRs"`)
+- **Inbox monitoring**: Proactively scans email/Slack for high-priority items matching user-defined patterns
+- **RSS/news feeds**: Polls configured feeds and surfaces relevant items based on semantic profile match
+- **System monitoring**: Tracks disk, CPU, network metrics and fires alerts on anomalies
+- **Dynamic cron**: The agent can create its own recurring tasks based on conversation context (`"Remind me about this next Friday"`)
+
+---
+
+## 4. Execution Sandbox & Tool Orchestration
+
+Hydragent provides a rich, multi-tiered tool runtime environment that gives the agent real-world agency — with every dangerous operation safely caged.
+
+### 4.1 Headless Browser Automation *(from Claude Computer Use + Manus)*
+
+- **Engine**: Playwright in a dedicated Docker container with no host filesystem mount
+- **Vision grounding**: Takes screenshots after each action; GPT-4o Vision / Claude Vision validates the UI state before proceeding
+- **Capabilities**: Form filling, web scraping, navigation, JavaScript execution in-browser
+- **Takeover Mode**: If a GUI task fails or becomes ambiguous, Hydragent sends a screen capture + control link to the user for manual intervention, then resumes
+
+### 4.2 Local Code Sandbox *(from Devin + Manus + NanoClaw)*
+
+```
+Supported Runtimes: Python 3.12+, Node.js 22+, Bash/Zsh, Go 1.22+, Rust
+Execution Engine:   Daytona / E2B-inspired container orchestration
+Resource Limits:    CPU: 2 cores max, RAM: 512 MB max, Timeout: 120s
+Filesystem Access:  Scoped to /workspace/{session-id}/ only
+Network Access:     Allowlist-gated; blocked by default
+```
+
+### 4.3 MCP (Model Context Protocol) Integration *(from Claude Code + Moltis)*
+
+Native compatibility with Anthropic's MCP standard:
+- **MCP Resources**: Hydragent can fetch and embed external context resources (databases, docs, APIs)
+- **MCP Prompt Templates**: Pre-defined prompt templates for common tasks (code review, summarization, email drafting)
+- **MCP Tools**: Expose Hydragent's own tools to other MCP-compatible agents and IDEs (Cursor, Windsurf, Claude Desktop)
+- **Remote MCP Servers**: Connect to community MCP servers (Linear, Notion, Stripe, Postgres, etc.)
+
+### 4.4 Built-in Tool Library
+
+| Tool | Description | Sandbox Level |
+|---|---|---|
+| `web_search` | Multi-engine search (Google, Bing, DuckDuckGo, Perplexity) | WASM (network-only, allowlisted) |
+| `browser_bot` | Playwright headless browser automation | Docker (isolated) |
+| `code_exec` | Python / Bash / Node.js code execution | Docker (isolated, resource-capped) |
+| `file_io` | Read/write within scoped workspace folder | Host (path-restricted) |
+| `email` | Send/read via SMTP/IMAP with OAuth brokering | Vault-gated |
+| `calendar` | Create/read events via Google Calendar / Caldav | OAuth-gated |
+| `git` | Commit, diff, push, PR operations | Auto-approve / Prompt gated |
+| `http_request` | Generic HTTP calls to allowlisted domains | Network egress allowlist |
+| `memory_query` | Direct semantic/episodic memory lookup | Local only |
+| `skill_create` | Generate new tool skill from task description | LLM-generated, Ed25519-signed before load |
+| `mcp_call` | Invoke any registered MCP server tool | Configurable per-server |
+| `vision` | Analyze images / screenshots with vision model | Local WASM or API |
+| `tts` / `stt` | Text-to-speech / speech-to-text transcription | Local Whisper / Coqui |
+
+---
+
+## 5. Multi-Agent Swarm Orchestration
+
+For complex, long-horizon objectives, Hydragent decomposes work into a **Directed Acyclic Graph (DAG)** and distributes execution across specialist subagents. Pattern drawn from **Claude Code**, **Manus**, **Taskade Genesis**, **SuperAGI**, and **Hermes Agent v0.13 Kanban release**.
+
+### 5.1 Standard Subagent Roles
+
+| Agent Role | System Prompt Scope | Tool Access | Context Window |
+|---|---|---|---|
+| **Plan Agent** | Read-only architect; proposes task tree | `file_read`, `memory_query`, `web_search` | Full parent context |
+| **Build Agent** | Write-enabled executor; implements steps | `file_io`, `code_exec`, `git` | Isolated fresh window |
+| **Explore Agent** | LSP-aware codebase navigator | `file_read`, `git`, LSP diagnostics | Isolated fresh window |
+| **Scout Agent** | External documentation researcher | `web_search`, `browser_bot`, `http_request` | Isolated fresh window |
+| **Review Agent** | Security + quality gatekeeper (pre-commit) | `file_read`, `code_exec` (test runner) | Isolated fresh window |
+
+### 5.2 Hermes-Style Kanban Multi-Agent Board *(from Hermes Agent v0.13)*
+
+Long-running projects use a durable Kanban board:
+- **Heartbeat**: Each worker agent sends a heartbeat every 30 seconds
+- **Zombie detection**: Workers missing 3 consecutive heartbeats are automatically reclaimed
+- **Task retries**: Failed tasks auto-retry with an updated plan (configurable max: 5 attempts)
+- **Hallucination recovery**: Output validation step before task is marked complete
+- **Hand-off protocol**: Workers can explicitly hand tasks to other workers via structured message passing
+
+### 5.3 Model Council Routing *(from Perplexity Computer)*
+
+The Model Council dynamically assigns the best-fit model to each subtask in the execution graph:
+
+```
+Task: "Write a blog post about quantum computing"
+  ├── Research subtask → Gemini Flash (fast web grounding)
+  ├── Outline subtask  → GPT-4o (structured reasoning)
+  ├── Draft subtask    → Claude Sonnet (long-form writing quality)
+  └── Edit subtask     → Mistral (efficient proofreading)
+```
+
+Routing decisions are based on: task type classifier, cost budget, latency requirement, and model benchmark scores for that task category.
+
+### 5.4 Self-Healing Re-planning *(from Devin / Cognition Labs)*
+
+When a tool execution fails (compile error, network timeout, unexpected output):
+
+1. The error trace is captured and formatted as structured context
+2. A re-planning call is issued to the Model Router with the error trace + original goal
+3. An updated execution branch is generated and substituted into the DAG
+4. Retry proceeds from the failure point (not from scratch)
+5. If re-planning fails 3+ times, the human-in-the-loop Consent Gate escalates to the user
+
+---
+
+## 6. Self-Improving Skill Engine
+
+The most distinctive feature of Hydragent — borrowed directly from **Hermes Agent** (Nous Research), the *only* agent with a genuine built-in learning loop.
+
+### 6.1 Skill Authoring Pipeline
+
+When Hydragent successfully completes a novel task for the first time:
+
+1. **Execution trace logging**: Every tool call, decision branch, and output is captured
+2. **Skill synthesis**: An LLM pass distills the trace into a reusable, parameterized skill program (saved as a signed Markdown file in `skills/`)
+3. **Ed25519 signing**: The skill manifest is cryptographically signed before it can be loaded by the skill engine
+4. **Index update**: The skill is added to a semantic skill-search index — future similar tasks route through it automatically
+
+### 6.2 7-Day Autonomous Curator Cycle *(from Hermes Agent)*
+
+A background Curator process runs every 7 days:
+
+- **Grades** all skills based on: success rate, usage frequency, user feedback, recency
+- **Consolidates** redundant skills (finds semantically similar skills and merges them)
+- **Prunes** skills below a quality threshold (score < 0.4 are archived, not deleted)
+- **Promotes** high-performing skills to a "Core Skills" tier with faster access paths
+- Generates a weekly `curator.log` summary visible to the user
+
+### 6.3 Gene Evolution Protocol *(from PicoClaw)*
+
+For monitoring and automation tasks, Hydragent uses a bio-inspired evolution loop:
+- Monitoring strategies are encoded as configurable "genes" (parameter sets)
+- Strategies that achieve better outcomes over time are given higher weight and reproduced
+- Low-performing strategies are mutated and retested
+- This enables the agent to continuously optimize its own alert thresholds, polling frequencies, and action triggers without manual tuning
+
+---
+
+## 7. Personalization & User Modeling
+
+Hydragent achieves deep personalization through a combination of explicit configuration and implicit behavioral learning.
+
+### 7.1 SOUL.md & USER.md Persona System *(from OpenClaw + MimiClaw)*
+
+The agent's identity and its understanding of the user are encoded in two living Markdown files:
+
+**`SOUL.md`** — Agent identity:
+```markdown
+# Agent Identity
+Name: Hydra
+Personality: Curious, precise, warm. Direct over verbose.
+Values: Privacy-first, honesty, user autonomy
+Communication style: Bullet-points for technical content; conversational for personal topics
+Prohibited: Never share raw credentials, never claim to be human
+```
+
+**`USER.md`** — User model:
+```markdown
+# User Profile
+Name: [User's name]
+Role: [Profession / domain]
+Interests: [Top interests]
+Working hours: [Timezone + schedule]
+Preferences:
+  - Response format: Bullet points for summaries, prose for creative tasks
+  - Verbosity: Concise (< 3 paragraphs unless asked)
+  - Language: English (formal)
+Contact graph: [Known contacts and relationships]
+```
+
+Both files are automatically updated by the nightly Dreaming pipeline based on behavioral signals.
+
+### 7.2 Affective / Emotional Memory *(from Inflection Pi + Vellum)*
+
+- Tracks user sentiment across sessions (positive/neutral/negative tone detection)
+- Detects discomfort signals and adjusts communication style proactively
+- Stores "emotional anchors" — topics or events with high personal significance
+- Applies tone matching: matches formality and warmth to the user's current communication pattern
+
+### 7.3 Fine-Tuning & RLHF Loop
+
+- **Thumbs-up/down**: Every response can receive explicit feedback, stored as training signal
+- **Implicit feedback**: Response length adjustments, rephrasing requests, and conversation abandonment are captured as negative signals
+- **LoRA adapter tuning**: For power users, optional local fine-tuning of a small LoRA adapter layer on a base model using accumulated feedback data
+- **Persona templates**: Pre-built personas (Scholar, Engineer, Creative, Coach) that users can select or blend
+
+---
+
+## 8. Multimodal Input & Sensing
+
+### 8.1 Supported Input Modalities
+
+| Modality | Implementation | Source Inspiration |
+|---|---|---|
+| **Text** | Baseline LLM natural language | All agents |
+| **Voice (input)** | OpenAI Whisper (local), Deepgram (cloud) | NanoClaw, QwenPaw, Moltis |
+| **Voice (output)** | Coqui TTS (local), ElevenLabs (cloud) | Moltis, QwenPaw |
+| **Vision / Images** | Claude Vision, GPT-4o Vision, LLaVA (local) | Claude Cowork, Manus, ACT-1 |
+| **Documents** | PDF, DOCX, XLSX, CSV parsing pipeline | AnythingLLM, Khoj |
+| **Screen / UI** | Screenshot analysis + Playwright actions | Claude Computer Use, Manus |
+| **Sensor / IoT** | MQTT broker, GPIO serial, temperature feeds | MimiClaw, Humane CosmOS |
+| **Calendar / Email** | OAuth-connected structured data | Perplexity Computer, Microsoft Scout |
+
+### 8.2 Vision-Grounded Execution *(from Claude Computer Use + Manus)*
+
+When performing GUI-level tasks, Hydragent:
+1. Takes a screenshot of the current state
+2. Runs it through a vision model to identify interactive elements (buttons, forms, dropdowns)
+3. Generates a structured action plan (click(x,y), type("..."), scroll(direction))
+4. Validates each action's outcome via subsequent screenshot analysis before proceeding
+
+---
+
+## 9. Multi-Model Council & Routing
+
+### 9.1 Model Pool (19+ Models) *(from Perplexity Computer)*
+
+Hydragent maintains a routing table of specialist models:
+
+| Task Category | Primary Model | Fallback | Local Option |
+|---|---|---|---|
+| Core reasoning / orchestration | Claude Sonnet 4 / Opus 4 | GPT-4o | Qwen 2.5-72B (Ollama) |
+| Fast web research | Gemini Flash | Perplexity Sonar | — |
+| Code generation | Claude Sonnet / Deepseek Coder | GPT-4o | Deepseek Coder (Ollama) |
+| Long-form writing | Claude Sonnet | GPT-4o | Mistral Instruct (Ollama) |
+| Image generation | DALL-E 3 / Flux | Stable Diffusion | SD local |
+| Embeddings | nomic-embed-text (local) | OpenAI text-embedding-3-small | nomic-embed-text |
+| Voice STT | Whisper large-v3 (local) | Deepgram Nova | Whisper (local) |
+| Lightweight summaries | GPT-4o mini / Gemini Flash | Mistral 7B | TinyLlama (edge) |
+
+### 9.2 Model-Agnostic Interface
+
+All model calls route through an OpenAI-compatible API interface, enabling:
+- **Seamless provider swap**: Change from OpenAI to Anthropic to local Ollama without changing orchestrator code
+- **Cost-aware routing**: Each task carries a `budget_usd` constraint; the router selects the cheapest model meeting quality requirements
+- **Latency-aware routing**: Time-sensitive tasks (< 2s budget) automatically select faster, smaller models
+- **Fallback chains**: If a model is unavailable or rate-limited, the next model in the chain is tried automatically
+
+---
+
+## 10. RAG & Knowledge Base Integration
+
+### 10.1 Personal Knowledge Base *(from Khoj + AnythingLLM)*
+
+Hydragent indexes private documents into a searchable knowledge base:
+- **Supported formats**: PDF, DOCX, Markdown, HTML, CSV, EPUB, PPTX, plain text
+- **Indexing pipeline**: Text extraction → chunking (512 token chunks, 50 token overlap) → embedding → ChromaDB storage
+- **Semantic search**: BM25 + vector hybrid retrieval (RRF fusion)
+- **Live updates**: File watcher monitors configured folders; re-indexes on change
+
+### 10.2 Web & Research RAG *(from Perplexity Computer + Khoj)*
+
+- Real-time web grounding: Hydragent can search, scrape, and synthesize web content into responses
+- Source attribution: Every fact retrieved from the web or document base is cited with its source
+- Conflict resolution: When sources disagree, the agent surfaces the conflict and asks the user which to trust
+- **Deep Research Mode**: Multi-step research pipeline — generates sub-questions, retrieves sources for each, synthesizes a comprehensive report
+
+---
+
+## 11. Human-in-the-Loop & Ethics Controls
+
+### 11.1 Consent Gates *(from Microsoft Scout + IronClaw)*
+
+- All state-mutating operations (file writes, emails, API calls, purchases) require explicit user approval before execution
+- Approval UI supports: one-click approve, modify-then-approve, deny-and-explain, delegate-to-later
+- **Audit trail**: Every approved and denied action is logged to the immutable Merkle audit log
+
+### 11.2 Transparency Mode
+
+- **Thought trace**: Users can enable "explain mode" to see the agent's chain-of-thought before each action
+- **Tool log**: Full record of every tool called, with inputs and outputs (redacted credentials)
+- **Memory diff**: After each Dreaming cycle, the user receives a diff of what changed in USER.md / SOUL.md
+
+### 11.3 Ethical Guardrails
+
+- **Bias detection**: Responses involving political, social, or sensitive topics include a "multiple perspectives" flag
+- **Graceful failure**: Tool errors are caught, formatted, and explained — never raw stack traces to the user
+- **Tone adaptation**: Agent adjusts formality and warmth to match user communication style
+- **Hard limits**: Hardcoded refusals for credential exposure, self-replication without consent, disabling security layers, and impersonation of real humans
+
+---
+
+## 12. Edge & Embedded Deployment
+
+### 12.1 Ultra-Lightweight Runtime *(from NullClaw + ZeroClaw + PicoClaw)*
+
+| Build Target | Binary Size | RAM Footprint | Startup Time | LLM Mode |
+|---|---|---|---|---|
+| **Desktop (full)** | ~15 MB | < 100 MB | < 50 ms | Cloud API + Local Ollama |
+| **Server (optimized)** | ~5 MB | < 30 MB | < 10 ms | Cloud API |
+| **Edge Zig binary** | ~678 KB | < 1 MB | < 2 ms | Local quantized only |
+| **Microcontroller** | ~150 KB | ~10 MB PSRAM | < 500 ms | TinyLLM on-device |
+
+### 12.2 RISC-V & Microcontroller Support *(from MimiClaw + PicoClaw)*
+
+- **RISC-V target**: Zig static binary cross-compiled to SOPHGO SG2002 RISC-V boards
+- **ESP32-S3 target**: C-based PicoLM engine running quantized TinyLlama 1.1B (4-bit GGUF)
+- **Power profile**: ~0.5W operation on ESP32-S3 (matching MimiClaw specifications)
+- **Offline-first**: Full agent operation without internet connectivity using on-device models
+
+---
+
+## 13. Evaluation & Observability
+
+### 13.1 Built-in Multi-Layer Evaluation *(from AWS Bedrock AgentCore + SuperAGI)*
+
+Hydragent includes an evaluation harness measuring performance across three layers:
+
+| Layer | Metrics | Method |
+|---|---|---|
+| **Model-level** | MMLU, GSM8K, HellaSWAG, HaluMem | Automated benchmark runner |
+| **Component-level** | Intent accuracy, tool success rate, memory hit rate, error recovery rate | Instrumented unit tests |
+| **End-to-end** | Task completion %, user satisfaction (1-5), response latency, hallucination rate | Simulation suite + user feedback |
+
+### 13.2 Observability Stack
+
+- **Metrics**: Prometheus-compatible metrics endpoint (`/metrics`) for Grafana dashboards
+- **Tracing**: OpenTelemetry trace export for distributed request tracing
+- **Logging**: Structured JSON logs with configurable verbosity; Merkle-hashed for tamper detection
+- **Alerting**: Configurable thresholds for error rate, latency spikes, memory growth, and skill degradation
+
+---
+
+## 14. Plugin & Skill Marketplace
+
+### 14.1 ClawHub-Compatible Skill Ecosystem *(from OpenClaw + TrustClaw)*
+
+Hydragent is compatible with the broader ClawHub ecosystem while adding security guarantees:
+- **6,000+ community skills** available via ClawHub marketplace
+- **Security scanning**: Every imported skill is scanned for dangerous patterns before load
+- **Ed25519 verification**: Skills from trusted publishers are signed and verified
+- **Sandboxed execution**: All marketplace skills run inside WASM cages regardless of source
+
+### 14.2 Private Plugin Marketplace *(from Claude Cowork + Taskade)*
+
+For enterprise deployments:
+- Administrators can publish internal skills/tools to a private, organization-scoped plugin registry
+- Skills are distributed as portable Markdown+config bundles (no binary dependencies)
+- Access control: Role-based skill visibility (e.g., Finance team sees billing tools, Engineering sees CI/CD tools)
+
+---
+
+*For implementation details and technical specifications → **[ARCHITECTURE.md](ARCHITECTURE.md)***
+*For the development roadmap and milestones → **[ROADMAP.md](ROADMAP.md)***
