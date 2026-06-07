@@ -4,7 +4,9 @@
 
 [![Status: Active Design](https://img.shields.io/badge/Status-Active%20Design-blue)](#roadmap)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Runtime: Zig / Rust](https://img.shields.io/badge/Runtime-Zig%20%2F%20Rust-orange)](#architecture)
+[![Core: Rust + Tokio](https://img.shields.io/badge/Core-Rust%20%2B%20Tokio-orange)](#architecture)
+[![Edge: Zig](https://img.shields.io/badge/Edge-Zig%20%E2%89%A4678KB-yellow)](#architecture)
+[![Adapters: Python](https://img.shields.io/badge/Adapters-Python-blue)](#architecture)
 [![Security: 16-Layer](https://img.shields.io/badge/Security-16--Layer%20Cryptographic-red)](#security)
 
 ---
@@ -17,32 +19,34 @@ Hydragent is a **next-generation, modular meta-agent** that synthesizes the best
 
 | System Analyzed | Innovation Extracted |
 |---|---|
-| **Hermes Agent** (Nous Research) | Closed-loop self-improving skill engine; 7-day autonomous curator cycle |
-| **memU** | Hierarchical file-system memory layout; 10x token cost reduction via dual-mode retrieval |
-| **OpenFang** | 16-layer cryptographic security with Merkle audit trails and TEE execution |
-| **IronClaw** | WASM capability sandboxing; boundary key injection (secrets never touch LLM) |
-| **NanoClaw** | Container-isolated agents (~4k LoC auditable core); Agent Swarm coordination |
-| **ZeroClaw** | Single Rust binary runtime; multi-crate workspace decomposition; <5 MB footprint |
-| **NullClaw** | Ultra-lightweight Zig static binary (678 KB); SQLite-native hybrid (vector + BM25) |
-| **PicoClaw** | Gene Evolution Protocol for self-adapting monitoring strategies on $10 hardware |
-| **Manus** | VM-sandboxed parallel task execution; autonomous web dev from single prompt |
-| **Perplexity Computer** | 19-model orchestration; Opus 4.6 core reasoning + specialist routing |
-| **Claude Code / Cowork** | Subagent delegation with scoped system prompts; 1M-context session management |
-| **Microsoft Scout** | 3-tier permission matrix (Auto-approve / Prompt / Deny); governed digital identity |
-| **OpenClaw** | Multi-channel gateway (40+ platforms); ClawHub skill ecosystem; cron-proactive tasks |
-| **Taskade Genesis** | Workspace DNA for multi-agent teams; no-code agent builder; real-time collaboration |
-| **Khoj** | Second-brain semantic search across personal documents; multi-platform access |
-| **AnythingLLM** | 100% local RAG over private docs; Model Router for hybrid AI |
-| **Moltis** | Secure Rust server with built-in STT/TTS; MCP-native; no-external-key-exposure |
-| **TrustClaw** | OAuth-only credential brokering (Composio); 1000+ skill marketplace; zero-config keys |
-| **Vellum** | 8-type layered memory model: episodic, semantic, procedural, emotional, spatial, and more |
-| **QwenPaw / ReMe** | Proactive "growing" memory; BM25 + vector hybrid scoring 88.78% on HaluMem QA |
-| **SuperAGI** | Concurrent multi-agent workflows; built-in telemetry and token-budget controls |
-| **Devin (Cognition Labs)** | Self-healing re-planning on compile/execution errors; full dev environment control |
-| **Adept (ACT-1)** | Vision + code-execution chain-of-thought foundation |
-| **Rabbit (DLAM)** | Hardware-agnostic controller via USB; plug-and-play without host software install |
-| **MimiClaw** | AI agent on ESP32-S3 ($10, ~0.5W); on-device inference at microcontroller scale |
-| **Inflection Pi** | Emotional/affective memory modeling; tone-adaptive personalization |
+| **Hermes Agent** (Nous Research) | Closed-loop self-improving skill engine; 7-day Curator cycle; **#1 on OpenRouter** (271B tokens); 7 terminal backends; auto-migration from OpenClaw |
+| **OpenClaw** (350K+ ⭐) | **Standing Orders** (persistent behavioral rules across all sessions); **Dreaming** 3-stage nightly memory consolidation; 12+ channels; 6,000+ ClawHub skills; auth profile rotation with exponential backoff |
+| **memU** | Hierarchical file-system memory; dual-mode retrieval (cheap embeddings 24/7 + LLM only on high-signal); **92.09% accuracy on Locomo benchmark** |
+| **OpenFang** | 16-layer cryptographic security; Merkle audit trails; TEE execution; 40+ channels; 30+ built-in tools; pre-built autonomous "Hands" packages |
+| **IronClaw** (NEAR AI) | WASM capability sandboxing; boundary key injection (secrets never touch LLM); **highest adversarial resilience** in NEAR AI evaluation suite |
+| **Kimi K2.6** (Moonshot AI) | **Agent Swarm: up to 300 sub-agents, 4,000 coordinated steps**; 1T-param MoE, 32B active/token; 256K context; **SWE-bench Pro 58.6%** |
+| **NanoClaw** | Container-isolated agents (~4k LoC auditable core); OS-level Docker isolation; no raw key storage (Agent Vault + OneCLI) |
+| **ZeroClaw** | Single Rust binary (~8.8 MB); <5 MB RAM; <10 ms startup; trait-driven hot-swap architecture |
+| **NullClaw** | Zig static binary (678 KB); ~1 MB RAM; <2 ms boot; 22+ providers; 18+ channels; hybrid search (0.7 vector / 0.3 BM25) |
+| **PicoClaw** | Gene Evolution Protocol on $10 RISC-V hardware; self-bootstrapping (AI drove its own architecture migration) |
+| **GoClaw** | OpenClaw rebuilt in Go with **multi-tenant isolation, 5-layer security**, native concurrency; multi-tenant PostgreSQL; single binary |
+| **Manus** | VM-sandboxed parallel task execution; **GAIA benchmark 65%+** vs GPT-4o 32%; asynchronous long-running tasks (hours/days) |
+| **Perplexity Computer** | **20+ model orchestration**; Model Council (compare 3 models for high-stakes decisions); **80% completion rate** on complex workflows; Personal Computer mode (local Mac Mini) |
+| **Claude Code / Cowork** | Subagent delegation; **Plan mode** (read-only) + **Build mode** (full file ops); 1M-context; mailbox + file-locking Agent Teams |
+| **Microsoft Scout** | 3-tier permission matrix; **Work IQ** always-on background intelligence layer; proactively flags schedule conflicts; governed Entra identity |
+| **Taskade Genesis** | Workspace DNA; 500K+ deployed agents; 100K+ live apps; 11+ AI models per agent |
+| **OpenCode** | Plan/Build mode separation (review before execution); 75+ LLM providers; LSP integration; **160K GitHub stars, 7.5M monthly devs** |
+| **Devin 3.0** (Cognition Labs) | **Dynamic re-planning** on failures (self-healing); **self-maintained knowledge wiki**; live architectural diagrams; ARR $1M→$73M |
+| **Khoj** | Second-brain semantic search; Obsidian/Notion/GitHub indexing; offline-capable; MIT licensed |
+| **AnythingLLM** | 100% local RAG; Model Router; hybrid AI; desktop app with no Docker knowledge required |
+| **Moltis** | Rust server; session branching; hot-reload; Pi-inspired self-extension; STT/TTS built-in; MCP-native |
+| **Vellum** | BYOK (Bring Your Own Keys); credential process-boundary isolation (model never accesses creds); 8-type memory model |
+| **QwenPaw / ReMe** | **88.78% HaluMem QA**, **94.06% memory accuracy**; BM25 + vector hybrid; dynamic compaction; Daemon Agent for health monitoring |
+| **SuperAGI** | Concurrent multi-agent workflows; visual GUI agent management; role-based task splitting; token-budget controls |
+| **Adept (ACT-1)** | Action Transformer: trained on human-computer interaction (not text); pioneered "action model" category |
+| **Rabbit (DLAM)** | USB-attached hardware controller; no host software install on target machine; LAM interface-abstraction (resilient to API changes) |
+| **MimiClaw** | AI agent on ESP32-S3 ($10, ~0.5W); full ReAct loop on bare metal; GPIO hardware control |
+| **Inflection Pi** | Emotional/affective memory; 33-min avg conversation (10× competitors); 10M+ empathy fine-tuning samples |
 | **Humane (CosmOS)** | Wearable-first, offline-capable, sensor-rich context ingestion |
 
 ---
@@ -109,7 +113,7 @@ hydragent/
 
 ## 🏗️ 7-Layer Architecture Overview
 
-Hydragent's runtime is composed of seven decoupled layers communicating over a gRPC/HTTP2 event bus. The core compiles as a **hyper-optimized Zig static binary** (<1 MB RAM, 678 KB on disk, <2 ms startup):
+Hydragent's runtime is composed of seven decoupled layers communicating over a gRPC/HTTP2 event bus. The **Rust core** (Tokio async) handles orchestration, security, and tool dispatch. An optional **Zig edge binary** (≤678 KB, <2 ms startup) targets RISC-V/ESP32-S3. **Python adapters** handle channels, RAG pipelines, and ML glue:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -149,9 +153,10 @@ For the full technical specification, interface contracts, and API schemas → *
 
 ### Prerequisites
 
-- **Zig 0.13+** or **Rust 1.78+** (for core runtime build)
-- **Docker** (for execution sandbox isolation)
-- **Node.js v22+** (for gateway bridge / channel adapters)
+- **Rust 1.78+** (`cargo`) — core orchestrator, event bus, tool dispatcher, security vault
+- **Python 3.11+** (`uv` or `pip`) — channel adapters, RAG pipelines, CLI frontend
+- **Docker** — execution sandbox isolation (code runner, browser bot)
+- **Zig 0.13+** *(optional, edge-only)* — only needed to build the RISC-V / ESP32-S3 edge binary
 - **An LLM backend**: OpenRouter API key *or* local Ollama instance (Llama 3, Qwen 2.5, Mistral)
 
 ### Quick Install (MVP Shell)
@@ -161,19 +166,25 @@ For the full technical specification, interface contracts, and API schemas → *
 git clone https://github.com/your-org/hydragent.git
 cd hydragent
 
-# Install Node.js channel adapter dependencies
-npm install
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Build the Zig core runtime
-zig build -Doptimize=ReleaseFast
+# Install Python adapter dependencies (using uv)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+cd adapters && uv sync && cd ..
+
+# Build the Rust core
+cargo build --release
 
 # Bootstrap the encrypted credential vault
-./hydragent vault init
+./target/release/hydragent vault init
 
 # Configure your agent persona
 cp config/SOUL.md.example config/SOUL.md
 cp config/USER.md.example config/USER.md
 ```
+
+> **Edge binary only** (optional): Install Zig 0.13+ and run `cd edge && zig build -Doptimize=ReleaseSmall -Dtarget=riscv64-linux-musl`
 
 ### Configuration
 
@@ -189,11 +200,14 @@ TELEGRAM_BOT_TOKEN=...
 ### Run
 
 ```bash
-# Start the full runtime (gateway + orchestrator + memory)
-./hydragent start
+# Start the Rust core (listens on Unix socket)
+./target/release/hydragent start &
 
-# Or in lightweight edge mode (no Docker, local model only)
-./hydragent start --edge --model=tinyllama
+# Start the Python CLI adapter (connects to Rust core)
+python adapters/cli_adapter.py
+
+# Or in lightweight edge mode (Zig binary, no Docker, local model only)
+./edge/zig-out/bin/hydragent-edge --model=tinyllama
 ```
 
 ---
@@ -204,12 +218,18 @@ Hydragent draws design targets from real-world agent performance benchmarks:
 
 | Benchmark | Target | Inspiration |
 |---|---|---|
-| HaluMem QA memory accuracy | ≥ 88.78% | QwenPaw ReMe compaction |
+| HaluMem QA accuracy | ≥ 88.78% | QwenPaw ReMe compaction |
+| Memory accuracy (HaluMem) | ≥ 94.06% | QwenPaw ReMe memory accuracy score |
+| Locomo benchmark accuracy | ≥ 92.09% | memU proactive memory |
 | Complex workflow completion | ≥ 80% | Perplexity Computer |
-| Startup latency | < 2 ms | ZeroClaw / NullClaw |
-| Binary footprint | < 1 MB RAM | NullClaw Zig binary (678 KB) |
-| Context window | 1M tokens | Claude Code session management |
+| GAIA benchmark | ≥ 65% | Manus (vs GPT-4o 32%) |
+| SWE-bench Pro (code) | ≥ 58.6% | Kimi K2.6 Agent Swarm |
+| Rust core startup latency | < 50 ms | ZeroClaw / NullClaw |
+| Edge binary startup | < 2 ms | NullClaw Zig 678 KB |
+| Edge binary footprint | < 1 MB RAM | NullClaw Zig binary (678 KB) |
+| Context window | 1M tokens | Claude Code / Qwen flagship |
 | Edge device operation | $10 board | PicoClaw / MimiClaw |
+| Adversarial resilience | Best-in-class | IronClaw NEAR AI evaluation |
 
 ---
 
@@ -238,12 +258,14 @@ For detailed capability breakdowns → **[FEATURES.md](FEATURES.md)**
 
 | Phase | Weeks | Deliverable |
 |---|---|---|
-| Phase 1 | 1–6 | Core Zig runtime, gRPC event bus, OpenRouter integration |
-| Phase 2 | 7–10 | Hierarchical memory, BM25 engine, nightly Dreaming pipeline |
-| Phase 3 | 11–14 | WASM sandbox, 3-tier permissions, encrypted vault |
-| Phase 4 | 15–18 | Subagent swarm orchestration, Model Council, self-healing |
-| Phase 5 | 19–22 | 16-layer security, Merkle audit, taint tracking, SGNL integration |
-| Phase 6 | 23+ | Edge hardware port (RISC-V), local inference, Gene Evolution Protocol |
+| Phase 1 | 1–6 | Rust core runtime (Tokio), JSON-RPC event bus, OpenRouter integration, CLI adapter |
+| Phase 2 | 7–10 | Hierarchical memory (memU-style), BM25 + vector hybrid, nightly Dreaming pipeline, Standing Orders |
+| Phase 3 | 11–14 | WASM sandbox, 3-tier permission matrix (Scout-style), encrypted vault (IronClaw-style) |
+| Phase 4 | 15–18 | 40+ channel gateway; proactive heartbeat; cron daemon; Work IQ background awareness |
+| Phase 5 | 19–22 | Kimi-style agent swarm (DAG + 300 sub-agent capacity), Model Council routing (20+ models), self-healing re-planner |
+| Phase 6 | 23–26 | 16-layer security pipeline: Merkle audit, taint tracking, SGNL integration, Ed25519 signing |
+| Phase 7 | 27–30 | Hermes-style self-improving skill engine, 7-day Curator, Gene Evolution Protocol |
+| Phase 8 | 31+ | Edge hardware port (RISC-V/ESP32-S3 Zig binary), PicoLM local inference, offline-first |
 
 Full milestone details → **[ROADMAP.md](ROADMAP.md)**
 
@@ -257,4 +279,4 @@ Hydragent is open-source software licensed under the **MIT License**. See [LICEN
 
 ## 🌐 Acknowledgements
 
-Hydragent stands on the shoulders of the open-source agent community. Core design inspiration drawn from: **Hermes Agent** (Nous Research), **OpenClaw** (PSPDFKit / Peter Steinberger), **ZeroClaw Labs**, **NanoClaw** (Gavriel Cohen / Docker), **IronClaw** (NEAR AI), **memU** (NevaMind AI), **Moltis**, **Khoj**, **AnythingLLM** (Mintplex Labs), **TrustClaw** (ComposioHQ), **QwenPaw** (Alibaba / AgentScope), **PicoClaw** (Sipeed), **MimiClaw**, and all the others listed in the capability matrix above.
+Hydragent stands on the shoulders of the open-source agent community. Core design inspiration drawn from: **Hermes Agent** (Nous Research), **OpenClaw** (PSPDFKit / Peter Steinberger), **ZeroClaw Labs**, **NanoClaw** (Gavriel Cohen / Docker), **IronClaw** (NEAR AI), **memU** (NevaMind AI), **Moltis**, **Khoj**, **AnythingLLM** (Mintplex Labs), **TrustClaw** (ComposioHQ), **QwenPaw** / **Kimi K2.6** (Alibaba / Moonshot AI), **PicoClaw** (Sipeed), **MimiClaw**, **GoClaw**, **OpenCode**, **Devin** (Cognition Labs), **Microsoft Scout**, **Manus AI**, **Perplexity Computer**, and all the others listed in the capability matrix above.

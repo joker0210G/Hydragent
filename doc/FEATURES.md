@@ -25,7 +25,7 @@
 
 ## 1. Memory & Deep Personalization
 
-Hydragent's memory system is its most differentiating layer — a multi-tier, self-compacting knowledge store that fuses design patterns from **memU**, **Vellum**, **Hermes Agent**, **QwenPaw**, **AnythingLLM**, and **Khoj**.
+Hydragent's memory system is its most differentiating layer — a multi-tier, self-compacting knowledge store that fuses design patterns from **memU**, **Vellum**, **Hermes Agent**, **QwenPaw**, **OpenClaw**, **AnythingLLM**, and **Khoj**.
 
 ### 1.1 Eight-Type Hierarchical Memory Model *(from Vellum + memU)*
 
@@ -90,13 +90,16 @@ Inspired by biological memory consolidation during sleep, Hydragent runs a night
    a. Create condensed session summary (< 500 tokens)
    b. Extract new user facts & preference signals
    c. Identify new reusable skill patterns
+   d. Link related memories (associative strengthening)
 3. Update episodic DB with compressed summary
 4. For each extracted fact:
-   - If fact exists in Semantic DB → merge & update embedding
+   - If fact exists in Semantic DB → merge & update embedding (strength++)
    - If new → insert new semantic vector node
+   - If contradicts known fact → surface for user review
 5. Re-generate USER.md and SOUL.md with updated facts
 6. Grade and prune skills library (Curator)
-7. Sleep until next heartbeat
+7. Strengthen frequently-accessed memory pathways (Hebbian-style)
+8. Sleep until next heartbeat
 ```
 
 ### 1.5 ReMe Compaction Kit *(from QwenPaw)*
@@ -105,6 +108,32 @@ The ReMe subsystem handles the mid-session context window management problem:
 - **Retention Group**: Last N raw conversation turns (configurable, default: 15)
 - **Compaction Group**: Summarized historical dialogue beyond the retention window
 - Dynamic split point shifts based on available context budget, preventing context-window overflow during long sessions
+
+### 1.6 Standing Orders *(from OpenClaw)*
+
+**Standing Orders** are persistent behavioral instructions that apply across all sessions without needing to re-prompt the agent. They live in `SOUL.md` as a persistent rule set and are loaded at agent startup before any conversation begins:
+
+```markdown
+# Standing Orders
+- Always respond in bullet points for technical summaries
+- Never share raw credentials or API keys
+- Default to Celsius for temperatures (user preference)
+- Flag any action that would send data outside the EU
+- Summarize emails > 200 words before displaying
+```
+
+Distinct from `USER.md` (user profile) and from cron tasks (scheduled), Standing Orders modify the agent's *real-time behavior* on every turn. The Dreaming pipeline automatically suggests new Standing Orders based on behavioral patterns observed over 7+ days.
+
+### 1.7 Benchmark Targets
+
+| Metric | Target | Source |
+|---|---|---|
+| HaluMem QA accuracy | ≥ 88.78% | QwenPaw ReMe baseline |
+| HaluMem memory accuracy | ≥ 94.06% | QwenPaw ReMe full evaluation |
+| Locomo benchmark accuracy | ≥ 92.09% | memU proactive memory eval |
+| Fast retrieval latency | < 5 ms | memU spec |
+| Deep retrieval latency | < 300 ms | Internal target |
+| Compaction token reduction | > 60% | Internal target |
 
 ---
 
@@ -176,11 +205,20 @@ Every tool invocation is classified before execution:
 - **GDPR compliance tooling**: Export all personal data (`hydragent export --gdpr`), full deletion capability
 - **Data partitioning**: Personal vs. enterprise data stored in separate schemas; never co-mingled
 
+### 2.6 BYOK (Bring Your Own Keys) *(from Vellum)*
+
+For power users and enterprise deployments:
+- Users supply their own API keys for supported providers (Anthropic, OpenAI, Google, Mistral, Cohere, etc.)
+- Keys are stored exclusively in the local encrypted vault — never transmitted to Hydragent infrastructure
+- Credential process-boundary isolation: the model process has **zero direct access** to decrypted credentials during inference; key injection happens at the network boundary in a separate OS process
+- Per-provider key rotation with automated expiry detection and renewal prompts
+- Multi-key failover: if a primary key is rate-limited or revoked, the next key in the rotation chain is used automatically
+
 ---
 
 ## 3. Unified Multi-Channel Gateway
 
-A single Hydragent runtime instance communicates across **40+ channel adapters**, separating presentation from execution. Inspired by **OpenClaw** (68K+ GitHub stars), **ZeroClaw**, and **QwenPaw**.
+A single Hydragent runtime instance communicates across **40+ channel adapters**, separating presentation from execution. Inspired by **OpenClaw** (350K+ GitHub stars), **ZeroClaw**, **NullClaw** (18+ channels), and **QwenPaw**.
 
 ### 3.1 Supported Channels
 
@@ -221,6 +259,8 @@ Hydragent doesn't wait to be asked. A persistent heartbeat daemon enables:
 - **RSS/news feeds**: Polls configured feeds and surfaces relevant items based on semantic profile match
 - **System monitoring**: Tracks disk, CPU, network metrics and fires alerts on anomalies
 - **Dynamic cron**: The agent can create its own recurring tasks based on conversation context (`"Remind me about this next Friday"`)
+- **Auth profile rotation**: Exponential backoff cooldown (1 min → 5 min → 25 min, capped at 1 hour) to prevent gateway blocking
+- **Work IQ** *(from Microsoft Scout)*: An always-on background awareness layer that continuously observes user work patterns. It proactively flags schedule conflicts before meetings, surfaces relevant documents before calls, and anticipates needs based on calendar + email context — without being asked.
 
 ---
 
@@ -235,7 +275,18 @@ Hydragent provides a rich, multi-tiered tool runtime environment that gives the 
 - **Capabilities**: Form filling, web scraping, navigation, JavaScript execution in-browser
 - **Takeover Mode**: If a GUI task fails or becomes ambiguous, Hydragent sends a screen capture + control link to the user for manual intervention, then resumes
 
-### 4.2 Local Code Sandbox *(from Devin + Manus + NanoClaw)*
+### 4.2 Plan Mode vs Build Mode *(from OpenCode + Claude Code)*
+
+Inspired by OpenCode's and Claude Code's architectural insight that *review before execution* dramatically reduces errors:
+
+| Mode | Access | Description |
+|---|---|---|
+| **Plan Mode** | Read-only | Agent analyzes codebase, outlines a strategy, shows a step-by-step plan. No file writes. No tool executions. Ideal for audits and reviews. |
+| **Build Mode** | Full file ops | Agent executes the approved plan: writes files, runs commands, calls APIs. Requires explicit user transition from Plan Mode. |
+
+Users can inspect the plan before committing to execution — analogous to a `--dry-run` flag for the entire agent.
+
+### 4.3 Local Code Sandbox *(from Devin + Manus + NanoClaw)*
 
 ```
 Supported Runtimes: Python 3.12+, Node.js 22+, Bash/Zsh, Go 1.22+, Rust
@@ -245,7 +296,7 @@ Filesystem Access:  Scoped to /workspace/{session-id}/ only
 Network Access:     Allowlist-gated; blocked by default
 ```
 
-### 4.3 MCP (Model Context Protocol) Integration *(from Claude Code + Moltis)*
+### 4.4 MCP (Model Context Protocol) Integration *(from Claude Code + Moltis)*
 
 Native compatibility with Anthropic's MCP standard:
 - **MCP Resources**: Hydragent can fetch and embed external context resources (databases, docs, APIs)
@@ -253,7 +304,7 @@ Native compatibility with Anthropic's MCP standard:
 - **MCP Tools**: Expose Hydragent's own tools to other MCP-compatible agents and IDEs (Cursor, Windsurf, Claude Desktop)
 - **Remote MCP Servers**: Connect to community MCP servers (Linear, Notion, Stripe, Postgres, etc.)
 
-### 4.4 Built-in Tool Library
+### 4.5 Built-in Tool Library
 
 | Tool | Description | Sandbox Level |
 |---|---|---|
@@ -275,7 +326,7 @@ Native compatibility with Anthropic's MCP standard:
 
 ## 5. Multi-Agent Swarm Orchestration
 
-For complex, long-horizon objectives, Hydragent decomposes work into a **Directed Acyclic Graph (DAG)** and distributes execution across specialist subagents. Pattern drawn from **Claude Code**, **Manus**, **Taskade Genesis**, **SuperAGI**, and **Hermes Agent v0.13 Kanban release**.
+For complex, long-horizon objectives, Hydragent decomposes work into a **Directed Acyclic Graph (DAG)** and distributes execution across specialist subagents. Pattern drawn from **Claude Code**, **Manus**, **Taskade Genesis**, **SuperAGI**, **Hermes Agent v0.13 Kanban release**, and **Kimi K2.6 Agent Swarm** (up to 300 parallel sub-agents).
 
 ### 5.1 Standard Subagent Roles
 
@@ -287,7 +338,16 @@ For complex, long-horizon objectives, Hydragent decomposes work into a **Directe
 | **Scout Agent** | External documentation researcher | `web_search`, `browser_bot`, `http_request` | Isolated fresh window |
 | **Review Agent** | Security + quality gatekeeper (pre-commit) | `file_read`, `code_exec` (test runner) | Isolated fresh window |
 
-### 5.2 Hermes-Style Kanban Multi-Agent Board *(from Hermes Agent v0.13)*
+### 5.2 Kimi-Inspired Swarm Capacity *(from Kimi K2.6)*
+
+Inspired by Kimi K2.6's **300 sub-agent, 4,000-step** execution architecture:
+- **Swarm ceiling**: Up to 300 concurrent sub-agents per task tree
+- **Step budget**: 4,000 coordinated steps per long-running project
+- **Swarm supervisor**: DAG coordinator monitors all branches; detects stuck branches and re-routes
+- **Inter-agent mailbox**: Structured message passing via Unix socket IPC (file-locking coordination for shared artifacts)
+- **Swarm result aggregation**: Parallel branch results merged via a dedicated Aggregator agent before final response
+
+### 5.3 Hermes-Style Kanban Multi-Agent Board *(from Hermes Agent v0.13)*
 
 Long-running projects use a durable Kanban board:
 - **Heartbeat**: Each worker agent sends a heartbeat every 30 seconds
@@ -298,7 +358,7 @@ Long-running projects use a durable Kanban board:
 
 ### 5.3 Model Council Routing *(from Perplexity Computer)*
 
-The Model Council dynamically assigns the best-fit model to each subtask in the execution graph:
+The Model Council dynamically assigns the best-fit model to each subtask in the execution graph. Based on **Perplexity Computer's** approach of orchestrating **20+ models simultaneously**:
 
 ```
 Task: "Write a blog post about quantum computing"
@@ -308,7 +368,7 @@ Task: "Write a blog post about quantum computing"
   └── Edit subtask     → Mistral (efficient proofreading)
 ```
 
-Routing decisions are based on: task type classifier, cost budget, latency requirement, and model benchmark scores for that task category.
+**High-stakes decisions** optionally invoke a **Model Council vote** — 3 candidate models independently draft an approach; the Aggregator agent selects the best or synthesizes the consensus. Routing is based on: task type classifier, cost budget, latency requirement, and model benchmark scores.
 
 ### 5.4 Self-Healing Re-planning *(from Devin / Cognition Labs)*
 
@@ -324,7 +384,7 @@ When a tool execution fails (compile error, network timeout, unexpected output):
 
 ## 6. Self-Improving Skill Engine
 
-The most distinctive feature of Hydragent — borrowed directly from **Hermes Agent** (Nous Research), the *only* agent with a genuine built-in learning loop.
+The most distinctive feature of Hydragent — borrowed directly from **Hermes Agent** (Nous Research), the *only* agent with a genuine built-in learning loop. Hermes was **#1 on OpenRouter's global token rankings** (271B tokens in 30 days), validating that a self-improving agent with quality outputs drives organic adoption.
 
 ### 6.1 Skill Authoring Pipeline
 
@@ -345,7 +405,16 @@ A background Curator process runs every 7 days:
 - **Promotes** high-performing skills to a "Core Skills" tier with faster access paths
 - Generates a weekly `curator.log` summary visible to the user
 
-### 6.3 Gene Evolution Protocol *(from PicoClaw)*
+### 6.3 Self-Maintained Knowledge Wiki *(from Devin 3.0)*
+
+Inspired by Devin 3.0's approach to codebase knowledge:
+- As the agent works on projects, it maintains a **living knowledge wiki** about each project/domain
+- The wiki is updated automatically after each significant task: architecture decisions, discovered patterns, resolved bugs, API endpoint mappings
+- The wiki is queryable via semantic search and automatically injected into subagent context when relevant
+- Users can view, edit, and export the knowledge wiki at any time
+- Generates **live architectural diagrams** (Mermaid/PlantUML) that stay in sync with codebase changes
+
+### 6.4 Gene Evolution Protocol *(from PicoClaw)*
 
 For monitoring and automation tasks, Hydragent uses a bio-inspired evolution loop:
 - Monitoring strategies are encoded as configurable "genes" (parameter sets)
@@ -446,6 +515,7 @@ Hydragent maintains a routing table of specialist models:
 | Embeddings | nomic-embed-text (local) | OpenAI text-embedding-3-small | nomic-embed-text |
 | Voice STT | Whisper large-v3 (local) | Deepgram Nova | Whisper (local) |
 | Lightweight summaries | GPT-4o mini / Gemini Flash | Mistral 7B | TinyLlama (edge) |
+| High-stakes decisions | Model Council vote (3 candidates) | Best-of-3 selection | — |
 
 ### 9.2 Model-Agnostic Interface
 
@@ -537,6 +607,15 @@ Hydragent includes an evaluation harness measuring performance across three laye
 - **Tracing**: OpenTelemetry trace export for distributed request tracing
 - **Logging**: Structured JSON logs with configurable verbosity; Merkle-hashed for tamper detection
 - **Alerting**: Configurable thresholds for error rate, latency spikes, memory growth, and skill degradation
+
+### 13.3 Daemon Agent *(from QwenPaw)*
+
+A dedicated **Daemon Agent** runs as a background health monitor:
+- Monitors agent health: memory DB size growth, skill quality degradation, tool error rates
+- Sends a periodic "heartbeat" summary to the user's preferred channel (configurable: daily / weekly)
+- Alerts on anomalies: unusual memory growth (potential poisoning), repeated tool failures, Curator score drops
+- Can be queried directly: `"Hydra, how are you doing?"` → returns Daemon health report
+- Self-corrects minor issues autonomously (e.g., re-indexes a corrupted memory segment, retries failed Curator run)
 
 ---
 

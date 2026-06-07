@@ -1,0 +1,13 @@
+[package]
+name = "hydragent-memory"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sqlx = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+hydragent-types = { path = "../hydragent-types" }
+

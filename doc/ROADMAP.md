@@ -37,11 +37,12 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 **Theme**: Build the minimum viable agent loop that can execute a ReAct cycle, call an LLM, and run a basic tool.
 
 #### Milestones
-- [ ] Deploy a persistent systems-level compiled Zig backend executing a basic ReAct loop
-- [ ] Startup in < 2 ms; binary size ≤ 678 KB for edge target
-- [ ] Connect to OpenRouter API with fallback rotation chains
+- [ ] Deploy a persistent Rust binary (Tokio async) executing a basic ReAct loop
+- [ ] Startup in < 50 ms; optional Zig edge binary ≤ 678 KB, < 2 ms startup
+- [ ] Connect to OpenRouter API with fallback rotation chains (20+ models)
 - [ ] Accept and respond to CLI input as the first "channel"
 - [ ] Execute 3 basic tools: `web_search`, `file_read`, `echo`
+- [ ] **Plan Mode** (read-only analysis) and **Build Mode** (full file ops) separation implemented from day one
 
 #### Key Tasks
 | Task | Description | Owner |
@@ -78,10 +79,12 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 
 #### Milestones
 - [ ] Deploy hierarchical SQLite schema (Episodic, Semantic, Emotional tables)
-- [ ] Implement dual-mode retrieval: fast embedding pass + deep reasoning escalation
+- [ ] Implement dual-mode retrieval: fast embedding pass (zero LLM cost) + deep reasoning escalation
 - [ ] BM25 + ChromaDB hybrid retrieval scoring ≥ 88.78% on HaluMem QA benchmark
-- [ ] Nightly "Dreaming" compaction pipeline running autonomously on schedule
+- [ ] HaluMem memory accuracy score ≥ 94.06%
+- [ ] Nightly "Dreaming" compaction pipeline: Compress → Link → Strengthen (3-stage biological model)
 - [ ] SOUL.md and USER.md auto-generation from extracted facts
+- [ ] **Standing Orders** system: persistent behavioral rules loaded at startup, auto-suggested by Dreaming pipeline
 
 #### Key Tasks
 | Task | Description |
@@ -157,11 +160,13 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 **Theme**: Connect Hydragent to the real world — 40+ channel adapters, cron-triggered proactive tasks, and voice I/O.
 
 #### Milestones
-- [ ] Deploy Telegram, Discord, WhatsApp, and Slack adapters
+- [ ] Deploy Telegram, Discord, WhatsApp, and Slack adapters (total 40+ channels)
 - [ ] Web chat UI (embedded widget, REST API + WebSocket)
 - [ ] Persistent cron daemon for proactive task triggers
 - [ ] Voice I/O: Whisper STT + Coqui TTS integration
 - [ ] IMAP/SMTP email adapter with OAuth brokering
+- [ ] **Work IQ**: always-on background intelligence layer that proactively flags schedule conflicts, surfaces relevant documents pre-meeting, anticipates needs from calendar + email context
+- [ ] Auth profile rotation with exponential backoff (1 min → 5 min → 25 min, capped at 1 hour)
 
 #### Key Tasks
 | Task | Description |
@@ -195,10 +200,12 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 
 #### Milestones
 - [ ] DAG task decomposition engine in Core Orchestrator
+- [ ] **Kimi-style swarm capacity**: up to 300 concurrent sub-agents, 4,000 coordinated steps per project
 - [ ] Spawn parallel subagents (Plan, Build, Explore, Scout, Review roles)
-- [ ] Model Council routing table with cost + latency scoring
+- [ ] **Model Council** routing table: 20+ models, cost + latency scoring, high-stakes 3-candidate vote
 - [ ] Hermes-style Kanban board with heartbeat, zombie detection, retry
 - [ ] Self-healing re-planner on tool execution errors
+- [ ] Inter-agent mailbox (Unix socket IPC + file-locking for shared artifacts)
 
 #### Key Tasks
 | Task | Description |
@@ -275,6 +282,7 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 - [ ] Gene Evolution Protocol for monitoring strategy optimization
 - [ ] Skill semantic search index for automatic routing
 - [ ] User-visible skill library management UI
+- [ ] **Self-maintained knowledge wiki**: auto-updated after each significant task; semantic search; live Mermaid architectural diagrams
 
 #### Key Tasks
 | Task | Description |
@@ -362,7 +370,7 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 | Documentation site | Full docs site (Docusaurus): quickstart, API reference, security guide |
 | GitHub Actions CI | Automated build, test, security scan, and edge binary cross-compile CI |
 | Hydra Hub registry | Community skill submission pipeline with automated security scanning |
-| Migration tooling | Import skills and memory from OpenClaw, Hermes, AnythingLLM |
+| Migration tooling | Import skills and memory from OpenClaw, Hermes, AnythingLLM, GoClaw |
 
 #### Success Criteria
 ```
@@ -381,14 +389,18 @@ Hydragent tracks performance across three measurement layers, inspired by the AW
 
 ### Layer 1: Model-Level Benchmarks
 
-| Benchmark | Domain | Target Score |
-|---|---|---|
-| MMLU | General knowledge | ≥ 85% |
-| GSM8K | Mathematical reasoning | ≥ 92% |
-| HellaSWAG | Commonsense reasoning | ≥ 90% |
-| HaluMem QA | Memory fidelity | ≥ 88.78% |
-| SWE-bench | Code/software engineering | ≥ 50% |
-| HumanEval | Code generation | ≥ 90% |
+| Benchmark | Domain | Target Score | Source |
+|---|---|---|---|
+| MMLU | General knowledge | ≥ 85% | Internal target |
+| GSM8K | Mathematical reasoning | ≥ 92% | Internal target |
+| HellaSWAG | Commonsense reasoning | ≥ 90% | Internal target |
+| HaluMem QA | Memory fidelity | ≥ 88.78% | QwenPaw ReMe baseline |
+| HaluMem memory accuracy | Memory accuracy | ≥ 94.06% | QwenPaw ReMe eval |
+| Locomo benchmark | Proactive memory | ≥ 92.09% | memU proactive memory |
+| SWE-bench | Code/software engineering | ≥ 50% | Internal target |
+| SWE-bench Pro | Advanced code tasks | ≥ 58.6% | Kimi K2.6 baseline |
+| HumanEval | Code generation | ≥ 90% | Internal target |
+| GAIA | Real-world task completion | ≥ 65% | Manus (vs GPT-4o 32%) |
 
 ### Layer 2: Component-Level Metrics
 

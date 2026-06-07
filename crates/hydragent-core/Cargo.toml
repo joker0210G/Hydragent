@@ -1,0 +1,29 @@
+[package]
+name    = "hydragent-core"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "hydragent"
+path = "src/main.rs"
+
+[dependencies]
+hydragent-types  = { path = "../hydragent-types" }
+hydragent-bus    = { path = "../hydragent-bus" }
+hydragent-model  = { path = "../hydragent-model" }
+hydragent-tools  = { path = "../hydragent-tools" }
+hydragent-memory = { path = "../hydragent-memory" }
+tokio            = { workspace = true }
+clap             = { workspace = true }
+tracing          = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow           = { workspace = true }
+dotenvy          = { workspace = true }
+config           = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+async-trait      = { workspace = true }
+chrono           = { workspace = true }
+
+
+

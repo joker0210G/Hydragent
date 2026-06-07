@@ -1,0 +1,41 @@
+# Rust build artifacts
+target/
+Cargo.lock
+
+# Python Virtual Environments
+.venv/
+venv/
+**/venv/
+**/.venv/
+
+# Python Cache and build files
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Zig Build artifacts and caches
+.zig-cache/
+zig-out/
+**/zig-cache/
+**/zig-out/
+
+# Local settings and environment credentials
+.env
+.env*.local
+
+# SQLite Database and local run directories
+data/
+db/
+
+# IDE files
+.vscode/
+.idea/
+*.rs.bk
+
+# OS-specific
+Thumbs.db
+.DS_Store

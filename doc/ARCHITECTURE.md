@@ -36,39 +36,50 @@ Hydragent synthesizes six architectural principles, each derived from a differen
 
 ## 2. Runtime Stack & Footprint
 
-### 2.1 Core Runtime: Zig Systems Binary
+### 2.1 Core Runtime: Rust + Zig + Python Hybrid
 
-The Hydragent core compiles to a **hyper-optimized Zig static binary** with the following targets:
+Hydragent uses a **language-per-concern** strategy agreed by the engineering team:
+
+| Layer | Language | Rationale |
+|---|---|---|
+| Core orchestrator, event bus, tool dispatcher, security vault | **Rust** | Memory safety, Tokio async, auditable `unsafe`, WASM targets, strong crate ecosystem |
+| Edge binary (RISC-V / ESP32-S3, optional) | **Zig** | ≤ 678 KB static binary, < 2 ms cold start, first-class cross-compile without extra toolchain |
+| Channel adapters, RAG pipelines, ML glue, eval harness | **Python** | Rich ML/LLM libraries, fast prototyping; never used in security-critical or latency-critical paths |
+
+**Binary targets** (Rust core):
 
 ```
-Binary targets:
-  hydragent-full    ~15 MB   (all features, cloud API + local models)
-  hydragent-server  ~5 MB    (headless server, no browser, cloud API)
-  hydragent-edge    ~678 KB  (Zig-native, local inference only, <1 MB RAM)
-  hydragent-mcu     ~150 KB  (ESP32-S3 / RISC-V bare-metal target)
+hydragent            ~15 MB   (full: cloud API + local Ollama, Rust release build)
+hydragent-server     ~5 MB    (headless server, no browser sandbox, Rust release build)
+hydragent-edge       ~678 KB  (Zig, RISC-V / ESP32-S3, local inference only, < 1 MB RAM)
+hydragent-mcu        ~150 KB  (Zig, ESP32-S3 bare-metal, on-device TinyLlama)
 
-Runtime footprint:
-  RAM (edge):       < 1 MB
-  RAM (server):     < 30 MB  
+Rust core runtime footprint:
+  RAM (server):     < 30 MB
   RAM (full):       < 100 MB
-  Startup latency:  < 2 ms  (edge binary, cold start)
-  Startup latency:  < 50 ms (full binary with Docker gateway)
+  Startup latency:  < 50 ms (Rust binary, cold start)
+
+Zig edge footprint:
+  RAM (edge):       < 1 MB
+  Startup latency:  < 2 ms (Zig binary, cold start)
 ```
 
 ### 2.2 Technology Stack by Layer
 
-| Layer | Primary Language | Key Dependencies |
+| Layer | Language | Key Dependencies |
 |---|---|---|
-| Core Orchestrator | Zig (0.13+) | Zig stdlib, libcurl, zlib |
-| Channel Gateway | Node.js (v22) or Zig FFI | ws, grammy, discord.js |
-| Memory Engine | Zig + SQLite | SQLite WAL, libsqlite3 |
-| Vector Store | Zig bindings + Python bridge | ChromaDB, FAISS, nomic-embed |
-| Tool Dispatcher | Zig | libcurl, Unix sockets |
-| Browser Bot | Node.js / TypeScript | Playwright, puppeteer-core |
-| Code Sandbox | Docker Engine API | Daytona/E2B-compatible |
-| Security Vault | Zig + libsodium | libsodium (XChaCha20, Argon2id) |
-| WASM Runtime | Zig + Wasmtime | Wasmtime C API |
-| gRPC Event Bus | Zig + protobuf-zig | protobuf-zig, HTTP/2 |
+| Core Orchestrator | **Rust** (tokio async) | `tokio`, `anyhow`, `tracing`, `clap` |
+| Event Bus | **Rust** | `tokio::net::UnixListener`, `serde_json` |
+| Channel Gateway (adapters) | **Python** | `asyncio`, `python-telegram-bot`, `discord.py`, `rich` |
+| Memory Engine | **Rust** + SQLite | `sqlx` (WAL mode), `serde` |
+| Vector Store | **Python** bridge | `chromadb`, `faiss`, `sentence-transformers` |
+| Tool Dispatcher | **Rust** | `reqwest`, `tokio`, Unix socket IPC |
+| Browser Bot | **Python** | `playwright`, async subprocess |
+| Code Sandbox | Docker Engine API | Daytona/E2B-compatible; managed from Rust via `bollard` |
+| Security Vault | **Rust** + `libsodium` | `sodiumoxide` (XChaCha20, Argon2id) |
+| WASM Runtime | **Rust** + Wasmtime | `wasmtime` crate (first-class Rust bindings) |
+| gRPC Event Bus (Phase 2+) | **Rust** | `tonic`, `prost` (protobuf) |
+| Edge Binary | **Zig** | Zig stdlib, llama.cpp C API, musl libc |
 
 ### 2.3 System Architecture Diagram
 
@@ -103,7 +114,7 @@ Runtime footprint:
 │  │  • Episodic     │  │              │  │  • Gene Evolution Protocol   │  │
 │  │    (SQLite)     │  │  • OpenRouter│  │  • Ed25519 skill signing     │  │
 │  │  • Semantic     │  │  • Ollama    │  └─────────────────────────────┘  │
-│  │    (ChromaDB)   │  │  • 19+ model │                                    │
+│  │    (ChromaDB)   │  │  • 20+ model │                                    │
 │  │  • Procedural   │  │    pool      │                                    │
 │  │    (Skills)     │  │  • Cost +    │                                    │
 │  │  • Emotional    │  │    latency   │                                    │
@@ -165,7 +176,7 @@ message IntentEvent {
 
 **Responsibility**: Reliable message delivery between gateway and orchestrator. Handles ordering, deduplication, backpressure, and session correlation.
 
-**Implementation**: A Zig-native HTTP/2 multiplexer with:
+**Implementation**: A Rust (Tokio async) HTTP/2 multiplexer with:
 - In-order message delivery per `session_id`
 - At-least-once delivery guarantees with idempotency keys
 - Priority queuing: `URGENT > NORMAL > BACKGROUND`
@@ -193,6 +204,8 @@ IF error detected:
 - Each node in the DAG: `{ task_id, description, deps[], assigned_agent_role, model_preference, tool_set }`
 - DAG is serialized to JSON and stored in session state; allows resumption after interruption
 - Topological sort determines execution order; independent nodes execute in parallel
+- **Swarm ceiling**: Up to 300 concurrent sub-agents, 4,000 coordinated steps per project *(Kimi K2.6 capacity target)*
+- **Plan Mode**: DAG is presented to the user for review before any Build-Mode execution begins; no file writes or tool calls in Plan Mode
 
 ### Layer 4: Memory Layer
 
