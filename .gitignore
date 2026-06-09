@@ -39,3 +39,8 @@ db/
 # OS-specific
 Thumbs.db
 .DS_Store
+
+# Local memory databases and vector storage
+**/*.bin
+**/vectors.bin
+

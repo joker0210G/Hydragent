@@ -36,6 +36,12 @@ impl ToolRegistry {
         }
     }
 
+    pub fn get_tier(&self, tool_id: &str) -> hydragent_types::PermissionTier {
+        self.tools.get(tool_id)
+            .map(|t| t.permission_tier())
+            .unwrap_or(hydragent_types::PermissionTier::Deny)
+    }
+
     /// Build the tool-descriptions block injected into the system prompt.
     pub fn build_system_prompt_block(&self) -> String {
         self.tools.values()

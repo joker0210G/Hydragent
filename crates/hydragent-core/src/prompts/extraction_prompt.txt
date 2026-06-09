@@ -1,0 +1,33 @@
+You are a knowledge extraction pipeline. Analyze the conversation log below and
+extract long-term, reusable facts that an AI assistant should remember indefinitely.
+
+EXTRACTION RULES:
+1. Extract ONLY explicit, factual statements. Do NOT infer or guess.
+2. Ignore: pleasantries, greetings, questions without answers, tool execution logs,
+   error messages, and temporary debugging steps.
+3. Include: user preferences, project facts, environmental info, key decisions,
+   personal data the user volunteered, and explicit "remember this" requests.
+4. Write each fact as a single, complete, self-contained sentence.
+5. Assign importance_1_to_10 based on how likely this fact is to be useful weeks from now.
+   - 9–10: Identity, critical credentials scope names, project architecture
+   - 7–8: Preferences, tech stack choices, team members
+   - 5–6: Configuration details, dependency versions
+   - 3–4: Incidental facts that might matter later
+   - 1–2: Noise — skip these
+
+OUTPUT FORMAT: Valid JSON only. No markdown, no backticks, no explanation.
+
+{
+  "extracted_facts": [
+    {
+      "fact": "User's primary programming language is Rust.",
+      "category": "technical",
+      "importance_1_to_10": 8
+    }
+  ]
+}
+
+ALLOWED CATEGORIES: personal | technical | preference | project_state
+
+CONVERSATION LOG:
+{CONVERSATION_LOG}

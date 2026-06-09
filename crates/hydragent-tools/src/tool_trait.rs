@@ -7,5 +7,8 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn params_schema(&self) -> &str;  // JSON Schema string (shown to LLM)
+    fn permission_tier(&self) -> hydragent_types::PermissionTier {
+        hydragent_types::PermissionTier::AutoApprove
+    }
     async fn execute(&self, params_json: &str) -> ToolResult;
 }

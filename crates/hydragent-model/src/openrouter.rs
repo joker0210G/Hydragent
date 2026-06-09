@@ -7,11 +7,14 @@ use tokio::time::{sleep, Duration};
 use tracing::{warn, error};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::RwLock;
 use async_trait::async_trait;
 use crate::model_trait::ModelProvider;
+use zeroize::Zeroize;
 
 pub struct OpenRouterClient {
     api_keys: Vec<String>,
+    key_valid: RwLock<Vec<bool>>,
     active_key_index: AtomicUsize,
     client: Client,
     base_url: String,
@@ -34,8 +37,41 @@ pub struct ChatMessage {
 
 impl OpenRouterClient {
     pub fn new(api_keys: Vec<String>) -> Self {
+        let mut expanded_keys = Vec::new();
+        let mut vault_secrets = None;
+
+        if let Ok(passphrase) = std::env::var("HYDRAGENT_VAULT_PASSPHRASE") {
+            let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+            let vault = hydragent_vault::Vault::new(vault_path);
+            if vault.exists() {
+                if let Ok(secrets) = vault.load(&passphrase) {
+                    vault_secrets = Some(secrets);
+                }
+            }
+        }
+
+        for key in api_keys {
+            if key.contains("{{") && key.contains("}}") {
+                if let Some(ref secrets) = vault_secrets {
+                    let injected = hydragent_vault::inject_str(&key, secrets);
+                    for sub_key in injected.split(',') {
+                        let trimmed = sub_key.trim().to_string();
+                        if !trimmed.is_empty() {
+                            expanded_keys.push(trimmed);
+                        }
+                    }
+                } else {
+                    expanded_keys.push(key);
+                }
+            } else {
+                expanded_keys.push(key);
+            }
+        }
+
+        let keys_len = expanded_keys.len();
         Self {
-            api_keys,
+            api_keys: expanded_keys,
+            key_valid: RwLock::new(vec![true; keys_len]),
             active_key_index: AtomicUsize::new(0),
             client: Client::builder()
                 .timeout(Duration::from_secs(10))
@@ -45,14 +81,31 @@ impl OpenRouterClient {
         }
     }
 
-
-    /// Retrieve the current active API key.
-    fn get_active_key(&self) -> Option<&String> {
+    /// Retrieve the current active API key string.
+    fn get_active_key(&self) -> Option<String> {
+        let valid_keys = self.key_valid.read().ok()?;
         if self.api_keys.is_empty() {
             return None;
         }
-        let index = self.active_key_index.load(Ordering::Relaxed);
-        Some(&self.api_keys[index % self.api_keys.len()])
+        let start_index = self.active_key_index.load(Ordering::Relaxed);
+        for i in 0..self.api_keys.len() {
+            let idx = (start_index + i) % self.api_keys.len();
+            if idx < valid_keys.len() && valid_keys[idx] {
+                return Some(self.api_keys[idx].clone());
+            }
+        }
+        None
+    }
+
+    fn mark_key_invalid(&self, key: &str) {
+        if let Some(idx) = self.api_keys.iter().position(|k| k == key) {
+            if let Ok(mut valid) = self.key_valid.write() {
+                if idx < valid.len() && valid[idx] {
+                    valid[idx] = false;
+                    warn!("Removing permanently invalid API key at index {} (returned 401 Unauthorized)", idx);
+                }
+            }
+        }
     }
 
     /// Increment active key index to rotate to the next key.
@@ -71,6 +124,31 @@ impl OpenRouterClient {
         request: &LLMRequest,
         tx: mpsc::Sender<String>,
     ) -> Result<String> {
+        let mut request = request.clone();
+        let mut injected_scopes = Vec::new();
+
+        if let Ok(passphrase) = std::env::var("HYDRAGENT_VAULT_PASSPHRASE") {
+            let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+            let vault = hydragent_vault::Vault::new(vault_path);
+            if vault.exists() {
+                if let Ok(secrets) = vault.load(&passphrase) {
+                    let injector = hydragent_vault::KeyInjector::new(secrets);
+                    for msg in &mut request.messages {
+                        let (injected, scopes) = injector.inject_message(&msg.role, &msg.content);
+                        msg.content = injected.expose_secret().to_string();
+                        injected_scopes.extend(scopes);
+                    }
+                }
+            }
+        }
+
+        let json_body = serde_json::to_string(&request)?;
+        let mut tainted_body = hydragent_vault::TaintedString::new(json_body);
+
+        if !injected_scopes.is_empty() {
+            tracing::info!(scopes = ?injected_scopes, "Performing key injection");
+        }
+
         let api_key = self.get_active_key()
             .context("No OpenRouter API keys available in configuration")?;
 
@@ -79,10 +157,17 @@ impl OpenRouterClient {
             .bearer_auth(api_key)
             .header("HTTP-Referer", "https://github.com/joker0210G/Hydragent")
             .header("X-Title", "Hydragent")
-            .json(request)
+            .header("Content-Type", "application/json")
+            .body(tainted_body.expose_secret().to_string())
             .send()
             .await
             .context("OpenRouter request failed")?;
+
+        // Zeroize sensitive materials immediately after sending request
+        tainted_body.zeroize();
+        for msg in &mut request.messages {
+            msg.content.zeroize();
+        }
 
         // If rate limited, throw rate limit error so the caller retry loop rotates the key
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -142,28 +227,47 @@ impl OpenRouterClient {
         &self,
         request: &LLMRequest,
         tx: mpsc::Sender<String>,
-        max_retries: u8,
+        _max_retries: u8,
     ) -> Result<String> {
         let mut attempt = 0;
+        let total_valid_keys = {
+            if let Ok(valid) = self.key_valid.read() {
+                valid.iter().filter(|&&v| v).count()
+            } else {
+                1
+            }
+        };
+        let max_attempts = std::cmp::max(2, total_valid_keys);
+
         loop {
             match self.chat_stream_internal(request, tx.clone()).await {
                 Ok(content) => return Ok(content),
                 Err(e) => {
                     attempt += 1;
-                    if attempt >= max_retries {
-                        error!("Max retries ({}) exceeded for OpenRouter: {}", max_retries, e);
+                    if attempt >= max_attempts {
+                        error!("Max attempts ({}) exceeded on this model for OpenRouter. Swapping model. Error: {}", max_attempts, e);
                         return Err(e);
                     }
 
                     // Rotate the API key if rate limited or if we suspect credential issues
                     let err_msg = e.to_string();
-                    if err_msg.contains("429") || err_msg.contains("rate limit") || err_msg.contains("credits") || err_msg.contains("401") {
-                        self.rotate_key();
+                    if err_msg.contains("401") || err_msg.contains("403") || err_msg.contains("Unauthorized") || err_msg.contains("Forbidden") {
+                        if let Some(active_key) = self.get_active_key() {
+                            self.mark_key_invalid(&active_key);
+                        }
                     }
+                    
+                    self.rotate_key();
 
-                    let delay = Duration::from_millis(100u64 << attempt);
-                    warn!(attempt, delay_ms = delay.as_millis(), error = %e, "Retrying request...");
-                    sleep(delay).await;
+                    // Only sleep/delay if we have exhausted all keys and are starting to reuse keys, 
+                    // or if we only have 1 key.
+                    if total_valid_keys <= 1 || attempt >= total_valid_keys {
+                        let delay = Duration::from_millis(100u64 << attempt);
+                        warn!(attempt, delay_ms = delay.as_millis(), error = %e, "Retrying same key(s) with backoff...");
+                        sleep(delay).await;
+                    } else {
+                        warn!(attempt, error = %e, "Rotating to next API key immediately...");
+                    }
                 }
             }
         }

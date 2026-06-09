@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Library Knowledge Graph</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: #0f0c1b;
+            color: #ffffff;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+        #canvas {
+            width: 100%;
+            height: 100%;
+        }
+        .node {
+            stroke: #fff;
+            stroke-width: 1.5px;
+            cursor: pointer;
+            transition: r 0.2s, stroke-width 0.2s;
+        }
+        .node:hover {
+            stroke-width: 3px;
+        }
+        .link {
+            stroke: #5f5f7a;
+            stroke-opacity: 0.6;
+            stroke-width: 1.5px;
+            fill: none;
+        }
+        .edge-label {
+            fill: #8b8ba9;
+            font-size: 10px;
+            pointer-events: none;
+        }
+        .tooltip {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(23, 19, 44, 0.9);
+            border: 1px solid rgba(138, 43, 226, 0.4);
+            border-radius: 12px;
+            padding: 15px;
+            max-width: 320px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(10px);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .tooltip-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #c5a3ff;
+        }
+        .tooltip-type {
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: #ff7ebb;
+            margin-bottom: 10px;
+        }
+        .tooltip-props {
+            font-size: 12px;
+            color: #a0a0c0;
+            line-height: 1.4;
+        }
+        .legend {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(23, 19, 44, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            font-size: 12px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        .btn-refresh {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: #8a2be2;
+            border: none;
+            border-radius: 6px;
+            color: white;
+            padding: 8px 12px;
+            font-size: 12px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn-refresh:hover {
+            background: #a34dfb;
+        }
+    </style>
+</head>
+<body>
+    <button class="btn-refresh" onclick="location.reload()">🔄 Refresh Graph</button>
+    <div class="legend">
+        <div class="legend-item"><div class="legend-color" style="background: #9d4edd;"></div> Shelf</div>
+        <div class="legend-item"><div class="legend-color" style="background: #4cc9f0;"></div> Book</div>
+        <div class="legend-item"><div class="legend-color" style="background: #4caf50;"></div> Page</div>
+    </div>
+    
+    <div id="tooltip" class="tooltip">
+        <div id="tooltip-title" class="tooltip-title">Node Title</div>
+        <div id="tooltip-type" class="tooltip-type">Shelf</div>
+        <div id="tooltip-props" class="tooltip-props">Properties</div>
+    </div>
+
+    <svg id="canvas"></svg>
+
+    <script>
+        const graphData = {
+            "nodes": [{"id": "46210294-0df1-4e60-969f-59cdd04ddaf0", "type": "shelf", "label": "Testshelf", "properties": "{\"created_at\":1781029571288}"}, {"id": "3b86fa9f-ed2d-4d12-846d-6f5744c2e3f9", "type": "book", "label": "Testbook", "properties": "{\"created_at\":1781029602663}"}, {"id": "telegram-room-882452cf-0890-4632-b3cc-e3fb047ed062", "type": "page", "label": "General Chat", "properties": {"chat_id": "1368132725", "created_at": 1781031212296}}, {"id": "e7a9f578-22e7-4e8a-853b-8d54c76016c8", "type": "page", "label": "Testpage1", "properties": "{\"created_at\": 1781031218673, \"chat_id\": \"1368132725\"}"}, {"id": "e4b3e22d-bf80-4538-90e7-6cc8ee503a8b", "type": "page", "label": "Testpage2", "properties": "{\"created_at\": 1781031365866, \"chat_id\": \"1368132725\"}"}],
+            "links": [{"id": "440261b5-ab2f-490f-ae1e-5e2f65caaa8e", "source": "46210294-0df1-4e60-969f-59cdd04ddaf0", "target": "3b86fa9f-ed2d-4d12-846d-6f5744c2e3f9", "relation": "belongs_to", "weight": 1.0}, {"id": "c757d6c7-bf10-47d3-be2a-e340939c877c", "source": "3b86fa9f-ed2d-4d12-846d-6f5744c2e3f9", "target": "46210294-0df1-4e60-969f-59cdd04ddaf0", "relation": "sits_on", "weight": 1.0}, {"id": "aa6868be-9612-421d-a2eb-ffd11dcf0715", "source": "e7a9f578-22e7-4e8a-853b-8d54c76016c8", "target": "3b86fa9f-ed2d-4d12-846d-6f5744c2e3f9", "relation": "belongs_to", "weight": 1.0}, {"id": "6e7e2231-e2f3-435e-bb0b-0916ff687005", "source": "e4b3e22d-bf80-4538-90e7-6cc8ee503a8b", "target": "3b86fa9f-ed2d-4d12-846d-6f5744c2e3f9", "relation": "belongs_to", "weight": 1.0}]
+        };
+
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        const svg = d3.select("#canvas")
+            .attr("width", width)
+            .attr("height", height);
+
+        // Zoom & Pan group
+        const g = svg.append("g");
+        svg.call(d3.zoom().on("zoom", (event) => {
+            g.attr("transform", event.transform);
+        }));
+
+        // Color mapper
+        const colorMap = {
+            "shelf": "#9d4edd",
+            "book": "#4cc9f0",
+            "page": "#4caf50"
+        };
+
+        const sizeMap = {
+            "shelf": 22,
+            "book": 16,
+            "page": 10
+        };
+
+        // Force simulation
+        const simulation = d3.forceSimulation(graphData.nodes)
+            .force("link", d3.forceLink(graphData.links).id(d => d.id).distance(100))
+            .force("charge", d3.forceManyBody().strength(-300))
+            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("collision", d3.forceCollide().radius(d => sizeMap[d.type] + 5));
+
+        // Draw links
+        const link = g.append("g")
+            .selectAll("line")
+            .data(graphData.links)
+            .enter().append("line")
+            .attr("class", "link");
+
+        // Draw nodes
+        const node = g.append("g")
+            .selectAll("circle")
+            .data(graphData.nodes)
+            .enter().append("circle")
+            .attr("class", "node")
+            .attr("r", d => sizeMap[d.type])
+            .attr("fill", d => colorMap[d.type] || "#ffffff")
+            .call(d3.drag()
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended))
+            .on("mouseover", showTooltip)
+            .on("mouseout", hideTooltip);
+
+        // Text labels for nodes
+        const label = g.append("g")
+            .selectAll("text")
+            .data(graphData.nodes)
+            .enter().append("text")
+            .attr("dx", d => sizeMap[d.type] + 4)
+            .attr("dy", ".35em")
+            .attr("fill", "#ffffff")
+            .style("font-size", "11px")
+            .style("pointer-events", "none")
+            .text(d => d.label);
+
+        simulation.on("tick", () => {
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+
+            node
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y);
+
+            label
+                .attr("x", d => d.x)
+                .attr("y", d => d.y);
+        });
+
+        function showTooltip(event, d) {
+            const tooltip = document.getElementById("tooltip");
+            document.getElementById("tooltip-title").innerText = d.label;
+            document.getElementById("tooltip-type").innerText = d.type;
+            
+            let propStr = `ID: ${d.id}<br>`;
+            if (d.properties) {
+                for (const [k, v] of Object.entries(d.properties)) {
+                    propStr += `${k}: ${JSON.stringify(v)}<br>`;
+                }
+            }
+            document.getElementById("tooltip-props").innerHTML = propStr;
+            tooltip.style.opacity = 1;
+        }
+
+        function hideTooltip() {
+            document.getElementById("tooltip").style.opacity = 0;
+        }
+
+        function dragstarted(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }
+
+        function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+        }
+
+        function dragended(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }
+    </script>
+</body>
+</html>

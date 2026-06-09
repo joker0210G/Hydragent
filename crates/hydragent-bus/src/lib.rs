@@ -82,10 +82,12 @@ impl EventBus {
                     let router_clone = router.clone();
                     let tx_clone = tx.clone();
 
-                    let response = router_clone.route(request, tx_clone).await;
-                    if let Ok(resp_str) = serde_json::to_string(&response) {
-                        let _ = tx.send(resp_str).await;
-                    }
+                    tokio::spawn(async move {
+                        let response = router_clone.route(request, tx_clone.clone()).await;
+                        if let Ok(resp_str) = serde_json::to_string(&response) {
+                            let _ = tx_clone.send(resp_str).await;
+                        }
+                    });
                 }
 
                 // Drop sender to signal end of stream

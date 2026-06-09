@@ -1,0 +1,14 @@
+[package]
+name = "hydragent-sandbox"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hydragent-types = { path = "../hydragent-types" }
+wasmtime = "22.0"
+wasmtime-wasi = "22.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

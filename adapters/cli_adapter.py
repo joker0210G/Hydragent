@@ -68,20 +68,42 @@ async def main():
         streamed_tokens = []
 
         def on_token(token):
-            print(token, end="", flush=True)
             streamed_tokens.append(token)
 
+        def on_status(status):
+            console.print(status, end="", style="italic dim")
+
+        async def on_permission(params):
+            console.print(f"\n[bold yellow][!] Approval Required[/bold yellow]")
+            console.print(f"Tool: [cyan]{params['tool_id']}[/cyan]")
+            console.print(f"Summary: [dim]{params['params_summary']}[/dim]")
+            try:
+                decision = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: Prompt.ask("Allow action?", choices=["y", "n"], default="n")
+                )
+                approved = (decision.lower() == "y")
+            except (EOFError, KeyboardInterrupt):
+                approved = False
+            if approved:
+                console.print("[green]✓ Action Approved.[/green]")
+            else:
+                console.print("[red]✗ Action Denied.[/red]")
+            return approved
+
         try:
-            # send_intent sends the message and triggers on_token for stream tokens
-            final_content = await bus.send_intent(event, token_callback=on_token)
+            # send_intent sends the message and triggers callbacks
+            final_content = await bus.send_intent(
+                event,
+                token_callback=on_token,
+                status_callback=on_status,
+                permission_callback=on_permission
+            )
             
             # Print a newline after streaming is finished
             print()
             
-            # If the streamed tokens didn't output anything, print the final content
-            if not streamed_tokens:
-                console.print(Markdown(final_content))
-                
+            # Print the final content beautifully rendered as Markdown
+            console.print(Markdown(final_content))
             console.print()
         except Exception as e:
             console.print(f"\n[bold red]✗ Transaction error:[/bold red] {e}\n")

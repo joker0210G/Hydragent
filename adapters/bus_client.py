@@ -18,7 +18,7 @@ class BusClient:
         """Establish connection to the Rust Event Bus TCP server."""
         self.reader, self.writer = await asyncio.open_connection("127.0.0.1", BUS_PORT)
 
-    async def send_intent(self, event: dict, token_callback=None) -> str:
+    async def send_intent(self, event: dict, token_callback=None, status_callback=None, permission_callback=None) -> str:
         """Send an IntentEvent and get back the full AgentResponse content."""
         request = {
             "jsonrpc": "2.0",
@@ -36,18 +36,38 @@ class BusClient:
                 break
             msg = json.loads(line.decode().strip())
             
-            # Handle streamed token notifications
+            # Handle streamed token/status/permission notifications
             if msg.get("method") == "response.token":
                 token = msg["params"]["token"]
                 tokens.append(token)
                 if token_callback:
                     token_callback(token)
+            elif msg.get("method") == "response.status":
+                status = msg["params"]["status"]
+                if status_callback:
+                    status_callback(status)
+            elif msg.get("method") == "response.permission_request":
+                params = msg["params"]
+                if permission_callback:
+                    approved = await permission_callback(params)
+                    resp = {
+                        "jsonrpc": "2.0",
+                        "method": "permission.respond",
+                        "params": {
+                            "request_id": params["request_id"],
+                            "approved": approved
+                        },
+                        "id": str(uuid.uuid4())
+                    }
+                    self.writer.write((json.dumps(resp) + "\n").encode())
+                    await self.writer.drain()
             elif msg.get("method") == "response.complete":
                 # Streaming completed, wait for final response payload
                 pass
             elif "result" in msg:
-                # The final response containing our complete AgentResponse struct
-                return msg["result"]["content"]
+                if isinstance(msg["result"], dict) and "content" in msg["result"]:
+                    # The final response containing our complete AgentResponse struct
+                    return msg["result"]["content"]
             elif "error" in msg:
                 raise Exception(f"Bus error: {msg['error']['message']}")
                 

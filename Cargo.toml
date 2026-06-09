@@ -7,6 +7,10 @@ members = [
     "crates/hydragent-model",
     "crates/hydragent-tools",
     "crates/hydragent-memory",
+    "crates/hydragent-embed",
+    "crates/hydragent-vault",
+    "crates/hydragent-sandbox",
+    "crates/hydragent-gateway",
 ]
 
 [workspace.dependencies]

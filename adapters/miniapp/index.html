@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Hydragent Dashboard</title>
+    <!-- Telegram WebApp JS SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="glass-container">
+        <!-- Header -->
+        <header>
+            <div class="header-logo">
+                <span class="logo-emoji">🐉</span>
+                <div class="logo-text">
+                    <h1>Hydragent</h1>
+                    <span class="sub-status"><span class="status-pulse"></span>Active Session</span>
+                </div>
+            </div>
+            <div class="active-room-display">
+                <span id="header-active-room">General Chat</span>
+            </div>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <nav class="tabs-nav">
+            <button class="tab-btn active" onclick="switchTab('library')">📖 Library</button>
+            <button class="tab-btn" onclick="switchTab('memories')">🧠 Memory</button>
+            <button class="tab-btn" onclick="switchTab('graph')">🕸️ Graph Map</button>
+            <button class="tab-btn" onclick="switchTab('logs')">⚙️ Console</button>
+        </nav>
+
+        <!-- Content Area -->
+        <main class="content-area">
+            <!-- Library Tab -->
+            <section id="library-tab" class="tab-content active">
+                <div class="section-title">
+                    <h2>Knowledge Library</h2>
+                    <p>Organize your knowledge base non-linearly using Shelves, Books, and Pages.</p>
+                </div>
+                
+                <!-- Shelves Section -->
+                <div class="library-section shelf-theme">
+                    <h3>📚 Shelves (Genres & Categories)</h3>
+                    <div id="shelves-list" class="nodes-list-container">
+                        <div class="loader">Loading shelves...</div>
+                    </div>
+                    <div class="input-group">
+                        <input type="text" id="new-shelf-title" placeholder="New Shelf label...">
+                        <button onclick="createNode('shelf')">Add</button>
+                    </div>
+                </div>
+
+                <!-- Books Section -->
+                <div class="library-section book-theme">
+                    <h3>📘 Books (Projects & Contexts)</h3>
+                    <div id="books-list" class="nodes-list-container">
+                        <div class="loader">Loading books...</div>
+                    </div>
+                    <div class="input-group">
+                        <input type="text" id="new-book-title" placeholder="New Book label...">
+                        <button onclick="createNode('book')">Add</button>
+                    </div>
+                </div>
+
+                <!-- Pages Section -->
+                <div class="library-section page-theme">
+                    <h3>📄 Pages (Sessions & Threads)</h3>
+                    <div id="pages-list" class="nodes-list-container">
+                        <div class="loader">Loading pages...</div>
+                    </div>
+                    <div class="input-group">
+                        <input type="text" id="new-page-title" placeholder="New Page label...">
+                        <button onclick="createNode('page')">Add</button>
+                    </div>
+                </div>
+
+                <!-- Guided Link/Connect Section -->
+                <div class="form-card link-library-card">
+                    <h3>🔗 Connect Library Items</h3>
+                    <p style="font-size: 12px; color: var(--hint-color); margin-bottom: 12px;">Build your library graph step-by-step. Select a connection type first:</p>
+                    
+                    <div class="link-type-selector">
+                        <button class="link-type-btn active" id="btn-link-p2b" onclick="setLinkType('page_to_book')">📄 Page ➔ 📘 Book</button>
+                        <button class="link-type-btn" id="btn-link-b2s" onclick="setLinkType('book_to_shelf')">📘 Book ➔ 📚 Shelf</button>
+                        <button class="link-type-btn" id="btn-link-s2s" onclick="setLinkType('shelf_to_shelf')">📚 Shelf ➔ 📚 Shelf</button>
+                    </div>
+
+                    <div class="interactive-linker-flow">
+                        <div class="flow-step">
+                            <label for="link-source">1. Select Source Item</label>
+                            <select id="link-source" class="select-custom"><option>Select Source...</option></select>
+                        </div>
+                        
+                        <div class="flow-relationship-display">
+                            <span class="relation-arrow">⬇️</span>
+                            <span class="relation-badge" id="link-relation-label">belongs_to</span>
+                        </div>
+                        
+                        <div class="flow-step">
+                            <label for="link-target">2. Select Target Destination</label>
+                            <select id="link-target" class="select-custom"><option>Select Target...</option></select>
+                        </div>
+                        
+                        <button onclick="linkNodes()" class="btn-link-submit">Establish Connection 🔗</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Memories Tab -->
+            <section id="memories-tab" class="tab-content">
+                <div class="section-title">
+                    <h2>Agent Long-term Memory</h2>
+                    <p>Facts and knowledge Hydragent has learned about you.</p>
+                </div>
+
+                <div class="search-bar-container">
+                    <input type="text" id="memory-search" oninput="filterMemories()" placeholder="🔍 Search memory facts...">
+                </div>
+
+                <div class="memories-list-container" id="memories-list">
+                    <!-- Dynamic List of Memories -->
+                    <div class="loader">Loading memory database...</div>
+                </div>
+
+                <div class="danger-zone">
+                    <button class="btn-danger" onclick="confirmClearAllMemories()">⚠️ Clear All Memories</button>
+                </div>
+            </section>
+
+            <!-- Graph Tab -->
+            <section id="graph-tab" class="tab-content" style="height: 550px; padding: 0;">
+                <iframe src="graph.html" style="width: 100%; height: 100%; border: none; border-radius: 12px; background: #0f0c1b;"></iframe>
+            </section>
+
+            <!-- Logs/Console Tab -->
+            <section id="logs-tab" class="tab-content">
+                <div class="section-title">
+                    <h2>ReAct Reasoning Logs</h2>
+                    <p>Real-time status logs of the agent's reasoning loop.</p>
+                </div>
+                <div class="console-box" id="console-logs">
+                    <div class="log-line system">[System] Listening for incoming reasoning loops...</div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Modal for renaming -->
+    <div id="rename-modal" class="modal">
+        <div class="modal-content glass-card">
+            <h3>✏️ Rename Item</h3>
+            <input type="text" id="rename-item-input">
+            <input type="hidden" id="rename-item-id">
+            <div class="modal-actions">
+                <button class="btn-secondary" onclick="closeRenameModal()">Cancel</button>
+                <button onclick="submitRenameItem()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Autocomplete Popup -->
+    <div id="autocomplete-popup" class="autocomplete-popup"></div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

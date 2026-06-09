@@ -12,4 +12,6 @@ reqwest = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+hydragent-vault = { path = "../hydragent-vault" }
+zeroize = { version = "1.7", features = ["derive"] }
 

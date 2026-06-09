@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub max_react_steps: u8,
     pub bus_port: u16,
     pub openrouter_api_keys: String,
+    pub enable_dreaming: bool,
+    pub dreaming_interval_sec: u64,
 }
 
 impl AppConfig {
@@ -28,6 +30,8 @@ impl AppConfig {
             .set_default("max_react_steps", 10_u64)? // config crate expects integer types as u64/i64 for defaults
             .set_default("bus_port", 5000_u64)?
             .set_default("openrouter_api_keys", "")?
+            .set_default("enable_dreaming", true)?
+            .set_default("dreaming_interval_sec", 60_u64)?
 
 
             // Add environment overrides

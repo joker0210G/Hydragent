@@ -68,7 +68,7 @@ pub struct ToolCall {
     pub tier: PermissionTier,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionTier {
     #[default]
@@ -87,7 +87,7 @@ pub struct ToolResult {
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolStatus {
     Success,
@@ -224,4 +224,58 @@ mod tests {
         assert_eq!(deserialized.execution_ms, 120);
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryDocument {
+    pub id: String,
+    pub content: String,
+    pub timestamp: i64,
+    pub importance: i64,
+    pub rrf_score: f64,
+}
+
+/// Emitted by the orchestrator on the bus when a `Prompt` tier action is requested.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionRequest {
+    pub request_id: String,     // UUID
+    pub session_id: String,
+    pub tool_id: String,
+    pub params_summary: String, // Human-readable description of the action
+    pub tier: PermissionTier,
+    pub expires_at_ms: i64,     // Timestamp after which auto-deny triggers
+}
+
+/// Response from the channel adapter (user decision).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionResponse {
+    pub request_id: String,
+    pub approved: bool,
+}
+
+/// What a channel can do — not all adapters support all capabilities.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelCapabilities {
+    /// Can deliver token-by-token streaming (e.g., edit-in-place)
+    pub streaming: bool,
+    /// Can receive file/image attachments
+    pub file_attachments: bool,
+    /// Can render Markdown formatting
+    pub markdown: bool,
+    /// Supports buttons/interactive elements
+    pub interactive: bool,
+    /// Maximum message length in characters (platform-enforced)
+    pub max_message_len: usize,
+}
+
+/// A proactive message pushed from agent to user (agent-initiated, not response to query).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushMessage {
+    pub channel_id: String,       // e.g., "telegram:123456789"
+    pub session_id: String,
+    pub content: String,
+    pub markdown: bool,
+    pub metadata: HashMap<String, String>,
+}
+
+
 

@@ -13,6 +13,10 @@ hydragent-bus    = { path = "../hydragent-bus" }
 hydragent-model  = { path = "../hydragent-model" }
 hydragent-tools  = { path = "../hydragent-tools" }
 hydragent-memory = { path = "../hydragent-memory" }
+hydragent-embed  = { path = "../hydragent-embed" }
+hydragent-vault  = { path = "../hydragent-vault" }
+hydragent-sandbox = { path = "../hydragent-sandbox" }
+hydragent-gateway = { path = "../hydragent-gateway" }
 tokio            = { workspace = true }
 clap             = { workspace = true }
 tracing          = { workspace = true }
@@ -24,6 +28,10 @@ serde            = { workspace = true }
 serde_json       = { workspace = true }
 async-trait      = { workspace = true }
 chrono           = { workspace = true }
+uuid             = { workspace = true }
+sqlx             = { workspace = true }
+rpassword        = "7.3"
+
 
 
 
