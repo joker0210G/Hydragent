@@ -21,7 +21,7 @@ struct MemoryStoreParams {
     content: String,
     importance: Option<i64>,
     tags: Option<Vec<String>>,
-    session_id: Option<String>,
+    page_id: Option<String>,
 }
 
 #[async_trait]
@@ -53,9 +53,9 @@ impl Tool for MemoryStoreTool {
                     "items": { "type": "string" },
                     "description": "Topic tags for organizing this memory (e.g. ['preference', 'user_info'])."
                 },
-                "session_id": {
+                "page_id": {
                     "type": "string",
-                    "description": "Optional session identifier to scope this memory."
+                    "description": "Optional Page identifier to scope this memory."
                 }
             },
             "required": ["content"]
@@ -82,9 +82,9 @@ impl Tool for MemoryStoreTool {
         let memory_id = uuid::Uuid::new_v4().to_string();
         let importance = params.importance.unwrap_or(1);
         let tags = params.tags.unwrap_or_default();
-        let session_id = params.session_id.as_deref();
+        let page_id = params.page_id.as_deref();
 
-        match self.store.insert_memory(&memory_id, session_id, &params.content, importance, &tags).await {
+        match self.store.insert_memory(&memory_id, page_id, &params.content, importance, &tags).await {
             Ok(_) => ToolResult {
                 call_id,
                 output_json: json!({

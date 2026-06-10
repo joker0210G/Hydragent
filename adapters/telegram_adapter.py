@@ -49,25 +49,41 @@ telegram_app = None
 ACTIVE_PAGES_FILE = "data/telegram_active_pages.json"
 DB_PATH = "data/sessions.db"
 
-class RoomManager:
-    def __init__(self):
-        self.active_room = {}  # chat_id -> active_room_id
-        self.load_active_rooms()
-        self.migrate_old_rooms()
+def escape_markdown(text: str) -> str:
+    """Escapes special characters for Telegram legacy Markdown parse mode."""
+    if not isinstance(text, str):
+        text = str(text)
+    # Characters to escape: \, *, _, `, [
+    return text.replace("\\", "\\\\").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`").replace("[", "\\[")
 
-    def load_active_rooms(self):
+class PageManager:
+    def __init__(self):
+        self.active_page = {}  # chat_id -> active_page_id
+        # Ensure user_insights table exists
+        self._query_db(
+            "CREATE TABLE IF NOT EXISTS user_insights ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  page_id TEXT NOT NULL,"
+            "  insight TEXT NOT NULL,"
+            "  timestamp INTEGER NOT NULL"
+            ")"
+        )
+        self.load_active_pages()
+        self.migrate_old_pages()
+
+    def load_active_pages(self):
         if os.path.exists(ACTIVE_PAGES_FILE):
             try:
                 with open(ACTIVE_PAGES_FILE, "r") as f:
-                    self.active_room = json.load(f)
+                    self.active_page = json.load(f)
             except Exception as e:
                 logger.error(f"Failed to load active pages file: {e}")
 
-    def save_active_rooms(self):
+    def save_active_pages(self):
         os.makedirs(os.path.dirname(ACTIVE_PAGES_FILE), exist_ok=True)
         try:
             with open(ACTIVE_PAGES_FILE, "w") as f:
-                json.dump(self.active_room, f, indent=2)
+                json.dump(self.active_page, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save active pages file: {e}")
 
@@ -75,20 +91,21 @@ class RoomManager:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         conn = sqlite3.connect(DB_PATH)
         try:
+            conn.execute("PRAGMA foreign_keys = ON")
             cursor = conn.cursor()
             cursor.execute(query, params)
             if fetch:
                 return cursor.fetchall()
             conn.commit()
         except Exception as e:
-            logger.error(f"RoomManager DB error: {e}")
+            logger.error(f"PageManager DB error: {e}")
             if fetch:
                 return []
         finally:
             conn.close()
         return None
 
-    def migrate_old_rooms(self):
+    def migrate_old_pages(self):
         old_rooms_file = "data/telegram_rooms.json"
         if os.path.exists(old_rooms_file):
             try:
@@ -109,9 +126,9 @@ class RoomManager:
                             )
                 
                 for chat_id_str, active_id in active.items():
-                    if chat_id_str not in self.active_room:
-                        self.active_room[chat_id_str] = active_id
-                self.save_active_rooms()
+                    if chat_id_str not in self.active_page:
+                        self.active_page[chat_id_str] = active_id
+                self.save_active_pages()
                 
                 try:
                     os.rename(old_rooms_file, "data/telegram_rooms_migrated.json")
@@ -121,11 +138,11 @@ class RoomManager:
             except Exception as e:
                 logger.error(f"Error migrating old rooms: {e}")
 
-    def get_rooms(self, chat_id):
+    def get_pages(self, chat_id):
         chat_id_str = str(chat_id)
         rows = self._query_db("SELECT node_id, label, properties FROM nodes WHERE type = 'page'", fetch=True)
         
-        rooms = []
+        pages = []
         for node_id, label, props_str in rows:
             chat_match = True
             if props_str:
@@ -136,86 +153,98 @@ class RoomManager:
                 except Exception:
                     pass
             if chat_match:
-                rooms.append({"id": node_id, "title": label, "label": label})
+                pages.append({"id": node_id, "title": label, "label": label})
                 
-        if not rooms:
-            room_uuid = f"telegram-room-{uuid.uuid4()}"
+        if not pages:
+            page_uuid = f"telegram-room-{uuid.uuid4()}"
             self._query_db(
                 "INSERT INTO nodes (node_id, type, label, properties) VALUES (?, 'page', ?, ?)",
-                (room_uuid, "General Chat", json.dumps({"chat_id": chat_id_str, "created_at": int(time.time() * 1000)}))
+                (page_uuid, "General Chat", json.dumps({"chat_id": chat_id_str, "created_at": int(time.time() * 1000)}))
             )
-            rooms = [{"id": room_uuid, "title": "General Chat", "label": "General Chat"}]
-            self.active_room[chat_id_str] = room_uuid
-            self.save_active_rooms()
+            pages = [{"id": page_uuid, "title": "General Chat", "label": "General Chat"}]
+            self.active_page[chat_id_str] = page_uuid
+            self.save_active_pages()
             try:
                 generate_graph()
             except Exception:
                 pass
                 
-        if chat_id_str not in self.active_room or not any(r["id"] == self.active_room[chat_id_str] for r in rooms):
-            self.active_room[chat_id_str] = rooms[0]["id"]
-            self.save_active_rooms()
+        if chat_id_str not in self.active_page or not any(p["id"] == self.active_page[chat_id_str] for p in pages):
+            self.active_page[chat_id_str] = pages[0]["id"]
+            self.save_active_pages()
             
-        return rooms
+        return pages
 
-    def create_room(self, chat_id, title="New Chat"):
+    def create_page(self, chat_id, title="New Chat"):
         chat_id_str = str(chat_id)
-        room_uuid = f"telegram-room-{uuid.uuid4()}"
+        page_uuid = f"telegram-room-{uuid.uuid4()}"
         self._query_db(
             "INSERT INTO nodes (node_id, type, label, properties) VALUES (?, 'page', ?, ?)",
-            (room_uuid, title, json.dumps({"chat_id": chat_id_str, "created_at": int(time.time() * 1000)}))
+            (page_uuid, title, json.dumps({"chat_id": chat_id_str, "created_at": int(time.time() * 1000)}))
         )
-        self.active_room[chat_id_str] = room_uuid
-        self.save_active_rooms()
+        self.active_page[chat_id_str] = page_uuid
+        self.save_active_pages()
         try:
             generate_graph()
         except Exception as e:
             logger.error(f"Failed to generate graph: {e}")
-        return room_uuid
+        return page_uuid
 
-    def get_active_room_id(self, chat_id):
+    def get_active_page_id(self, chat_id):
         chat_id_str = str(chat_id)
-        self.get_rooms(chat_id)
-        return self.active_room[chat_id_str]
+        self.get_pages(chat_id)
+        return self.active_page[chat_id_str]
 
-    def get_active_room_title(self, chat_id):
-        rooms = self.get_rooms(chat_id)
-        active_id = self.get_active_room_id(chat_id)
-        for r in rooms:
-            if r["id"] == active_id:
-                return r["title"]
-        return "Unknown Room"
+    def get_active_page_title(self, chat_id):
+        pages = self.get_pages(chat_id)
+        active_id = self.get_active_page_id(chat_id)
+        for p in pages:
+            if p["id"] == active_id:
+                return p["title"]
+        return "Unknown Page"
 
-    def set_active_room(self, chat_id, room_uuid):
+    def set_active_page(self, chat_id, page_uuid):
         chat_id_str = str(chat_id)
-        self.active_room[chat_id_str] = room_uuid
-        self.save_active_rooms()
+        self.active_page[chat_id_str] = page_uuid
+        self.save_active_pages()
 
-    def rename_room(self, chat_id, room_uuid, new_title):
+    def rename_page(self, chat_id, page_uuid, new_title):
         self._query_db(
             "UPDATE nodes SET label = ? WHERE node_id = ?",
-            (new_title, room_uuid)
+            (new_title, page_uuid)
         )
         try:
             generate_graph()
         except Exception as e:
             logger.error(f"Failed to generate graph: {e}")
 
-    def delete_room(self, chat_id, room_uuid):
+    def delete_page(self, chat_id, page_uuid):
         chat_id_str = str(chat_id)
-        rooms = self.get_rooms(chat_id)
-        if len(rooms) <= 1:
+        pages = self.get_pages(chat_id)
+        if len(pages) <= 1:
             return False
             
         self._query_db(
             "DELETE FROM nodes WHERE node_id = ?",
-            (room_uuid,)
+            (page_uuid,)
+        )
+        self._query_db(
+            "DELETE FROM messages WHERE session_id = ?",
+            (page_uuid,)
+        )
+        self._query_db(
+            "DELETE FROM tool_calls WHERE session_id = ?",
+            (page_uuid,)
+        )
+        self._query_db(
+            "DELETE FROM session_meta WHERE session_id = ?",
+            (page_uuid,)
         )
         
-        if self.active_room.get(chat_id_str) == room_uuid:
-            remaining = [r for r in rooms if r["id"] != room_uuid]
-            self.active_room[chat_id_str] = remaining[0]["id"]
-            self.save_active_rooms()
+        if self.active_page.get(chat_id_str) == page_uuid:
+            remaining = [p for p in pages if p["id"] != page_uuid]
+            self.active_page[chat_id_str] = remaining[0]["id"]
+            self.save_active_pages()
             
         try:
             generate_graph()
@@ -223,7 +252,48 @@ class RoomManager:
             logger.error(f"Failed to generate graph: {e}")
         return True
 
-room_manager = RoomManager()
+    # Backwards compatibility properties/methods to prevent crashes
+    @property
+    def active_room(self):
+        return self.active_page
+    
+    @active_room.setter
+    def active_room(self, val):
+        self.active_page = val
+
+    def load_active_rooms(self):
+        return self.load_active_pages()
+
+    def save_active_rooms(self):
+        return self.save_active_pages()
+
+    def migrate_old_rooms(self):
+        return self.migrate_old_pages()
+
+    def get_rooms(self, chat_id):
+        return self.get_pages(chat_id)
+
+    def create_room(self, chat_id, title="New Chat"):
+        return self.create_page(chat_id, title)
+
+    def get_active_room_id(self, chat_id):
+        return self.get_active_page_id(chat_id)
+
+    def get_active_room_title(self, chat_id):
+        return self.get_active_page_title(chat_id)
+
+    def set_active_room(self, chat_id, room_uuid):
+        return self.set_active_page(chat_id, room_uuid)
+
+    def rename_room(self, chat_id, room_uuid, new_title):
+        return self.rename_page(chat_id, room_uuid, new_title)
+
+    def delete_room(self, chat_id, room_uuid):
+        return self.delete_page(chat_id, room_uuid)
+
+# Instantiate both variables to ensure compatibility
+page_manager = RoomManager = RoomManagerAlias = PageManager()
+room_manager = page_manager
 
 def broadcast_to_webviews(msg):
     data_str = json.dumps(msg)
@@ -345,7 +415,7 @@ async def send_intent_to_bus(chat_id, user_id, content, sent_msg, context: Conte
         "jsonrpc": "2.0",
         "method": "intent.submit",
         "params": {
-            "session_id": room_manager.get_active_room_id(chat_id),
+            "page_id": room_manager.get_active_room_id(chat_id),
             "channel_id": "telegram",
             "user_id": f"telegram-{user_id}",
             "content": content,
@@ -394,13 +464,23 @@ async def send_intent_to_bus(chat_id, user_id, content, sent_msg, context: Conte
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-                # Send request description to Telegram
-                perm_msg = await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ *Approval Required*\n\n*Tool:* `{tool_id}`\n*Action:* {summary}\n\nPlease approve or deny below:",
-                    parse_mode="Markdown",
-                    reply_markup=reply_markup
-                )
+                # Send request description to Telegram with markdown escaping and plain-text fallback
+                text_content = f"⚠️ *Approval Required*\n\n*Tool:* `{escape_markdown(tool_id)}`\n*Action:* {escape_markdown(summary)}\n\nPlease approve or deny below:"
+                try:
+                    perm_msg = await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=text_content,
+                        parse_mode="Markdown",
+                        reply_markup=reply_markup
+                    )
+                except Exception as e:
+                    logger.warning(f"Markdown send_message failed: {e}. Retrying without Markdown.")
+                    plain_text = f"⚠️ Approval Required\n\nTool: {tool_id}\nAction: {summary}\n\nPlease approve or deny below:"
+                    perm_msg = await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=plain_text,
+                        reply_markup=reply_markup
+                    )
 
                 # Create future to wait for button click
                 fut = asyncio.get_running_loop().create_future()
@@ -417,11 +497,19 @@ async def send_intent_to_bus(chat_id, user_id, content, sent_msg, context: Conte
                     await context.bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=perm_msg.message_id,
-                        text=f"⚠️ *Approval Required*\n\n*Tool:* `{tool_id}`\n*Action:* {summary}\n\n*Result:* {status_text}",
+                        text=f"⚠️ *Approval Required*\n\n*Tool:* `{escape_markdown(tool_id)}`\n*Action:* {escape_markdown(summary)}\n\n*Result:* {status_text}",
                         parse_mode="Markdown"
                     )
                 except Exception as e:
-                    logger.debug(f"Failed to update permission prompt text: {e}")
+                    logger.debug(f"Failed to update permission prompt text with Markdown: {e}")
+                    try:
+                        await context.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=perm_msg.message_id,
+                            text=f"⚠️ Approval Required\n\nTool: {tool_id}\nAction: {summary}\n\nResult: {status_text}"
+                        )
+                    except Exception as final_err:
+                        logger.error(f"Failed to update permission prompt text completely: {final_err}")
 
                 # Send back the consent response
                 resp = {
@@ -491,6 +579,76 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("⛔ Unauthorized. You do not have permission to access this agent.")
         return
 
+    # Check if user is in summary edit or comment mode
+    edit_mode = context.user_data.get("summary_edit_mode")
+    if edit_mode:
+        active_page_id = page_manager.get_active_page_id(chat_id)
+        if text.strip().lower() == "/cancel":
+            context.user_data.pop("summary_edit_mode", None)
+            await msg.reply_text("❌ Summary edit cancelled.")
+            return
+
+        if edit_mode == "edit":
+            try:
+                page_manager._query_db("UPDATE page_meta SET summary = ? WHERE page_id = ?", (text, active_page_id))
+                context.user_data.pop("summary_edit_mode", None)
+                await msg.reply_text("✅ Page summary updated successfully.")
+            except Exception as e:
+                await msg.reply_text(f"❌ Failed to update summary: {e}")
+            return
+
+        elif edit_mode == "comment":
+            try:
+                import re
+                rows = page_manager._query_db("SELECT summary FROM page_meta WHERE page_id = ?", (active_page_id,), fetch=True)
+                current_summary = rows[0][0] if rows and rows[0][0] else ""
+                
+                # Check line-specific comment format like "3: Actually Linux"
+                match_inline = re.match(r'^\s*(\d+)\s*:\s*(.*)$', text)
+                if match_inline:
+                    target_line = int(match_inline.group(1))
+                    comment_content = match_inline.group(2)
+                    lines = current_summary.split("\n")
+                    updated_lines = []
+                    found = False
+                    for line in lines:
+                        updated_lines.append(line)
+                        match = re.match(r'^\s*(\d+)\s*[\.\)]\s*(.*)$', line)
+                        if match and int(match.group(1)) == target_line:
+                            updated_lines.append(f"   ↳ Note: {comment_content}")
+                            found = True
+                    if found:
+                        new_summary = "\n".join(updated_lines)
+                    else:
+                        new_summary = current_summary + f"\n\n[Line {target_line} Note]: {comment_content}"
+                else:
+                    if current_summary:
+                        new_summary = current_summary + f"\n\n[User Note]: {text}"
+                    else:
+                        new_summary = f"[User Note]: {text}"
+                
+                page_manager._query_db("UPDATE page_meta SET summary = ? WHERE page_id = ?", (new_summary, active_page_id))
+                context.user_data.pop("summary_edit_mode", None)
+                await msg.reply_text("✅ Comment added to page summary.")
+            except Exception as e:
+                await msg.reply_text(f"❌ Failed to add comment: {e}")
+            return
+
+    # Zero-latency regex parsing of parenthetical remarks
+    import re
+    remarks = re.findall(r'\(([^)]+)\)', text)
+    for remark in remarks:
+        remark_clean = remark.strip()
+        if remark_clean:
+            try:
+                page_manager._query_db(
+                    "INSERT INTO user_insights (page_id, insight, timestamp) VALUES (?, ?, ?)",
+                    (page_manager.get_active_page_id(chat_id), remark_clean, int(time.time() * 1000))
+                )
+                logger.info(f"Logged parenthetical remark to user_insights: {remark_clean}")
+            except Exception as e:
+                logger.error(f"Failed to log user insight: {e}")
+
     # Check if this is a group chat
     chat_type = update.effective_chat.type
     is_group = chat_type in ("group", "supergroup")
@@ -545,6 +703,23 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             f"Any new messages will load this Page's specific context.",
             parse_mode="Markdown"
         )
+
+    elif action == "summary_action":
+        chat_id = query.message.chat.id
+        if val == "edit":
+            context.user_data["summary_edit_mode"] = "edit"
+            await query.message.reply_text("✏️ *Overwriting Page Summary*\n\nPlease type the new summary content below and send it. To abort, type `/cancel`.", parse_mode="Markdown")
+        elif val == "comment":
+            context.user_data["summary_edit_mode"] = "comment"
+            await query.message.reply_text("💬 *Adding Note/Comment to Summary*\n\nTo comment on a specific line, format your message as `<line_number>: <comment>` (e.g. `3: Actually, I am on Linux`). Or, simply write a general comment. Send it below. To abort, type `/cancel`.", parse_mode="Markdown")
+        elif val == "compact":
+            sent_msg = await query.message.reply_text("🔄 Compacting conversation...")
+            res = await rpc_call("page.compact", {"page_id": page_manager.get_active_page_id(chat_id)})
+            if res and "result" in res:
+                summary = res["result"].get("summary", "")
+                await sent_msg.edit_text(f"✅ Page compacted successfully!\n\n*New Summary:*\n{summary}", parse_mode="Markdown")
+            else:
+                await sent_msg.edit_text("❌ Failed to compact page.")
         
     elif action == "room_menu":
         chat_id = query.message.chat.id
@@ -748,6 +923,148 @@ async def shelves_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Failed to query shelves.")
 
+async def summary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in allowed_chats:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+        
+    active_page_id = page_manager.get_active_page_id(chat_id)
+    rows = page_manager._query_db("SELECT summary FROM page_meta WHERE page_id = ?", (active_page_id,), fetch=True)
+    summary = rows[0][0] if rows and rows[0][0] else ""
+    
+    if not summary:
+        summary = "(No summary yet for this Page. Start chatting or run `/compact` to generate one.)"
+        
+    keyboard = [
+        [
+            InlineKeyboardButton("✏️ Edit", callback_data="summary_action:edit"),
+            InlineKeyboardButton("💬 Comment", callback_data="summary_action:comment"),
+            InlineKeyboardButton("🔄 Compact", callback_data="summary_action:compact")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"📄 *Active Page Summary:*\n\n{summary}",
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+
+async def soul_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in allowed_chats:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    
+    file_path = "./config/SOUL.md"
+    content = ""
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+        except Exception as e:
+            logger.error(f"Failed to read SOUL.md: {e}")
+            await update.message.reply_text("❌ Error: Could not read agent SOUL.")
+            return
+
+    if not content:
+        await update.message.reply_text("🧩 SOUL.md is empty.")
+        return
+
+    await update.message.reply_text(
+        f"🧩 *Agent Soul & Guidelines (SOUL.md):*\n\n{content}",
+        parse_mode="Markdown"
+    )
+
+async def add_rule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in allowed_chats:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❌ Please specify a rule to add. Usage: `/addrule <rule text>`")
+        return
+
+    new_rule = " ".join(context.args).strip()
+    file_path = "./config/SOUL.md"
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    try:
+        content = ""
+        if os.path.exists(file_path):
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        
+        if not content.endswith('\n') and content:
+            content += '\n'
+        if "# Behavior Rules" not in content:
+            content += "\n# Behavior Rules\n"
+        content += f"* {new_rule}\n"
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        
+        await update.message.reply_text(f"✅ Behavior rule added to SOUL.md:\n`{new_rule}`")
+    except Exception as e:
+        logger.error(f"Failed to write SOUL.md: {e}")
+        await update.message.reply_text("❌ Failed to add rule.")
+
+async def remove_rule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in allowed_chats:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❌ Please specify a rule to remove. Usage: `/removerule <rule text>`")
+        return
+
+    target_rule = " ".join(context.args).strip()
+    file_path = "./config/SOUL.md"
+
+    if not os.path.exists(file_path):
+        await update.message.reply_text("❌ SOUL.md not found.")
+        return
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        
+        new_lines = []
+        found = False
+        for line in lines:
+            normalized = line.strip().lstrip('*').lstrip('-').strip()
+            if normalized == target_rule and not found:
+                found = True
+                continue
+            new_lines.append(line)
+
+        if found:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+            await update.message.reply_text(f"✅ Behavior rule removed from SOUL.md:\n`{target_rule}`")
+        else:
+            await update.message.reply_text("❌ Rule not found in SOUL.md.")
+    except Exception as e:
+        logger.error(f"Failed to update SOUL.md: {e}")
+        await update.message.reply_text("❌ Failed to remove rule.")
+
+async def compact_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in allowed_chats:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    
+    sent_msg = await update.message.reply_text("🔄 Compacting conversation...")
+    res = await rpc_call("page.compact", {"page_id": page_manager.get_active_page_id(chat_id)})
+    if res and "result" in res:
+        summary = res["result"].get("summary", "")
+        await sent_msg.edit_text(f"✅ Page compacted successfully!\n\n*New Summary:*\n{summary}", parse_mode="Markdown")
+    else:
+        await sent_msg.edit_text("❌ Failed to compact page.")
+
 async def books_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if chat_id not in allowed_chats:
@@ -924,16 +1241,32 @@ async def listen_for_pushes(app: Application):
                         channel_id = push_params.get("channel_id")
                         content = push_params.get("content", "")
                         
+                        # Extract content if wrapped inside JSON
+                        if isinstance(content, str) and content.strip().startswith("{"):
+                            try:
+                                data = json.loads(content)
+                                if isinstance(data, dict):
+                                    content = data.get("content") or data.get("message") or content
+                            except Exception:
+                                pass
+                        
                         logger.info(f"Received push notification: {push_params}")
                         
                         # Forward pushes to whitelisted chats
                         for chat_id in allowed_chats:
                             try:
-                                await app.bot.send_message(
-                                    chat_id=chat_id,
-                                    text=f"📢 *Notification*\n\n{content}",
-                                    parse_mode="Markdown"
-                                )
+                                try:
+                                    await app.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"📢 *Notification*\n\n{content}",
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception as markdown_err:
+                                    logger.warning(f"Failed to send push as Markdown: {markdown_err}. Retrying as plain text.")
+                                    await app.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"📢 Notification\n\n{content}"
+                                    )
                             except Exception as e:
                                 logger.error(f"Failed to forward push message to chat {chat_id}: {e}")
                 except Exception as e:
@@ -1017,21 +1350,23 @@ async def websocket_handler(request):
                     if not method:
                         continue
                         
-                    # Handle local room commands
-                    if method == "room.list":
+                    # Handle local page/room commands
+                    if method in ("room.list", "page.list"):
                         rooms = room_manager.get_rooms(chat_id)
                         active_room = room_manager.get_active_room_id(chat_id)
                         await ws.send_json({
                             "jsonrpc": "2.0",
                             "result": {
                                 "rooms": rooms,
-                                "active_room": active_room
+                                "pages": rooms,
+                                "active_room": active_room,
+                                "active_page": active_room
                             },
                             "id": req_id
                         })
                         
-                    elif method == "room.switch":
-                        room_id = params.get("room_id")
+                    elif method in ("room.switch", "page.switch"):
+                        room_id = params.get("room_id") or params.get("page_id") or params.get("id")
                         if room_id:
                             room_manager.set_active_room(chat_id, room_id)
                             title = room_manager.get_active_room_title(chat_id)
@@ -1040,11 +1375,13 @@ async def websocket_handler(request):
                             if telegram_app and chat_id:
                                 try:
                                     target_chat_id = int(chat_id)
+                                    escaped_title = escape_markdown(title)
+                                    escaped_room_id = escape_markdown(room_id[-8:])
                                     asyncio.create_task(telegram_app.bot.send_message(
                                         chat_id=target_chat_id,
                                         text=f"🔄 *Page Context Switched!*\n\n"
-                                             f"📄 Now talking in: *{title}*\n"
-                                             f"🆔 Page ID: `{room_id[-8:]}`\n\n"
+                                             f"📄 Now talking in: *{escaped_title}*\n"
+                                             f"🆔 Page ID: `{escaped_room_id}`\n\n"
                                              f"💬 Send a message below to continue writing on this Page.",
                                         parse_mode="Markdown"
                                     ))
@@ -1057,8 +1394,8 @@ async def websocket_handler(request):
                                 "id": req_id
                             })
                             
-                    elif method == "room.create":
-                        title = params.get("title", "New Chat Room")
+                    elif method in ("room.create", "page.create"):
+                        title = params.get("title", "New Chat Page")
                         room_manager.create_room(chat_id, title)
                         await ws.send_json({
                             "jsonrpc": "2.0",
@@ -1066,8 +1403,8 @@ async def websocket_handler(request):
                             "id": req_id
                         })
                         
-                    elif method == "room.delete":
-                        room_id = params.get("room_id")
+                    elif method in ("room.delete", "page.delete"):
+                        room_id = params.get("room_id") or params.get("page_id") or params.get("id")
                         if room_id:
                             room_manager.delete_room(chat_id, room_id)
                             await ws.send_json({
@@ -1076,8 +1413,8 @@ async def websocket_handler(request):
                                 "id": req_id
                             })
                             
-                    elif method == "room.rename":
-                        room_id = params.get("room_id")
+                    elif method in ("room.rename", "page.rename"):
+                        room_id = params.get("room_id") or params.get("page_id") or params.get("id")
                         title = params.get("title")
                         if room_id and title:
                             room_manager.rename_room(chat_id, room_id, title)
@@ -1088,7 +1425,7 @@ async def websocket_handler(request):
                             })
                             
                     # Forward memory and library commands to the Rust Event Bus on port 5000
-                    elif method in ("memory.list", "memory.delete", "memory.clear") or method.startswith("library."):
+                    elif method in ("memory.list", "memory.delete", "memory.clear") or method.startswith("library.") or method.startswith("page.") or method.startswith("config."):
                         if method == "library.create_node":
                             node_id = params.get("id")
                             node_type = params.get("type")
@@ -1144,18 +1481,91 @@ async def websocket_handler(request):
                                         logger.error(f"Failed to generate graph: {graph_err}")
                                 await ws.send_json(resp)
                             else:
+                                raise ConnectionError("Rust Event Bus closed connection abruptly")
+                        except Exception as conn_err:
+                            logger.warning(f"Event Bus connection failed for {method}: {conn_err}. Falling back to local SQLite execution.")
+                            
+                            if method == "library.list_nodes":
+                                node_type = params.get("type")
+                                rows = room_manager._query_db(
+                                    "SELECT node_id, type, label, properties FROM nodes WHERE type = ?",
+                                    (node_type,),
+                                    fetch=True
+                                )
+                                nodes = []
+                                for node_id, t, label, props_str in rows:
+                                    props = {}
+                                    if props_str:
+                                        try:
+                                            props = json.loads(props_str)
+                                        except Exception:
+                                            pass
+                                    nodes.append({"id": node_id, "type": t, "label": label, "properties": props})
                                 await ws.send_json({
                                     "jsonrpc": "2.0",
-                                    "error": {"code": -32603, "message": "Rust Event Bus closed connection abruptly"},
+                                    "result": nodes,
                                     "id": req_id
                                 })
-                        except Exception as conn_err:
-                            logger.error(f"Event Bus connection failed for {method}: {conn_err}")
-                            await ws.send_json({
-                                "jsonrpc": "2.0",
-                                "error": {"code": -32000, "message": f"Core engine unreachable: {conn_err}"},
-                                "id": req_id
-                            })
+                            elif method == "library.create_node":
+                                node_id = params.get("id") or str(uuid.uuid4())
+                                node_type = params.get("type")
+                                label = params.get("label")
+                                props_str = params.get("properties") or "{}"
+                                
+                                room_manager._query_db(
+                                    "INSERT OR REPLACE INTO nodes (node_id, type, label, properties) VALUES (?, ?, ?, ?)",
+                                    (node_id, node_type, label, props_str)
+                                )
+                                try:
+                                    generate_graph()
+                                except Exception as graph_err:
+                                    logger.error(f"Failed to generate graph: {graph_err}")
+                                    
+                                await ws.send_json({
+                                    "jsonrpc": "2.0",
+                                    "result": {"status": "created", "id": node_id},
+                                    "id": req_id
+                                })
+                            elif method == "library.delete_node":
+                                node_id = params.get("id")
+                                room_manager.delete_room(chat_id, node_id)
+                                try:
+                                    generate_graph()
+                                except Exception as graph_err:
+                                    logger.error(f"Failed to generate graph: {graph_err}")
+                                    
+                                await ws.send_json({
+                                    "jsonrpc": "2.0",
+                                    "result": {"status": "deleted", "id": node_id},
+                                    "id": req_id
+                                })
+                            elif method == "library.link":
+                                source = params.get("source")
+                                relation = params.get("relation")
+                                target = params.get("target")
+                                weight = params.get("weight", 1.0)
+                                edge_id = str(uuid.uuid4())
+                                
+                                room_manager._query_db(
+                                    "INSERT OR REPLACE INTO edges (edge_id, source_node_id, target_node_id, relation_type, weight) VALUES (?, ?, ?, ?, ?)",
+                                    (edge_id, source, target, relation, weight)
+                                )
+                                try:
+                                    generate_graph()
+                                except Exception as graph_err:
+                                    logger.error(f"Failed to generate graph: {graph_err}")
+                                    
+                                await ws.send_json({
+                                    "jsonrpc": "2.0",
+                                    "result": {"status": "linked", "edge_id": edge_id},
+                                    "id": req_id
+                                })
+                            else:
+                                await ws.send_json({
+                                    "jsonrpc": "2.0",
+                                    "error": {"code": -32603, "message": f"Core engine unreachable: {conn_err}"},
+                                    "id": req_id
+                                })
                             
                 except Exception as parse_err:
                     logger.error(f"Error handling WebSocket message: {parse_err}")
@@ -1230,6 +1640,11 @@ async def main_async():
     app.add_handler(CommandHandler("newbook", new_book_cmd))
     app.add_handler(CommandHandler("link", link_cmd))
     app.add_handler(CommandHandler("deletenode", delete_node_cmd))
+    app.add_handler(CommandHandler("summary", summary_cmd))
+    app.add_handler(CommandHandler("soul", soul_cmd))
+    app.add_handler(CommandHandler("addrule", add_rule_cmd))
+    app.add_handler(CommandHandler("removerule", remove_rule_cmd))
+    app.add_handler(CommandHandler("compact", compact_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.TEXT, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback_query))
@@ -1250,6 +1665,11 @@ async def main_async():
         BotCommand("newbook", "Create a new book: /newbook <name>"),
         BotCommand("link", "Link nodes: /link <src> <relation> <target>"),
         BotCommand("deletenode", "Delete node: /deletenode <name_or_id>"),
+        BotCommand("summary", "View, edit, or comment on active Page summary"),
+        BotCommand("soul", "View agent guidelines (SOUL.md)"),
+        BotCommand("addrule", "Add behavior rule to SOUL.md: /addrule <rule>"),
+        BotCommand("removerule", "Remove behavior rule: /removerule <rule>"),
+        BotCommand("compact", "Compact chat history of this Page to summary"),
         BotCommand("clear", "Start a fresh General Chat Page context")
     ])
 

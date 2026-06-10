@@ -17,7 +17,7 @@
                 <span class="logo-emoji">🐉</span>
                 <div class="logo-text">
                     <h1>Hydragent</h1>
-                    <span class="sub-status"><span class="status-pulse"></span>Active Session</span>
+                    <span class="sub-status"><span class="status-pulse"></span>Active Page</span>
                 </div>
             </div>
             <div class="active-room-display">
@@ -29,6 +29,7 @@
         <nav class="tabs-nav">
             <button class="tab-btn active" onclick="switchTab('library')">📖 Library</button>
             <button class="tab-btn" onclick="switchTab('memories')">🧠 Memory</button>
+            <button class="tab-btn" onclick="switchTab('config')">⚙️ Settings</button>
             <button class="tab-btn" onclick="switchTab('graph')">🕸️ Graph Map</button>
             <button class="tab-btn" onclick="switchTab('logs')">⚙️ Console</button>
         </nav>
@@ -75,6 +76,22 @@
                     <div class="input-group">
                         <input type="text" id="new-page-title" placeholder="New Page label...">
                         <button onclick="createNode('page')">Add</button>
+                    </div>
+                </div>
+
+                <!-- Active Page Summary Section -->
+                <div class="library-section summary-theme" id="active-page-summary-section" style="margin-top:20px; border: 1px solid rgba(255,255,255,0.05); background: rgba(255, 255, 255, 0.02); border-radius: 12px; padding: 16px;">
+                    <h3 style="margin-top:0; color:#c5a5ff;">📄 Active Page Summary</h3>
+                    <div id="page-summary-view" style="font-size:14px; line-height: 1.6; margin-bottom:12px; background:rgba(0,0,0,0.3); border-radius:8px; padding:12px; min-height:50px; white-space:pre-wrap; border: 1px solid rgba(255,255,255,0.05);"></div>
+                    
+                    <div id="summary-edit-area" style="display:none; margin-bottom:12px;">
+                        <textarea id="summary-edit-text" rows="5" style="width:100%; box-sizing: border-box; font-family:inherit; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:10px; color:#fff; resize:vertical;"></textarea>
+                    </div>
+                    
+                    <div class="summary-actions" style="display:flex; gap:10px;">
+                        <button id="btn-edit-summary" onclick="toggleEditSummary()" style="background:#5c4d9e; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer;">✏️ Edit Summary</button>
+                        <button id="btn-save-summary" onclick="saveSummary()" style="display:none; background:#22c55e; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer;">💾 Save</button>
+                        <button id="btn-compact-page" onclick="compactActivePage()" style="background:#8b5cf6; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer;">🔄 Compact Page</button>
                     </div>
                 </div>
 
@@ -128,6 +145,28 @@
 
                 <div class="danger-zone">
                     <button class="btn-danger" onclick="confirmClearAllMemories()">⚠️ Clear All Memories</button>
+                </div>
+            </section>
+
+            <!-- Config/Settings Tab -->
+            <section id="config-tab" class="tab-content">
+                <div class="section-title">
+                    <h2>Agent Soul & User Profile</h2>
+                    <p>Edit the guidelines governing the agent's behavior and the user's communication style profile.</p>
+                </div>
+                
+                <div class="config-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div class="config-card" style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 20px;">
+                        <h3 style="margin-top:0; color:#a78bfa;">🧩 Agent Soul (SOUL.md)</h3>
+                        <textarea id="soul-editor" rows="18" style="width:100%; box-sizing: border-box; font-family:monospace; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:10px; color:#fff; resize:vertical;"></textarea>
+                        <button onclick="saveConfigFile('SOUL.md')" class="btn-save" style="margin-top:10px; background:#8b5cf6; color:#fff; border:none; padding:10px 20px; border-radius:6px; cursor:pointer; font-weight:600; width:100%;">Save SOUL.md</button>
+                    </div>
+                    
+                    <div class="config-card" style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 20px;">
+                        <h3 style="margin-top:0; color:#a78bfa;">👤 User Profile & Habits (USER.md)</h3>
+                        <textarea id="user-editor" rows="18" style="width:100%; box-sizing: border-box; font-family:monospace; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:10px; color:#fff; resize:vertical;"></textarea>
+                        <button onclick="saveConfigFile('USER.md')" class="btn-save" style="margin-top:10px; background:#8b5cf6; color:#fff; border:none; padding:10px 20px; border-radius:6px; cursor:pointer; font-weight:600; width:100%;">Save USER.md</button>
+                    </div>
                 </div>
             </section>
 

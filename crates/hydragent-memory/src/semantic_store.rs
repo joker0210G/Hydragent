@@ -6,7 +6,7 @@ impl SessionStore {
     pub async fn insert_memory(
         &self,
         id: &str,
-        session_id: Option<&str>,
+        page_id: Option<&str>,
         content: &str,
         importance: i64,
         tags: &[String],
@@ -19,11 +19,11 @@ impl SessionStore {
         let mut tx = self.pool().begin().await?;
 
         sqlx::query(
-            "INSERT INTO semantic_memories (id, session_id, content, importance, timestamp)
+            "INSERT INTO semantic_memories (id, page_id, content, importance, timestamp)
              VALUES (?, ?, ?, ?, ?)"
         )
         .bind(id)
-        .bind(session_id)
+        .bind(page_id)
         .bind(content)
         .bind(importance)
         .bind(now)
@@ -54,7 +54,7 @@ impl SessionStore {
 
     pub async fn get_memory(&self, id: &str) -> Result<Option<SemanticMemory>> {
         let row = sqlx::query_as::<_, SemanticMemory>(
-            "SELECT id, session_id, content, importance, timestamp
+            "SELECT id, page_id, content, importance, timestamp
              FROM semantic_memories
              WHERE id = ?"
         )
@@ -80,7 +80,7 @@ impl SessionStore {
 
     pub async fn list_memories(&self) -> Result<Vec<SemanticMemory>> {
         let rows = sqlx::query_as::<_, SemanticMemory>(
-            "SELECT id, session_id, content, importance, timestamp
+            "SELECT id, page_id, content, importance, timestamp
              FROM semantic_memories
              ORDER BY timestamp DESC"
         )
@@ -91,7 +91,7 @@ impl SessionStore {
 
     pub async fn search_memories_fts(&self, query: &str) -> Result<Vec<SemanticMemory>> {
         let rows = sqlx::query_as::<_, SemanticMemory>(
-            "SELECT m.id, m.session_id, m.content, m.importance, m.timestamp
+            "SELECT m.id, m.page_id, m.content, m.importance, m.timestamp
              FROM semantic_memories m
              JOIN semantic_memories_fts f ON m.id = f.id
              WHERE f.content MATCH ?

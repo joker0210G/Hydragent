@@ -29,6 +29,7 @@ impl SessionStore {
                 .pragma("foreign_keys", "on")
                 .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
                 .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                .busy_timeout(std::time::Duration::from_millis(5000))
         ).await?;
 
         let data_dir = Path::new(database_url).parent()
@@ -66,7 +67,7 @@ impl SessionStore {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS messages (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id   TEXT    NOT NULL,
+                page_id      TEXT    NOT NULL,
                 role         TEXT    NOT NULL,
                 content      TEXT    NOT NULL,
                 token_count  INTEGER,
@@ -81,7 +82,7 @@ impl SessionStore {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS tool_calls (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id    TEXT    NOT NULL,
+                page_id       TEXT    NOT NULL,
                 call_id       TEXT    NOT NULL UNIQUE,
                 tool_id       TEXT    NOT NULL,
                 params_hash   TEXT    NOT NULL,
@@ -92,21 +93,31 @@ impl SessionStore {
         ).execute(&self.pool).await?;
 
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS session_meta (
-                session_id    TEXT    PRIMARY KEY,
+            "CREATE TABLE IF NOT EXISTS page_meta (
+                page_id       TEXT    PRIMARY KEY,
                 created_at    INTEGER NOT NULL,
                 last_active   INTEGER NOT NULL,
                 turn_count    INTEGER NOT NULL DEFAULT 0,
-                model_used    TEXT
+                model_used    TEXT,
+                summary       TEXT
             );"
         ).execute(&self.pool).await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS semantic_memories (
                 id          TEXT    PRIMARY KEY,
-                session_id  TEXT,
+                page_id     TEXT,
                 content     TEXT    NOT NULL,
                 importance  INTEGER NOT NULL DEFAULT 1,
+                timestamp   INTEGER NOT NULL
+            );"
+        ).execute(&self.pool).await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS user_insights (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                page_id     TEXT    NOT NULL,
+                insight     TEXT    NOT NULL,
                 timestamp   INTEGER NOT NULL
             );"
         ).execute(&self.pool).await?;
@@ -126,6 +137,58 @@ impl SessionStore {
                 finished_at INTEGER
             );"
         ).execute(&self.pool).await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS cron_jobs (
+                id              TEXT    PRIMARY KEY,
+                cron_expr       TEXT    NOT NULL,
+                description     TEXT    NOT NULL,
+                task_type       TEXT    NOT NULL DEFAULT 'react_loop',
+                task_params     TEXT    NOT NULL DEFAULT '{}',
+                target_channel_id TEXT  NOT NULL DEFAULT '*',
+                status          TEXT    NOT NULL CHECK(status IN ('active', 'paused', 'deleted')),
+                created_at      INTEGER NOT NULL,
+                last_run_at     INTEGER,
+                run_count       INTEGER NOT NULL DEFAULT 0
+            );"
+        ).execute(&self.pool).await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS cron_job_runs (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id          TEXT    NOT NULL,
+                started_at      INTEGER NOT NULL,
+                completed_at    INTEGER,
+                status          TEXT    NOT NULL CHECK(status IN ('running', 'completed', 'failed')),
+                output_summary  TEXT,
+                FOREIGN KEY(job_id) REFERENCES cron_jobs(id)
+            );"
+        ).execute(&self.pool).await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS work_iq_feeds (
+                url             TEXT    PRIMARY KEY,
+                name            TEXT    NOT NULL,
+                keywords        TEXT    NOT NULL,
+                digest_channel  TEXT    NOT NULL,
+                digest_cron     TEXT    NOT NULL,
+                last_seen_id    TEXT
+            );"
+        ).execute(&self.pool).await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS work_iq_entries (
+                id              TEXT    PRIMARY KEY,
+                feed_url        TEXT    NOT NULL,
+                title           TEXT    NOT NULL,
+                summary         TEXT    NOT NULL,
+                url             TEXT    NOT NULL,
+                fetched_at      INTEGER NOT NULL,
+                digested        BOOLEAN NOT NULL DEFAULT 0,
+                FOREIGN KEY(feed_url) REFERENCES work_iq_feeds(url) ON DELETE CASCADE
+            );"
+        ).execute(&self.pool).await?;
+
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS memory_tags (
@@ -182,21 +245,21 @@ impl SessionStore {
             .execute(&self.pool).await?;
 
         // Create indexes
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);")
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_page ON messages(page_id, timestamp);")
             .execute(&self.pool).await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);")
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_calls_page ON tool_calls(page_id);")
             .execute(&self.pool).await?;
 
         Ok(())
     }
 
-    pub async fn create_session(&self, session_id: &str) -> Result<()> {
+    pub async fn create_page(&self, page_id: &str) -> Result<()> {
         let now = chrono::Utc::now().timestamp_millis();
         sqlx::query(
-            "INSERT OR IGNORE INTO session_meta (session_id, created_at, last_active, turn_count)
+            "INSERT OR IGNORE INTO page_meta (page_id, created_at, last_active, turn_count)
              VALUES (?, ?, ?, 0)"
         )
-        .bind(session_id)
+        .bind(page_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -204,7 +267,7 @@ impl SessionStore {
         Ok(())
     }
 
-    pub async fn append_message(&self, session_id: &str, role: MessageRole, content: &str) -> Result<()> {
+    pub async fn append_message(&self, page_id: &str, role: MessageRole, content: &str) -> Result<()> {
         let now = chrono::Utc::now().timestamp_millis();
         let role_str = match role {
             MessageRole::User => "user",
@@ -214,39 +277,39 @@ impl SessionStore {
         };
 
         sqlx::query(
-            "INSERT INTO messages (session_id, role, content, timestamp, requires_consolidation)
+            "INSERT INTO messages (page_id, role, content, timestamp, requires_consolidation)
              VALUES (?, ?, ?, ?, 1)"
         )
-        .bind(session_id)
+        .bind(page_id)
         .bind(role_str)
         .bind(content)
         .bind(now)
         .execute(&self.pool)
         .await?;
 
-        // Update session meta
+        // Update page meta
         sqlx::query(
-            "UPDATE session_meta
+            "UPDATE page_meta
              SET last_active = ?, turn_count = turn_count + 1
-             WHERE session_id = ?"
+             WHERE page_id = ?"
         )
         .bind(now)
-        .bind(session_id)
+        .bind(page_id)
         .execute(&self.pool)
         .await?;
 
         Ok(())
     }
 
-    pub async fn load_recent(&self, session_id: &str, limit: u32) -> Result<Vec<Message>> {
+    pub async fn load_recent(&self, page_id: &str, limit: u32) -> Result<Vec<Message>> {
         let rows = sqlx::query_as::<_, Message>(
-            "SELECT id, session_id, role, content, token_count, timestamp
+            "SELECT id, page_id, role, content, token_count, timestamp
              FROM messages
-             WHERE session_id = ?
+             WHERE page_id = ?
              ORDER BY timestamp ASC
              LIMIT ?"
         )
-        .bind(session_id)
+        .bind(page_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -254,10 +317,10 @@ impl SessionStore {
         Ok(rows)
     }
 
-    pub async fn list_sessions(&self) -> Result<Vec<(String, i64, i64, i32)>> {
+    pub async fn list_pages(&self) -> Result<Vec<(String, i64, i64, i32)>> {
         let rows = sqlx::query(
-            "SELECT session_id, created_at, last_active, turn_count
-             FROM session_meta
+            "SELECT page_id, created_at, last_active, turn_count
+             FROM page_meta
              ORDER BY last_active DESC"
         )
         .fetch_all(&self.pool)
@@ -265,11 +328,11 @@ impl SessionStore {
 
         let mut list = Vec::new();
         for row in rows {
-            let session_id: String = row.get("session_id");
+            let page_id: String = row.get("page_id");
             let created_at: i64 = row.get("created_at");
             let last_active: i64 = row.get("last_active");
             let turn_count: i32 = row.get("turn_count");
-            list.push((session_id, created_at, last_active, turn_count));
+            list.push((page_id, created_at, last_active, turn_count));
         }
 
         Ok(list)
@@ -332,6 +395,18 @@ impl SessionStore {
 
     pub async fn delete_node(&self, id: &str) -> Result<()> {
         sqlx::query("DELETE FROM nodes WHERE node_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM messages WHERE page_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM tool_calls WHERE page_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM page_meta WHERE page_id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -399,6 +474,47 @@ impl SessionStore {
             "edges": edges_vec
         }))
     }
+
+    pub async fn update_page_summary(&self, page_id: &str, summary: &str) -> Result<()> {
+        sqlx::query("UPDATE page_meta SET summary = ? WHERE page_id = ?")
+            .bind(summary)
+            .bind(page_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_page_summary(&self, page_id: &str) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT summary FROM page_meta WHERE page_id = ?")
+            .bind(page_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if let Some(r) = row {
+            let summary: Option<String> = r.get("summary");
+            Ok(summary)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn truncate_page_messages(&self, page_id: &str, keep_count: u32) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM messages 
+             WHERE page_id = ? 
+             AND id NOT IN (
+                 SELECT id FROM messages 
+                 WHERE page_id = ? 
+                 ORDER BY timestamp DESC 
+                 LIMIT ?
+             )"
+        )
+        .bind(page_id)
+        .bind(page_id)
+        .bind(keep_count)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -410,16 +526,16 @@ mod tests {
         let store = SessionStore::new("file:testdb?mode=memory&cache=shared").await.unwrap();
 
         let id = "test-mem-1";
-        let session_id = "test-session";
+        let page_id = "test-session";
         let content = "Remember: My favorite game is Minecraft and my cat is named Luna.";
         let importance = 4;
         let tags = vec!["preference".to_string(), "game".to_string()];
 
-        store.insert_memory(id, Some(session_id), content, importance, &tags).await.unwrap();
+        store.insert_memory(id, Some(page_id), content, importance, &tags).await.unwrap();
 
         let retrieved = store.get_memory(id).await.unwrap().unwrap();
         assert_eq!(retrieved.id, id);
-        assert_eq!(retrieved.session_id.as_deref(), Some(session_id));
+        assert_eq!(retrieved.page_id.as_deref(), Some(page_id));
         assert_eq!(retrieved.content, content);
         assert_eq!(retrieved.importance, importance);
 

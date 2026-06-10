@@ -1,0 +1,24 @@
+[package]
+name = "hydragent-scheduler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hydragent-types = { path = "../hydragent-types" }
+hydragent-gateway = { path = "../hydragent-gateway" }
+hydragent-memory = { path = "../hydragent-memory" }
+hydragent-model = { path = "../hydragent-model" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+parking_lot = "0.12"
+tokio-cron-scheduler = "0.10.0"
+cron = "0.12.1"
+feed-rs = "2"
+reqwest = { workspace = true, features = ["json", "stream"] }

@@ -6,30 +6,30 @@ use std::path::PathBuf;
 use hydragent_types::{ToolResult, ToolStatus};
 use crate::tool_trait::Tool;
 
-pub struct SoulTool {
+pub struct UserProfileTool {
     config_dir: PathBuf,
 }
 
-impl SoulTool {
+impl UserProfileTool {
     pub fn new(config_dir: PathBuf) -> Self {
         Self { config_dir }
     }
 }
 
 #[derive(Deserialize)]
-struct SoulParams {
+struct UserProfileParams {
     action: String, // "add" | "remove" | "list"
-    rule: Option<String>,
+    habit: Option<String>,
 }
 
 #[async_trait]
-impl Tool for SoulTool {
+impl Tool for UserProfileTool {
     fn name(&self) -> &str {
-        "soul"
+        "user_profile"
     }
 
     fn description(&self) -> &str {
-        "Allows viewing, adding, or removing persistent behavioral rules or instructions in `./config/SOUL.md` that guide the AI's behavior."
+        "Allows viewing, adding, or removing user profile habits or preferences in `./config/USER.md`."
     }
 
     fn params_schema(&self) -> &str {
@@ -39,11 +39,11 @@ impl Tool for SoulTool {
                 "action": {
                     "type": "string",
                     "enum": ["add", "remove", "list"],
-                    "description": "The action to perform: 'add' a new rule, 'remove' an existing rule, or 'list' all rules."
+                    "description": "The action to perform: 'add' a style habit/preference, 'remove' an existing one, or 'list' all profile elements."
                 },
-                "rule": {
+                "habit": {
                     "type": "string",
-                    "description": "The rule/instruction text to add or remove (e.g. 'Always use standard Markdown formatting')."
+                    "description": "The habit/preference text to add or remove (e.g. 'The user likes concise answers')."
                 }
             },
             "required": ["action"]
@@ -54,7 +54,7 @@ impl Tool for SoulTool {
         let start_time = std::time::Instant::now();
         let call_id = uuid::Uuid::new_v4().to_string();
 
-        let params: SoulParams = match serde_json::from_str(params_json) {
+        let params: UserProfileParams = match serde_json::from_str(params_json) {
             Ok(p) => p,
             Err(e) => {
                 return ToolResult {
@@ -67,7 +67,7 @@ impl Tool for SoulTool {
             }
         };
 
-        let file_path = self.config_dir.join("SOUL.md");
+        let file_path = self.config_dir.join("USER.md");
 
         // Ensure config directory exists
         if let Some(parent) = file_path.parent() {
@@ -89,29 +89,29 @@ impl Tool for SoulTool {
                 }
             }
             "add" => {
-                let rule = match params.rule {
-                    Some(r) => r,
+                let habit = match params.habit {
+                    Some(h) => h,
                     None => {
                         return ToolResult {
                             call_id,
                             output_json: "{}".into(),
                             status: ToolStatus::Failure,
                             execution_ms: start_time.elapsed().as_millis() as u32,
-                            error_message: Some("The 'rule' parameter is required for 'add' action.".into()),
+                            error_message: Some("The 'habit' parameter is required for 'add' action.".into()),
                         };
                     }
                 };
 
                 let mut current_content = fs::read_to_string(&file_path).unwrap_or_else(|_| {
-                    "# Agent Soul & Personality\n- Name: Hydra\n- Tone: Helpful, intelligent, and adaptive.\n\n# Behavior Rules\n".to_string()
+                    "# User Profile\n- Name: User\n\n# Style & Communication Habits\n".to_string()
                 });
-                if !current_content.contains("# Behavior Rules") {
-                    current_content.push_str("\n# Behavior Rules\n");
+                if !current_content.contains("# Style & Communication Habits") {
+                    current_content.push_str("\n# Style & Communication Habits\n");
                 }
                 if !current_content.ends_with('\n') && !current_content.is_empty() {
                     current_content.push('\n');
                 }
-                current_content.push_str(&format!("* {}\n", rule));
+                current_content.push_str(&format!("* {}\n", habit));
 
                 if let Err(e) = fs::write(&file_path, current_content) {
                     return ToolResult {
@@ -119,7 +119,7 @@ impl Tool for SoulTool {
                         output_json: "{}".into(),
                         status: ToolStatus::Failure,
                         execution_ms: start_time.elapsed().as_millis() as u32,
-                        error_message: Some(format!("Failed to write to SOUL.md: {}", e)),
+                        error_message: Some(format!("Failed to write to USER.md: {}", e)),
                     };
                 }
 
@@ -127,7 +127,7 @@ impl Tool for SoulTool {
                     call_id,
                     output_json: json!({
                         "status": "success",
-                        "message": format!("Rule added successfully: {}", rule)
+                        "message": format!("Habit added successfully: {}", habit)
                     }).to_string(),
                     status: ToolStatus::Success,
                     execution_ms: start_time.elapsed().as_millis() as u32,
@@ -135,15 +135,15 @@ impl Tool for SoulTool {
                 }
             }
             "remove" => {
-                let rule = match params.rule {
-                    Some(r) => r,
+                let habit = match params.habit {
+                    Some(h) => h,
                     None => {
                         return ToolResult {
                             call_id,
                             output_json: "{}".into(),
                             status: ToolStatus::Failure,
                             execution_ms: start_time.elapsed().as_millis() as u32,
-                            error_message: Some("The 'rule' parameter is required for 'remove' action.".into()),
+                            error_message: Some("The 'habit' parameter is required for 'remove' action.".into()),
                         };
                     }
                 };
@@ -155,7 +155,7 @@ impl Tool for SoulTool {
 
                 for line in lines {
                     let normalized_line = line.trim_start_matches('*').trim_start_matches('-').trim();
-                    if normalized_line == rule.trim() && !found {
+                    if normalized_line == habit.trim() && !found {
                         found = true;
                         continue;
                     }
@@ -169,7 +169,7 @@ impl Tool for SoulTool {
                         output_json: "{}".into(),
                         status: ToolStatus::Failure,
                         execution_ms: start_time.elapsed().as_millis() as u32,
-                        error_message: Some(format!("Failed to write to SOUL.md: {}", e)),
+                        error_message: Some(format!("Failed to write to USER.md: {}", e)),
                     };
                 }
 
@@ -177,7 +177,7 @@ impl Tool for SoulTool {
                     call_id,
                     output_json: json!({
                         "status": "success",
-                        "message": if found { format!("Rule removed successfully: {}", rule) } else { "Rule not found.".to_string() }
+                        "message": if found { format!("Habit removed successfully: {}", habit) } else { "Habit not found.".to_string() }
                     }).to_string(),
                     status: ToolStatus::Success,
                     execution_ms: start_time.elapsed().as_millis() as u32,

@@ -40,11 +40,14 @@ async fn send_token(tx: &mpsc::Sender<String>, token: String) {
 }
 
 pub async fn run_react_loop(
-    session_id: &str,
+    page_id: &str,
+    channel_id: &str,
+    user_id: &str,
     user_query: &str,
     history: Vec<Message>,
     retrieved_memories: Vec<hydragent_types::MemoryDocument>,
-    standing_orders: Option<String>,
+    user_profile: Option<String>,
+    soul_guidelines: Option<String>,
     model_router: Arc<ModelRouter>,
     registry: Arc<ToolRegistry>,
     max_steps: u8,
@@ -68,16 +71,32 @@ pub async fn run_react_loop(
         }}\n\n\
         Available Tools:\n\
         {}\n\n\
-        IMPORTANT: Only use the tools listed above. Always output valid JSON.",
-        registry.build_system_prompt_block()
+        IMPORTANT: Only use the tools listed above. Always output valid JSON.\n\n\
+        # Active Session Context:\n\
+        - Page ID: {}\n\
+        - Channel ID: {}\n\
+        - User ID: {}\n\
+        (Note: Use these values if you need to specify target_channel_id or channel_id in tools. For example, if target_channel_id is required, construct it as channel_id:user_id or as appropriate for the active channel context.)",
+        registry.build_system_prompt_block(),
+        page_id,
+        channel_id,
+        user_id
     );
 
-    // Prepend persistent Standing Orders if present
-    if let Some(so) = standing_orders {
-        if !so.trim().is_empty() {
+    // Prepend user profile and soul guidelines if present
+    if let Some(soul) = soul_guidelines {
+        if !soul.trim().is_empty() {
             system_prompt = format!(
-                "# Persistent Standing Orders\n{}\n\n{}",
-                so, system_prompt
+                "# Agent Soul & Guidelines\n{}\n\n{}",
+                soul, system_prompt
+            );
+        }
+    }
+    if let Some(user) = user_profile {
+        if !user.trim().is_empty() {
+            system_prompt = format!(
+                "# User Profile & Style Preferences\n{}\n\n{}",
+                user, system_prompt
             );
         }
     }
@@ -230,7 +249,7 @@ pub async fn run_react_loop(
                     
                     let permission_request = hydragent_types::PermissionRequest {
                         request_id: request_id.clone(),
-                        session_id: session_id.to_string(),
+                        page_id: page_id.to_string(),
                         tool_id: tool_name.clone(),
                         params_summary: format!("Executing tool '{}' with parameters: {}", tool_name, params_str),
                         tier,

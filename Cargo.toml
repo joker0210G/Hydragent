@@ -11,6 +11,7 @@ members = [
     "crates/hydragent-vault",
     "crates/hydragent-sandbox",
     "crates/hydragent-gateway",
+    "crates/hydragent-scheduler",
 ]
 
 [workspace.dependencies]

@@ -115,7 +115,7 @@ function fetchData() {
     // Fetch Pages and Active Page info
     socket.send(JSON.stringify({
         jsonrpc: "2.0",
-        method: "room.list",
+        method: "page.list",
         id: "get_pages"
     }));
     
@@ -124,6 +124,37 @@ function fetchData() {
         jsonrpc: "2.0",
         method: "memory.list",
         id: "get_memories"
+    }));
+
+    // Fetch config files
+    fetchConfigs();
+}
+
+function fetchConfigs() {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    
+    socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "config.read",
+        params: { file_name: "SOUL.md" },
+        id: "read_soul_config"
+    }));
+    
+    socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "config.read",
+        params: { file_name: "USER.md" },
+        id: "read_user_config"
+    }));
+}
+
+function fetchActivePageSummary() {
+    if (!activePageId || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "page.get_summary",
+        params: { page_id: activePageId },
+        id: "get_page_summary"
     }));
 }
 
@@ -176,13 +207,45 @@ function handleIncomingMessage(msg) {
         renderBooks();
         updateLinkDropdowns();
     } else if (msg.id === "get_pages") {
-        pagesList = msg.result ? (msg.result.rooms || []) : [];
-        activePageId = msg.result ? (msg.result.active_room || '') : '';
+        pagesList = msg.result ? (msg.result.pages || msg.result.rooms || []) : [];
+        activePageId = msg.result ? (msg.result.active_page || msg.result.active_room || '') : '';
         renderPages();
         updateLinkDropdowns();
+        fetchActivePageSummary();
     } else if (msg.id === "get_memories" && msg.result) {
         memoriesList = msg.result || [];
         renderMemories();
+    } else if (msg.id === "switch_page") {
+        if (tg) {
+            tg.close();
+        }
+    } else if (msg.id === "read_soul_config" && msg.result) {
+        const editor = document.getElementById('soul-editor');
+        if (editor) {
+            editor.value = msg.result.content || '';
+        }
+    } else if (msg.id === "read_user_config" && msg.result) {
+        const editor = document.getElementById('user-editor');
+        if (editor) {
+            editor.value = msg.result.content || '';
+        }
+    } else if (msg.id === "get_page_summary" && msg.result) {
+        const summaryView = document.getElementById('page-summary-view');
+        const summaryEdit = document.getElementById('summary-edit-text');
+        if (summaryView) {
+            summaryView.innerText = msg.result.summary || 'No summary available for this page yet. Compaction or dreaming will populate this.';
+        }
+        if (summaryEdit) {
+            summaryEdit.value = msg.result.summary || '';
+        }
+    } else if (msg.id === "save_soul_config" || msg.id === "save_user_config") {
+        showToast("Configuration saved successfully!", "success");
+    } else if (msg.id === "update_summary") {
+        showToast("Summary updated successfully!", "success");
+        fetchActivePageSummary();
+    } else if (msg.id === "compact_page" && msg.result) {
+        showToast("Page compacted successfully!", "success");
+        fetchActivePageSummary();
     } else if (msg.result && (msg.result.status === "created" || msg.result.status === "linked" || msg.result.status === "deleted" || msg.result.status === "renamed")) {
         fetchData();
         showToast(`Item successfully ${msg.result.status}!`, 'success');
@@ -304,13 +367,10 @@ function selectPage(pageId, pageLabel) {
         if (!socket || socket.readyState !== WebSocket.OPEN) return;
         socket.send(JSON.stringify({
             jsonrpc: "2.0",
-            method: "room.switch",
-            params: { room_id: pageId },
+            method: "page.switch",
+            params: { page_id: pageId },
             id: "switch_page"
         }));
-        if (tg) {
-            tg.close();
-        }
     });
 }
 
@@ -622,6 +682,86 @@ function selectAutocompleteItem(node) {
     activeInput.setSelectionRange(newCursorPos, newCursorPos);
     
     popup.style.display = 'none';
+}
+
+function saveConfigFile(filename) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const textareaId = filename === 'SOUL.md' ? 'soul-editor' : 'user-editor';
+    const editor = document.getElementById(textareaId);
+    if (!editor) return;
+    const content = editor.value;
+    
+    socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "config.write",
+        params: {
+            file_name: filename,
+            content: content
+        },
+        id: filename === 'SOUL.md' ? "save_soul_config" : "save_user_config"
+    }));
+}
+
+function toggleEditSummary() {
+    const viewDiv = document.getElementById('page-summary-view');
+    const editDiv = document.getElementById('summary-edit-area');
+    const editBtn = document.getElementById('btn-edit-summary');
+    const saveBtn = document.getElementById('btn-save-summary');
+    const editText = document.getElementById('summary-edit-text');
+    
+    if (viewDiv.style.display !== 'none') {
+        // Switch to edit mode
+        viewDiv.style.display = 'none';
+        editDiv.style.display = 'block';
+        editBtn.innerText = '❌ Cancel';
+        saveBtn.style.display = 'inline-block';
+        if (editText) editText.focus();
+    } else {
+        // Cancel / Switch back to view mode
+        viewDiv.style.display = 'block';
+        editDiv.style.display = 'none';
+        editBtn.innerText = '✏️ Edit Summary';
+        saveBtn.style.display = 'none';
+    }
+}
+
+function saveSummary() {
+    if (!activePageId) {
+        showToast("No active page to update summary for.", "error");
+        return;
+    }
+    const editText = document.getElementById('summary-edit-text');
+    if (!editText) return;
+    const summary = editText.value;
+    
+    socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "page.update_summary",
+        params: {
+            page_id: activePageId,
+            summary: summary
+        },
+        id: "update_summary"
+    }));
+    
+    // Switch back to view mode
+    toggleEditSummary();
+}
+
+function compactActivePage() {
+    if (!activePageId) {
+        showToast("No active page to compact.", "error");
+        return;
+    }
+    showToast("Compacting page... please wait", "info");
+    socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "page.compact",
+        params: {
+            page_id: activePageId
+        },
+        id: "compact_page"
+    }));
 }
 
 // Initial connection and setup

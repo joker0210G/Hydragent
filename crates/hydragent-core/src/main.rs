@@ -134,10 +134,38 @@ async fn main() {
     let args = Args::parse();
 
     // Load configuration
-    let app_config = config::AppConfig::load().unwrap_or_else(|e| {
+    let mut app_config = config::AppConfig::load().unwrap_or_else(|e| {
         eprintln!("Failed to load configuration: {}", e);
         std::process::exit(1);
     });
+
+    // Load secrets from encrypted vault if configured and passphrase is provided
+    let vault_path = std::path::PathBuf::from(&app_config.data_dir).join("vault/.hydravault");
+    if vault_path.exists() {
+        if let Ok(passphrase) = std::env::var("HYDRAGENT_VAULT_PASSPHRASE") {
+            let vault = hydragent_vault::Vault::new(vault_path);
+            match vault.load(&passphrase) {
+                Ok(secrets) => {
+                    tracing::info!("Loaded secrets from cryptographic Vault.");
+                    if let Some(keys) = secrets.get("OPENROUTER_API_KEYS") {
+                        app_config.openrouter_api_keys = keys.expose_secret().to_string();
+                    }
+                    if let Some(model) = secrets.get("PRIMARY_MODEL") {
+                        app_config.primary_model = model.expose_secret().to_string();
+                    }
+                    // Load any other configuration keys from Vault dynamically
+                    for (scope, secret) in secrets {
+                        std::env::set_var(scope, secret.expose_secret());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to decrypt cryptographic Vault: incorrect passphrase. Error: {}", e);
+                }
+            }
+        } else {
+            eprintln!("Cryptographic Vault exists, but HYDRAGENT_VAULT_PASSPHRASE is not set. Bypassing Vault decryption.");
+        }
+    }
 
     // Initialize the logger using configured values
     logger::init_logger(&app_config.log_format, &app_config.log_level);
@@ -319,26 +347,26 @@ async fn main() {
 
     if args.list_sessions {
         println!("------------------------------------------------------------------------");
-        println!("  🐉 Hydragent Session History");
+        println!("  🐉 Hydragent Page History");
         println!("  Database: {}", db_path);
         println!("------------------------------------------------------------------------");
-        match store.list_sessions().await {
-            Ok(sessions) => {
-                if sessions.is_empty() {
-                    println!("  No active sessions found.");
+        match store.list_pages().await {
+            Ok(pages) => {
+                if pages.is_empty() {
+                    println!("  No active Pages found.");
                 } else {
-                    println!("  {:<36} | {:<20} | {:<5}", "Session ID", "Last Active", "Turns");
+                    println!("  {:<36} | {:<20} | {:<5}", "Page ID", "Last Active", "Turns");
                     println!("  ----------------------------------------------------------------------");
-                    for (session_id, _, last_active, turn_count) in sessions {
+                    for (page_id, _, last_active, turn_count) in pages {
                         let dt = chrono::DateTime::from_timestamp(last_active / 1000, 0)
                             .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
                             .unwrap_or_else(|| "Unknown".to_string());
-                        println!("  {:<36} | {:<20} | {:<5}", session_id, dt, turn_count);
+                        println!("  {:<36} | {:<20} | {:<5}", page_id, dt, turn_count);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Failed to read database session list: {}", e);
+                eprintln!("Failed to read database page list: {}", e);
             }
         }
         println!("------------------------------------------------------------------------");
@@ -421,6 +449,10 @@ async fn main() {
     let wasm_engine = hydragent_sandbox::create_sandbox_engine().unwrap();
     let sandbox_tools_dir = PathBuf::from("./sandbox/tools");
 
+    let enforce_sandbox = std::env::var("ENFORCE_SANDBOX")
+        .map(|v| v.trim().to_lowercase() == "true")
+        .unwrap_or(false);
+
     // Load echo WASM
     let echo_wasm_path = sandbox_tools_dir.join("echo.wasm");
     if echo_wasm_path.exists() {
@@ -439,7 +471,12 @@ async fn main() {
         });
         info!("Registered sandboxed echo tool.");
     } else {
-        registry.register(EchoTool);
+        if enforce_sandbox {
+            panic!("Security Violation: ENFORCE_SANDBOX is enabled but sandboxed tool 'echo.wasm' is missing at {:?}", echo_wasm_path);
+        } else {
+            tracing::warn!("Warning: Bypassing WASM sandbox for 'echo' tool, registering local native fallback.");
+            registry.register(EchoTool);
+        }
     }
 
     registry.register(WebSearchTool::new());
@@ -462,19 +499,184 @@ async fn main() {
         });
         info!("Registered sandboxed file_read tool.");
     } else {
-        registry.register(FileReadTool::new(PathBuf::from(&workspace_dir)));
+        if enforce_sandbox {
+            panic!("Security Violation: ENFORCE_SANDBOX is enabled but sandboxed tool 'file_read.wasm' is missing at {:?}", file_read_wasm_path);
+        } else {
+            tracing::warn!("Warning: Bypassing WASM sandbox for 'file_read' tool, registering local native fallback.");
+            registry.register(FileReadTool::new(PathBuf::from(&workspace_dir)));
+        }
     }
     registry.register(MemoryStoreTool::new(store.clone()));
     registry.register(MemorySearchTool::new(store.clone()));
     registry.register(MemoryForgetTool::new(store.clone()));
-    registry.register(hydragent_tools::standing_orders::StandingOrdersTool::new(PathBuf::from("./config")));
+    registry.register(hydragent_tools::standing_orders::SoulTool::new(PathBuf::from("./config")));
+    registry.register(hydragent_tools::user_profile::UserProfileTool::new(PathBuf::from("./config")));
+    // Initialize Gateway Router
+    let gateway_router = Arc::new(hydragent_gateway::GatewayRouter::new());
+
+    // Initialize Heartbeat Engine
+    let heartbeat = Arc::new(hydragent_scheduler::HeartbeatEngine::new(gateway_router.clone()));
+
+    // Initialize Work IQ Engine
+    let work_iq = hydragent_scheduler::work_iq::WorkIqEngine::new(
+        store.pool().clone(),
+        heartbeat.clone(),
+        model_router.clone(),
+    );
+
+    // Create scheduler executor with OnceCell to break dependency cycle
+    let registry_cell = Arc::new(tokio::sync::OnceCell::<Arc<ToolRegistry>>::new());
+    let store_clone = store.clone();
+    let model_router_clone = model_router.clone();
+    let heartbeat_clone = heartbeat.clone();
+    let work_iq_clone = work_iq.clone();
+    let max_react_steps = app_config.max_react_steps;
+    let registry_cell_clone = registry_cell.clone();
+
+    let executor = Arc::new(move |job: hydragent_types::CronJob| {
+        let _store = store_clone.clone();
+        let model_router = model_router_clone.clone();
+        let heartbeat = heartbeat_clone.clone();
+        let registry_cell = registry_cell_clone.clone();
+        let work_iq = work_iq_clone.clone();
+        let fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = Box::pin(async move {
+            if job.task_type == "react_loop" {
+                let mut prompt = job.task_params.clone();
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&job.task_params) {
+                    if let Some(obj) = val.as_object() {
+                        if let Some(p) = obj.get("prompt").or_else(|| obj.get("query")).or_else(|| obj.get("content")).or_else(|| obj.get("task")) {
+                            if let Some(s) = p.as_str() {
+                                prompt = s.to_string();
+                            }
+                        }
+                    }
+                }
+                let page_id = format!("cron-{}", job.id);
+                let history_messages = vec![];
+                let retrieved_memories = vec![];
+                let user_profile = std::fs::read_to_string("./config/USER.md").ok();
+                let soul_guidelines = std::fs::read_to_string("./config/SOUL.md").ok();
+                
+                let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+                let active_perms = orchestrator::ActivePermissions::default();
+                let page_id_clone = page_id.clone();
+                let prompt_clone = prompt.clone();
+                
+                let registry = registry_cell.get().expect("Registry not set").clone();
+                tokio::spawn(async move {
+                    let _ = crate::react_loop::run_react_loop(
+                        &page_id_clone,
+                        "cli",
+                        "system",
+                        &prompt_clone,
+                        history_messages,
+                        retrieved_memories,
+                        user_profile,
+                        soul_guidelines,
+                        model_router,
+                        registry,
+                        max_react_steps,
+                        tx,
+                        active_perms,
+                    ).await;
+                });
+                
+                let mut accumulated_tokens = String::new();
+                while let Some(line) = rx.recv().await {
+                    if let Ok(msg_val) = serde_json::from_str::<serde_json::Value>(&line) {
+                        if msg_val.get("method").and_then(|m| m.as_str()) == Some("response.token") {
+                            if let Some(token) = msg_val.get("params").and_then(|p| p.get("token")).and_then(|t| t.as_str()) {
+                                accumulated_tokens.push_str(token);
+                            }
+                        }
+                    }
+                }
+                
+                if !accumulated_tokens.is_empty() {
+                    let _ = heartbeat.push(job.target_channel_id, page_id, accumulated_tokens).await;
+                }
+            } else if job.task_type == "message" {
+                let _ = heartbeat.push(job.target_channel_id, format!("cron-{}", job.id), job.task_params).await;
+            } else if job.task_type == "work_iq_digest" {
+                if let Err(e) = work_iq.generate_and_send_digest(&job.task_params, &job.target_channel_id).await {
+                    tracing::error!("Work IQ: failed to run digest: {}", e);
+                }
+            }
+        });
+        fut
+    });
+
+    let cron_scheduler = hydragent_scheduler::CronScheduler::new(store.pool().clone(), executor)
+        .await
+        .expect("Failed to initialize CronScheduler");
+
+    // Add schedule and send tools to registry
+    let cron_scheduler_clone = cron_scheduler.clone();
+    let schedule_tool = hydragent_tools::schedule_task::ScheduleTaskTool::new(move |cron_expr, desc, task_type, task_params, channel_id| {
+        let scheduler = cron_scheduler_clone.clone();
+        Box::pin(async move {
+            scheduler.add_job(&cron_expr, &desc, &task_type, &task_params, &channel_id).await
+        })
+    });
+
+    let heartbeat_clone = heartbeat.clone();
+    let send_message_tool = hydragent_tools::send_message::SendMessageTool::new(move |channel_id, page_id, content| {
+        let heartbeat = heartbeat_clone.clone();
+        Box::pin(async move {
+            heartbeat.push(channel_id, page_id, content).await
+        })
+    });
+
+    // Add rss_subscribe tool to registry
+    let work_iq_subscribe = work_iq.clone();
+    let cron_scheduler_subscribe = cron_scheduler.clone();
+    let rss_subscribe_tool = hydragent_tools::rss_subscribe::RssSubscribeTool::new(move |url, name, keywords, digest_channel, digest_cron| {
+        let work_iq = work_iq_subscribe.clone();
+        let scheduler = cron_scheduler_subscribe.clone();
+        Box::pin(async move {
+            // Add feed to DB
+            work_iq.add_feed(&url, &name, &keywords, &digest_channel, &digest_cron).await?;
+            // Add cron job for feed digest
+            let _ = scheduler.add_job(
+                &digest_cron,
+                &format!("Work IQ Digest for {}", name),
+                "work_iq_digest",
+                &url,
+                &digest_channel,
+            ).await?;
+            Ok(())
+        })
+    });
+
+    registry.register(schedule_tool);
+    registry.register(send_message_tool);
+    registry.register(rss_subscribe_tool);
+
     let registry = Arc::new(registry);
+    if registry_cell.set(registry.clone()).is_err() {
+        panic!("Failed to initialize ToolRegistry OnceCell");
+    }
+
+    // Spawn background Work IQ polling interval loop
+    let work_iq_loop = work_iq.clone();
+    tokio::spawn(async move {
+        let poll_interval_sec = std::env::var("WORK_IQ_POLL_INTERVAL_SEC")
+            .unwrap_or_else(|_| "300".to_string())
+            .parse::<u64>()
+            .unwrap_or(300);
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(poll_interval_sec));
+        interval.tick().await; // skip first immediate tick
+        loop {
+            interval.tick().await;
+            tracing::info!("Starting background Work IQ feed polling cycle...");
+            if let Err(e) = work_iq_loop.run_poll_cycle().await {
+                tracing::error!("Error in background Work IQ polling cycle: {}", e);
+            }
+        }
+    });
 
     // Initialize ActivePermissions
     let active_permissions = orchestrator::ActivePermissions::default();
-
-    // Initialize Gateway Router
-    let gateway_router = Arc::new(hydragent_gateway::GatewayRouter::new());
 
     // Initialize Event Bus Router and register handlers
     let mut router = hydragent_bus::router::Router::new();
@@ -516,6 +718,18 @@ async fn main() {
     router.register("library.delete_node", orchestrator::LibraryNodeDeleteHandler {
         store: store.clone(),
     });
+    router.register("page.compact", orchestrator::PageCompactHandler {
+        store: store.clone(),
+        model_router: model_router.clone(),
+    });
+    router.register("page.get_summary", orchestrator::PageGetSummaryHandler {
+        store: store.clone(),
+    });
+    router.register("page.update_summary", orchestrator::PageUpdateSummaryHandler {
+        store: store.clone(),
+    });
+    router.register("config.read", orchestrator::ConfigReadHandler);
+    router.register("config.write", orchestrator::ConfigWriteHandler);
 
     // Create and start the Event Bus
     let bus = hydragent_bus::EventBus::new(router, app_config.bus_port);

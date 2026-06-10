@@ -5,8 +5,8 @@ use std::collections::HashMap;
 /// Inbound user message, normalised from any channel adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentEvent {
-    /// UUID v4 — uniquely identifies the session
-    pub session_id: String,
+    /// UUID v4 — uniquely identifies the page
+    pub page_id: String,
     /// e.g. "cli:default", "telegram:123456789"
     pub channel_id: String,
     pub user_id: String,
@@ -41,7 +41,7 @@ pub struct Attachment {
 /// Agent response returned to the channel adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentResponse {
-    pub session_id: String,
+    pub page_id: String,
     pub content: String,
     pub format: ResponseFormat,
     #[serde(default)]
@@ -119,7 +119,7 @@ pub struct ConsentRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Message {
     pub id: i64,
-    pub session_id: String,
+    pub page_id: String,
     pub role: MessageRole,
     pub content: String,
     pub timestamp: i64,
@@ -157,7 +157,7 @@ mod tests {
         metadata.insert("key".to_string(), "value".to_string());
         
         let event = IntentEvent {
-            session_id: "session-123".to_string(),
+            page_id: "session-123".to_string(),
             channel_id: "cli:default".to_string(),
             user_id: "user-456".to_string(),
             content: "hello".to_string(),
@@ -173,14 +173,14 @@ mod tests {
 
         let serialized = serde_json::to_string(&event).unwrap();
         let deserialized: IntentEvent = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.session_id, "session-123");
+        assert_eq!(deserialized.page_id, "session-123");
         assert_eq!(deserialized.content, "hello");
     }
 
     #[test]
     fn test_agent_response_serialization() {
         let response = AgentResponse {
-            session_id: "session-123".to_string(),
+            page_id: "session-123".to_string(),
             content: "response content".to_string(),
             format: ResponseFormat::Markdown,
             consent_requests: vec![],
@@ -189,7 +189,7 @@ mod tests {
 
         let serialized = serde_json::to_string(&response).unwrap();
         let deserialized: AgentResponse = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.session_id, "session-123");
+        assert_eq!(deserialized.page_id, "session-123");
         assert_eq!(deserialized.content, "response content");
     }
 
@@ -238,7 +238,7 @@ pub struct MemoryDocument {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionRequest {
     pub request_id: String,     // UUID
-    pub session_id: String,
+    pub page_id: String,
     pub tool_id: String,
     pub params_summary: String, // Human-readable description of the action
     pub tier: PermissionTier,
@@ -271,11 +271,21 @@ pub struct ChannelCapabilities {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushMessage {
     pub channel_id: String,       // e.g., "telegram:123456789"
-    pub session_id: String,
+    pub page_id: String,
     pub content: String,
     pub markdown: bool,
     pub metadata: HashMap<String, String>,
+}/// A scheduled cron job stored in SQLite and registered with the scheduler.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+pub struct CronJob {
+    pub id: String,               // UUID
+    pub cron_expr: String,        // e.g., "0 9 * * *"
+    pub description: String,      // Human-readable description
+    pub task_type: String,        // "react_loop" or "message"
+    pub task_params: String,      // JSON params for the task
+    pub target_channel_id: String,// Where to deliver results
+    pub status: String,           // "active" | "paused" | "deleted"
+    pub created_at: i64,
+    pub last_run_at: Option<i64>,
+    pub run_count: i64,
 }
-
-
-

@@ -847,5 +847,56 @@ Composes and sends an email via the user's configured SMTP account.
 
 ---
 
+## 11. Library Knowledge Graph Architecture
+
+Hydragent implements an interconnected **Library Knowledge Graph System** in the session/workspace namespace. This replaces flat rooms with hierarchical, semantic nodes (Shelves, Books, Pages, Desks) and directed relations.
+
+### 11.1 SQLite Knowledge Graph Schema
+
+All nodes and relation edges are stored in the local `data/sessions.db` database using the following schemas:
+
+```sql
+CREATE TABLE IF NOT EXISTS nodes (
+    node_id    TEXT PRIMARY KEY,
+    type       TEXT NOT NULL CHECK(type IN ('shelf', 'book', 'page', 'desk')),
+    label      TEXT NOT NULL,
+    properties TEXT NOT NULL DEFAULT '{}' -- JSON string store
+);
+
+CREATE TABLE IF NOT EXISTS edges (
+    edge_id    TEXT PRIMARY KEY,
+    source_id  TEXT NOT NULL,
+    target_id  TEXT NOT NULL,
+    relation   TEXT NOT NULL, -- e.g., 'belongs_to', 'sits_on', 'connects_to'
+    weight     REAL NOT NULL DEFAULT 1.0,
+    FOREIGN KEY(source_id) REFERENCES nodes(node_id) ON DELETE CASCADE,
+    FOREIGN KEY(target_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
+```
+
+### 11.2 Event Bus RPC Handlers
+
+The Rust core exposes the following methods over the Event Bus interface:
+
+*   `library.create_node`: Spawns or updates a graph node (Shelf, Book, Page).
+*   `library.link`: Connects two nodes with a custom relation and weight.
+*   `library.list_nodes`: Queries nodes filtered by type.
+*   `library.delete_node`: Cascades node deletion to clear matching edges automatically.
+*   `library.search`: Executes graph traversal and extracts semantic context up to 2-hops.
+
+### 11.3 Mini App D3.js Visualization
+
+A background compiler script (`adapters/generate_library_graph.py`) dynamically reads nodes and edges to build an interactive D3.js force-directed graph. The generated HTML (`adapters/miniapp/graph.html`) is loaded inside the Telegram Mini App iframe, featuring:
+
+*   **Interactive Node Manipulation**: Drag, zoom, and select nodes directly.
+*   **Aesthetics**: Glassmorphism dashboard panel, HSL colored node groups matching the dark theme, and smooth transition animations.
+*   **Dynamic Swapping**: Selecting an active Page swaps conversation session focus instantly, alerting the user via the Telegram chat.
+
+---
+
 *For feature descriptions → **[FEATURES.md](FEATURES.md)***
 *For development timeline → **[ROADMAP.md](ROADMAP.md)***
+

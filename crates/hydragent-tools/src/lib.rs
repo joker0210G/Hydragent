@@ -8,3 +8,7 @@ pub mod memory_store;
 pub mod memory_search;
 pub mod memory_forget;
 pub mod standing_orders;
+pub mod user_profile;
+pub mod send_message;
+pub mod schedule_task;
+pub mod rss_subscribe;

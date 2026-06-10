@@ -62,11 +62,11 @@ impl MethodHandler for IntentSubmitHandler {
             };
         }
 
-        // Create or verify session and log user query
-        if let Err(e) = self.store.create_session(&intent.session_id).await {
-            error!("Failed to create/load session meta: {}", e);
+        // Create or verify page and log user query
+        if let Err(e) = self.store.create_page(&intent.page_id).await {
+            error!("Failed to create/load page meta: {}", e);
         }
-        if let Err(e) = self.store.append_message(&intent.session_id, MessageRole::User, &intent.content).await {
+        if let Err(e) = self.store.append_message(&intent.page_id, MessageRole::User, &intent.content).await {
             error!("Failed to append user query: {}", e);
         }
 
@@ -74,19 +74,35 @@ impl MethodHandler for IntentSubmitHandler {
         let mut history_recalled = false;
         let mut history_count = 0;
         let mut history_messages = vec![];
-        match self.store.load_recent(&intent.session_id, 20).await {
+        
+        // Inject page summary if present
+        if let Ok(Some(ref summary)) = self.store.get_page_summary(&intent.page_id).await {
+            if !summary.trim().is_empty() {
+                history_messages.push(hydragent_types::Message {
+                    id: 0,
+                    page_id: intent.page_id.clone(),
+                    role: MessageRole::System,
+                    content: format!("[Summary of previous conversation context on this Page]:\n\n{}", summary),
+                    timestamp: 0,
+                    token_count: None,
+                });
+            }
+        }
+
+        match self.store.load_recent(&intent.page_id, 20).await {
             Ok(history) => {
-                history_count = history.len();
-                info!("Loaded {} history messages for session {}", history_count, intent.session_id);
+                let recent_count = history.len();
+                history_count = history_messages.len() + recent_count;
+                info!("Loaded {} history messages for page {}", history_count, intent.page_id);
                 
                 // If there's previous messages (excluding the query we just appended), notify the client
                 if history_count > 1 {
                     history_recalled = true;
                 }
-                history_messages = history;
+                history_messages.extend(history);
             }
             Err(e) => {
-                error!("Failed to load session history: {}", e);
+                error!("Failed to load page history: {}", e);
             }
         }
 
@@ -126,13 +142,16 @@ impl MethodHandler for IntentSubmitHandler {
             let _ = response_tx.send(serde_json::to_string(&notification).unwrap()).await;
         }
 
-        // Load standing orders silently
-        let standing_orders = std::fs::read_to_string("./config/standing_orders.md").ok();
+        // Load profiles silently
+        let user_profile = std::fs::read_to_string("./config/USER.md").ok();
+        let soul_guidelines = std::fs::read_to_string("./config/SOUL.md").ok();
 
         let model_router = self.model_router.clone();
         let registry = self.registry.clone();
         let max_react_steps = self.max_react_steps;
-        let session_id = intent.session_id.clone();
+        let page_id = intent.page_id.clone();
+        let channel_id = intent.channel_id.clone();
+        let user_id = intent.user_id.clone();
         let user_query = intent.content.clone();
         let response_tx_clone = response_tx.clone();
 
@@ -141,11 +160,14 @@ impl MethodHandler for IntentSubmitHandler {
         // Spawn ReAct reasoning loop task
         let handle = tokio::spawn(async move {
             crate::react_loop::run_react_loop(
-                &session_id,
+                &page_id,
+                &channel_id,
+                &user_id,
                 &user_query,
                 history_messages,
                 retrieved_memories,
-                standing_orders,
+                user_profile,
+                soul_guidelines,
                 model_router,
                 registry,
                 max_react_steps,
@@ -179,9 +201,35 @@ impl MethodHandler for IntentSubmitHandler {
         let _ = response_tx.send(serde_json::to_string(&completion).unwrap()).await;
 
         // Save assistant reply to SQLite memory
-        if let Err(e) = self.store.append_message(&intent.session_id, MessageRole::Assistant, &reply_text).await {
+        if let Err(e) = self.store.append_message(&intent.page_id, MessageRole::Assistant, &reply_text).await {
             error!("Failed to save assistant response: {}", e);
         }
+
+        // Auto Compaction Trigger Check
+        let store_clone = self.store.clone();
+        let page_id_clone = intent.page_id.clone();
+        let pool = self.store.pool().clone();
+        let model_router_clone = self.model_router.clone();
+        tokio::spawn(async move {
+            let msg_count = sqlx::query("SELECT COUNT(*) FROM messages WHERE page_id = ?")
+                .bind(&page_id_clone)
+                .fetch_one(&pool)
+                .await
+                .map(|r| sqlx::Row::get::<i64, _>(&r, 0))
+                .unwrap_or(0);
+            let limit = std::env::var("PAGE_COMPACTION_LIMIT")
+                .unwrap_or_else(|_| "30".to_string())
+                .parse::<i64>()
+                .unwrap_or(30);
+            if msg_count > limit {
+                info!("Page {} message count {} exceeds limit {}, triggering auto compaction", page_id_clone, msg_count, limit);
+                if let Err(e) = run_compaction(&page_id_clone, &store_clone, &model_router_clone).await {
+                    error!("Auto compaction failed: {}", e);
+                } else {
+                    info!("Auto compaction succeeded for page {}", page_id_clone);
+                }
+            }
+        });
 
         // Convert ToolResults to ToolCallRecords for response
         let tool_records = executed_tools.into_iter().map(|tr| {
@@ -196,7 +244,7 @@ impl MethodHandler for IntentSubmitHandler {
         }).collect();
 
         let agent_response = AgentResponse {
-            session_id: intent.session_id,
+            page_id: intent.page_id,
             content: reply_text,
             format: ResponseFormat::Markdown,
             consent_requests: vec![],
@@ -654,6 +702,259 @@ impl MethodHandler for LibraryNodeDeleteHandler {
                 error: Some(hydragent_bus::message::JsonRpcError {
                     code: hydragent_bus::message::ERR_INTERNAL,
                     message: format!("Failed to delete node: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            }
+        }
+    }
+}
+
+pub async fn run_compaction(
+    page_id: &str,
+    store: &SessionStore,
+    model_router: &ModelRouter,
+) -> anyhow::Result<String> {
+    let messages = store.load_recent(page_id, 200).await?;
+    if messages.is_empty() {
+        return Ok("".to_string());
+    }
+    let mut formatted_history = Vec::new();
+    for msg in &messages {
+        let role_str = match msg.role {
+            MessageRole::User => "User",
+            MessageRole::Assistant => "Assistant",
+            MessageRole::System => "System",
+            MessageRole::Tool => "Tool",
+        };
+        formatted_history.push(format!("{}: {}", role_str, msg.content));
+    }
+    let history_text = formatted_history.join("\n");
+    
+    let prompt = format!(
+        "You are a helpful assistant. Summarize the key discussion points, user requests, outcomes, decisions, and current status of this conversation. Keep it concise, structured strictly as a markdown numbered list (e.g. 1. point one\\n2. point two).\\n\\nCONVERSATION HISTORY:\\n{}",
+        history_text
+    );
+    
+    let system_message = hydragent_model::openrouter::ChatMessage {
+        role: "user".to_string(),
+        content: prompt,
+    };
+    
+    let (tx, mut rx) = mpsc::channel(100);
+    tokio::spawn(async move {
+        while let Some(_) = rx.recv().await {}
+    });
+    
+    let (summary, _) = model_router.chat_stream(vec![system_message], tx).await?;
+    
+    store.update_page_summary(page_id, &summary).await?;
+    store.truncate_page_messages(page_id, 4).await?;
+    
+    Ok(summary)
+}
+
+pub struct PageCompactHandler {
+    pub store: Arc<SessionStore>,
+    pub model_router: Arc<ModelRouter>,
+}
+
+#[async_trait]
+impl MethodHandler for PageCompactHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        let page_id = request.params.get("page_id").and_then(|p| p.as_str()).unwrap_or("").to_string();
+        if page_id.is_empty() {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INVALID_REQUEST,
+                    message: "Missing page_id".to_string(),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+        match run_compaction(&page_id, &self.store, &self.model_router).await {
+            Ok(summary) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({"status": "success", "summary": summary})),
+                error: None,
+                id: request.id,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: format!("Compaction failed: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            }
+        }
+    }
+}
+
+pub struct PageGetSummaryHandler {
+    pub store: Arc<SessionStore>,
+}
+
+#[async_trait]
+impl MethodHandler for PageGetSummaryHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        let page_id = request.params.get("page_id").and_then(|p| p.as_str()).unwrap_or("").to_string();
+        if page_id.is_empty() {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INVALID_REQUEST,
+                    message: "Missing page_id".to_string(),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+        match self.store.get_page_summary(&page_id).await {
+            Ok(summary) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({"summary": summary.unwrap_or_default()})),
+                error: None,
+                id: request.id,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: format!("Failed to get summary: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            }
+        }
+    }
+}
+
+pub struct PageUpdateSummaryHandler {
+    pub store: Arc<SessionStore>,
+}
+
+#[async_trait]
+impl MethodHandler for PageUpdateSummaryHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        let page_id = request.params.get("page_id").and_then(|p| p.as_str()).unwrap_or("").to_string();
+        let summary = request.params.get("summary").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        if page_id.is_empty() {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INVALID_REQUEST,
+                    message: "Missing page_id".to_string(),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+        match self.store.update_page_summary(&page_id, &summary).await {
+            Ok(_) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({"status": "success"})),
+                error: None,
+                id: request.id,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: format!("Failed to update summary: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            }
+        }
+    }
+}
+
+pub struct ConfigReadHandler;
+
+#[async_trait]
+impl MethodHandler for ConfigReadHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        let file_name = request.params.get("file_name").and_then(|f| f.as_str()).unwrap_or("").to_string();
+        if file_name != "USER.md" && file_name != "SOUL.md" {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INVALID_REQUEST,
+                    message: "Invalid file_name. Only USER.md and SOUL.md are allowed.".to_string(),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+        let path = format!("./config/{}", file_name);
+        match std::fs::read_to_string(&path) {
+            Ok(content) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({"content": content})),
+                error: None,
+                id: request.id,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: format!("Failed to read file: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            }
+        }
+    }
+}
+
+pub struct ConfigWriteHandler;
+
+#[async_trait]
+impl MethodHandler for ConfigWriteHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        let file_name = request.params.get("file_name").and_then(|f| f.as_str()).unwrap_or("").to_string();
+        let content = request.params.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        if file_name != "USER.md" && file_name != "SOUL.md" {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INVALID_REQUEST,
+                    message: "Invalid file_name. Only USER.md and SOUL.md are allowed.".to_string(),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+        let path = format!("./config/{}", file_name);
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::write(&path, content) {
+            Ok(_) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({"status": "success"})),
+                error: None,
+                id: request.id,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: format!("Failed to write file: {}", e),
                     data: None,
                 }),
                 id: request.id,

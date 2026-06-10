@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(sqlx::FromRow, Serialize, Deserialize, Debug, Clone)]
 pub struct SemanticMemory {
     pub id: String,
-    pub session_id: Option<String>,
+    pub page_id: Option<String>,
     pub content: String,
     pub importance: i64,
     pub timestamp: i64,

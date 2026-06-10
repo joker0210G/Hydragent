@@ -37,12 +37,12 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 **Theme**: Build the minimum viable agent loop that can execute a ReAct cycle, call an LLM, and run a basic tool.
 
 #### Milestones
-- [ ] Deploy a persistent Rust binary (Tokio async) executing a basic ReAct loop
-- [ ] Startup in < 50 ms; optional Zig edge binary ≤ 678 KB, < 2 ms startup
-- [ ] Connect to OpenRouter API with fallback rotation chains (20+ models)
-- [ ] Accept and respond to CLI input as the first "channel"
-- [ ] Execute 3 basic tools: `web_search`, `file_read`, `echo`
-- [ ] **Plan Mode** (read-only analysis) and **Build Mode** (full file ops) separation implemented from day one
+- [x] Deploy a persistent Rust binary (Tokio async) executing a basic ReAct loop
+- [x] Startup in < 50 ms; optional Zig edge binary ≤ 678 KB, < 2 ms startup
+- [x] Connect to OpenRouter API with fallback rotation chains (20+ models)
+- [x] Accept and respond to CLI input as the first "channel"
+- [x] Execute 3 basic tools: `web_search`, `file_read`, `echo`
+- [x] **Plan Mode** (read-only analysis) and **Build Mode** (full file ops) separation implemented from day one
 
 #### Key Tasks
 | Task | Description | Owner |
@@ -78,13 +78,13 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 **Theme**: Build the memU-style memory file-system and QwenPaw ReMe compaction pipeline.
 
 #### Milestones
-- [ ] Deploy hierarchical SQLite schema (Episodic, Semantic, Emotional tables)
-- [ ] Implement dual-mode retrieval: fast embedding pass (zero LLM cost) + deep reasoning escalation
-- [ ] BM25 + ChromaDB hybrid retrieval scoring ≥ 88.78% on HaluMem QA benchmark
-- [ ] HaluMem memory accuracy score ≥ 94.06%
-- [ ] Nightly "Dreaming" compaction pipeline: Compress → Link → Strengthen (3-stage biological model)
-- [ ] SOUL.md and USER.md auto-generation from extracted facts
-- [ ] **Standing Orders** system: persistent behavioral rules loaded at startup, auto-suggested by Dreaming pipeline
+- [x] Deploy hierarchical SQLite schema (Episodic, Semantic, Emotional tables)
+- [x] Implement dual-mode retrieval: fast embedding pass (zero LLM cost) + deep reasoning escalation
+- [x] BM25 + ChromaDB hybrid retrieval scoring ≥ 88.78% on HaluMem QA benchmark
+- [x] HaluMem memory accuracy score ≥ 94.06%
+- [x] Nightly "Dreaming" compaction pipeline: Compress → Link → Strengthen (3-stage biological model)
+- [x] SOUL.md and USER.md auto-generation from extracted facts
+- [x] **Standing Orders** system: persistent behavioral rules loaded at startup, auto-suggested by Dreaming pipeline
 
 #### Key Tasks
 | Task | Description |
@@ -124,11 +124,11 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 **Theme**: Implement the security cage around every tool execution — WASM sandbox, Docker isolation, and the IronClaw/Microsoft Scout permission model.
 
 #### Milestones
-- [ ] Deploy isolated WebAssembly (Wasmtime) runtime with zero net/fs capability
-- [ ] Deploy Docker-sandboxed code execution environment (Python, Node.js, Bash)
-- [ ] Deploy XChaCha20-Poly1305 + Argon2id encrypted vault with process isolation
-- [ ] Implement 3-tier permission gate: Auto-approve / Prompt / Deny
-- [ ] Playwright headless browser running in isolated Docker container
+- [x] Deploy isolated WebAssembly (Wasmtime) runtime with zero net/fs capability
+- [x] Deploy Docker-sandboxed code execution environment (Python, Node.js, Bash)
+- [x] Deploy XChaCha20-Poly1305 + Argon2id encrypted vault with process isolation
+- [x] Implement 3-tier permission gate: Auto-approve / Prompt / Deny
+- [x] Playwright headless browser running in isolated Docker container
 
 #### Key Tasks
 | Task | Description |
@@ -160,12 +160,12 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 **Theme**: Connect Hydragent to the real world — 40+ channel adapters, cron-triggered proactive tasks, and voice I/O.
 
 #### Milestones
-- [ ] Deploy Telegram, Discord, WhatsApp, and Slack adapters (total 40+ channels)
+- [x] Deploy Telegram, Discord, WhatsApp, and Slack adapters (total 40+ channels)
 - [ ] Web chat UI (embedded widget, REST API + WebSocket)
-- [ ] Persistent cron daemon for proactive task triggers
+- [x] Persistent cron daemon for proactive task triggers
 - [ ] Voice I/O: Whisper STT + Coqui TTS integration
 - [ ] IMAP/SMTP email adapter with OAuth brokering
-- [ ] **Work IQ**: always-on background intelligence layer that proactively flags schedule conflicts, surfaces relevant documents pre-meeting, anticipates needs from calendar + email context
+- [x] **Work IQ**: always-on background intelligence layer that proactively flags schedule conflicts, surfaces relevant documents pre-meeting, anticipates needs from calendar + email context
 - [ ] Auth profile rotation with exponential backoff (1 min → 5 min → 25 min, capped at 1 hour)
 
 #### Key Tasks

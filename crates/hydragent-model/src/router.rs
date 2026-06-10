@@ -55,4 +55,14 @@ impl ModelRouter {
 
         anyhow::bail!("All models (primary and fallback) failed to execute completion.")
     }
+
+    pub async fn generate_non_streaming(&self, prompt: &str) -> Result<String> {
+        let (tx, _rx) = mpsc::channel(100);
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        }];
+        let (content, _) = self.chat_stream(messages, tx).await?;
+        Ok(content)
+    }
 }

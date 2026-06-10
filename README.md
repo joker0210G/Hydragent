@@ -73,6 +73,9 @@ Borrowed from **OpenClaw + ZeroClaw** — a single runtime communicates across 4
 ### 6. 🤝 Complex Work Spawns Specialist Swarms
 Borrowed from **Claude Code + Taskade** — long-horizon tasks decompose into a Directed Acyclic Graph and spawn specialist subagents (Plan, Build, Explore, Scout) with scoped system prompts, individual tool permissions, and independent context windows. A Model Council routes each step to the best-fit LLM.
 
+### 7. 📚 Workspaces are Connected Knowledge Graphs
+Hydragent structures user sessions and workspaces as an interconnected **Library Knowledge Graph** (Shelves, Books, Pages, and Desks) rather than flat room directories. Users can create, link, and manipulate nodes with custom directed edges. The entire knowledge graph is compiled on-the-fly and rendered interactively inside the Telegram Mini App dashboard as a D3.js force-directed map.
+
 ---
 
 ## 🗂️ Repository Structure
@@ -82,28 +85,31 @@ hydragent/
 ├── RaD/                        # Research & Development source materials
 │   ├── gemini.md               # Deep technical R&D (primary source)
 │   ├── chatgpt.md              # Comparative agent analysis
-│   ├── deepseek.md             # Agent landscape & framework comparison
-│   ├── perplexity.md           # Agent feature catalog
-│   └── kimi.md                 # Additional agent R&D notes
+│   └── ...
 │
 ├── README.md                   # Project overview (this file)
 ├── FEATURES.md                 # Comprehensive feature matrix & capability catalog
-├── ARCHITECTURE.md             # Technical specification, layers, and API schemas
-├── ROADMAP.md                  # Phased milestones and implementation timeline
+├── doc/
+│   ├── ARCHITECTURE.md         # Technical specification, layers, and API schemas
+│   └── ROADMAP.md              # Phased milestones and implementation timeline
 │
-├── src/
-│   ├── core/                   # Orchestrator, DAG planner, ReAct loop
-│   ├── memory/                 # Hierarchical memory, SQLite, ChromaDB, BM25
-│   ├── gateway/                # Channel adapters (Telegram, Discord, Slack, CLI...)
-│   ├── security/               # Vault, WASM sandbox, TEE integration, taint tracker
-│   ├── tools/                  # Browser bot, code sandbox, MCP, file I/O, search
-│   ├── swarm/                  # Subagent spawning, Model Council, DAG coordinator
-│   └── skills/                 # Self-generated skill library, Curator process
+├── crates/                     # Rust Multi-Crate Workspace
+│   ├── hydragent-core/         # Main orchestrator binary & react loop
+│   ├── hydragent-types/        # Shared system types and events
+│   ├── hydragent-bus/          # Event bus & API router
+│   ├── hydragent-model/        # Model Router (OpenRouter & Ollama)
+│   ├── hydragent-tools/        # ReAct tools registry & implementations
+│   ├── hydragent-memory/       # Hierarchical database memory layer (SQLite, hybrid search)
+│   ├── hydragent-embed/        # Vector embedding utilities
+│   ├── hydragent-vault/        # Encrypted credential storage (XChaCha20-Poly1305)
+│   ├── hydragent-sandbox/      # WASM sandbox execution boundary
+│   ├── hydragent-gateway/      # Inbound channel deduplication and rate limiting
+│   └── hydragent-scheduler/    # Cron scheduler, Heartbeat engine & Work IQ
 │
+├── adapters/                   # Python channel adapters (Telegram, Slack, Discord, Webhooks)
 ├── config/
 │   ├── SOUL.md                 # Agent personality, values, and behavioral guidelines
-│   ├── USER.md                 # User profile, preferences, and memory seed
-│   └── agents/                 # Subagent role definitions and system prompts
+│   └── USER.md                 # User profile, preferences, and memory seed
 │
 ├── .env.example                # Environment configuration template
 └── LICENSE                     # MIT License
