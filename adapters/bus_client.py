@@ -62,8 +62,13 @@ class BusClient:
                     self.writer.write((json.dumps(resp) + "\n").encode())
                     await self.writer.drain()
             elif msg.get("method") == "response.complete":
-                # Streaming completed, wait for final response payload
-                pass
+                # Streaming completed. If the orchestrator already sent a
+                # final result payload, the `elif "result" in msg` branch
+                # above would have returned. If we get here, fall back to
+                # whatever tokens we accumulated so the caller doesn't hang.
+                if tokens:
+                    return "".join(tokens)
+                # Otherwise keep reading — the final result may still arrive.
             elif "result" in msg:
                 if isinstance(msg["result"], dict) and "content" in msg["result"]:
                     # The final response containing our complete AgentResponse struct

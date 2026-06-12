@@ -2,6 +2,10 @@
 
 > A comprehensive breakdown of every capability in the **Hydragent Unified AI Agent**, with the source agent each feature was distilled from and the technical implementation approach.
 
+> **⚠️ This file is the *capability catalog* — what the system is *designed* to do.** It is **not** a status report.
+> Several features listed here (ChromaDB semantic store, Dreaming pipeline, Wasmtime/Docker sandboxes, WhatsApp/Signal/Matrix/voice channels, Model Council, 16-layer security, Merkle audit, self-improving skill engine, edge model runner, ClawHub marketplace, RISC-V / ESP32-S3 binary, full Daemon Agent observability, etc.) are **planned but not yet present in the code**.
+> For what is *really* shipped in the working tree, see **[`STATE.md`](STATE.md)**.
+
 ---
 
 ## Table of Contents
@@ -34,7 +38,7 @@ Rather than a single flat vector database, Hydragent implements a full taxonomy 
 | Memory Type | Description | Storage Backend | Decay Policy |
 |---|---|---|---|
 | **Episodic** | Timestamped conversation logs, daily activity journals | SQLite (append-only WAL) | Compressed after 7 days via Dreaming pipeline |
-| **Semantic** | Fact-nodes about the world, user's domain knowledge | ChromaDB vector index | Relevance-score weighted; pruned at 6 months |
+| **Semantic** | Fact-nodes about the world, user's domain knowledge | SQLite `semantic_memories` + in-house `VectorStore` (linear scan, `vectors.bin`) | Relevance-score weighted; **LRU eviction NOT wired** (table grows unbounded) |
 | **Procedural** | Learned skill programs, tool execution patterns | Markdown skill files (`skills/`) | Graded on 7-day Curator cycle |
 | **Emotional / Affective** | User sentiment history, tone preferences, comfort zones | SQLite profile table | Rolling 30-day window |
 | **Social** | Relationship graph — contacts, organizations, interaction history | SQLite graph schema | Persistent; manually curated |
@@ -56,7 +60,7 @@ memory/
 │   ├── 2026-06-06.log       # Raw daily conversation log
 │   └── 2026-06-05.summary   # Compressed summary from Dreaming pipeline
 ├── semantic/
-│   └── chroma_index/        # ChromaDB persistent vector store
+│   └── vectors.bin           # In-house VectorStore (serialized HashMap, not ChromaDB)
 ├── skills/
 │   ├── send_email.md        # Auto-generated skill: email composition
 │   ├── github_pr.md         # Auto-generated skill: pull request workflow
@@ -64,21 +68,26 @@ memory/
 └── SOUL.md                  # Agent core identity, values, behavioral rules
 ```
 
-### 1.3 Dual-Mode Retrieval Engine *(from memU + QwenPaw ReMe)*
+### 1.3 Hybrid Retrieval Engine *(from memU + QwenPaw ReMe)*
 
-The retrieval system operates in two modes to minimize API cost while maximizing context relevance:
+The retrieval system is a single-mode **hybrid search** — a fast/deep path
+split is documented in the design but **not implemented**. What shipped:
 
-**Fast Context Phase** (always-on, zero LLM cost):
-- Lightweight local embedding model (e.g. `nomic-embed-text`) scores incoming messages against memory index
-- Monitors ambient signals: cron triggers, inbox notifications, RSS feeds, system metrics
-- Responds instantly for simple queries (< 5 ms latency) without any API call
+**Hybrid Search** — `SQLite FTS5 (BM25) exact keyword match` + **in-house
+linear-scan vector index** (cosine similarity over a `HashMap<String,
+Vec<f32>>`, **not ChromaDB / HNSW**) fused via Reciprocal Rank Fusion
+(RRF), exposed as the `memory_search` tool AND the bus RPC `memory.search`.
 
-**Deep Reasoning Mode** (escalated on high-signal detection):
-- Activates when fast-phase similarity score exceeds threshold OR user intent requires multi-hop reasoning
-- Routes the full augmented context to a frontier reasoning model (Claude Sonnet / GPT-4o / Gemini Pro)
-- Injects ranked memory chunks (top-k BM25 + top-k vector) alongside the live conversation
-
-**Hybrid Search** — `BM25 exact keyword match` + `ChromaDB cosine similarity` fused via Reciprocal Rank Fusion (RRF), achieving **88.78% accuracy on HaluMem QA benchmarks** (matching QwenPaw ReMe baseline).
+> **Reality notes (2026-06-12)**:
+> - The "fast phase" with `nomic-embed-text` and "< 5 ms latency" target is
+>   not implemented; the shipped embedder is `all-MiniLM-L6-v2` (local,
+>   ~90 MB, via Candle) and the vector path is a linear scan.
+> - The "deep reasoning mode" escalation to a frontier model is not
+>   implemented; the orchestrator always calls the configured `BRAIN_MODEL`.
+> - The "88.78% HaluMem QA" number is the QwenPaw ReMe baseline; it has
+>   **not been measured on this codebase**. See [`TODO_PHASE2.md`](../TODO_PHASE2.md).
+> - Verified: G1 hybrid search returns ranked results across BM25 + vector
+>   + RRF; E1 cross-session recall PASS.
 
 ### 1.4 Nightly "Dreaming" Compaction Pipeline *(from OpenClaw + memU)*
 
@@ -292,7 +301,7 @@ Users can inspect the plan before committing to execution — analogous to a `--
 Supported Runtimes: Python 3.12+, Node.js 22+, Bash/Zsh, Go 1.22+, Rust
 Execution Engine:   Daytona / E2B-inspired container orchestration
 Resource Limits:    CPU: 2 cores max, RAM: 512 MB max, Timeout: 120s
-Filesystem Access:  Scoped to /workspace/{session-id}/ only
+Filesystem Access:  Scoped to /workspace/{page-id}/ only
 Network Access:     Allowlist-gated; blocked by default
 ```
 

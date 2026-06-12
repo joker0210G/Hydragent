@@ -3,6 +3,16 @@
 > **Timeline**: Weeks 23–26
 > **Theme**: Make Hydragent **cryptographically auditable and adversarially resilient**. A 16-layer security pipeline hardens every data path — from input ingestion to tool execution to LLM response delivery. A **Merkle-chained audit log** makes every agent action tamper-evident and verifiable. **Full taint tracking** prevents secret data from propagating anywhere it shouldn't. **Ed25519 signing** makes every action receipt non-repudiable. **SGNL-style continuous authorization** replaces static permission tiers with real-time, context-aware access decisions. Inspired by OpenFang's 16-layer cryptographic security, IronClaw's boundary key injection, and NEAR AI's adversarial evaluation suite.
 
+> ## ❌ Implementation Status — Not Yet Implemented (Weeks 23–26, scheduled after Phase 5 weeks 20–22 land)
+> 
+> Cross-checked against [`doc/STATE.md`](../STATE.md) at `git rev 3d99366` (June 2026).
+> 
+> - **No `hydragent-security` crate** exists in the workspace.
+> - The **Merkle-chained audit log**, the **taint tracker** (and its 6 taint categories), the **Ed25519 action signer**, the **SGNL-style continuous authorization engine**, the **prompt-injection scanner**, the **SQLCipher-encrypted SQLite path**, the **`mlock`-pinned `SecureBuffer`**, and the **credential rotation commands** are all in this document only — they have not been built.
+> - What does exist: `hydragent-vault` (XChaCha20-Poly1305 + Argon2id) provides the encrypted-credential baseline, and the 3-tier `PermissionTier` enum from Phase 3 is live. Those are the *only* Phase 6 building blocks currently in the tree.
+> - Files referenced by this doc that are not in the tree: `crates/hydragent-security/`, `data/audit/chain.db`, `config/security/policy.yaml`, `config/security/injection_patterns.yaml`.
+> - **Schedule note:** Phase 3 Week 14 (Docker sandbox + audit log) was deferred. The Merkle audit chain that the original Week 14 stub promised is also deferred and is now a Phase 6 deliverable.
+
 ---
 
 ## 📋 Table of Contents

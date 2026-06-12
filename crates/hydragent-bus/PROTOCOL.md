@@ -67,7 +67,7 @@ Sent by the adapter to submit a new user prompt or command turn.
 - **Params**: `IntentEvent` struct (serialized as JSON).
   ```json
   {
-    "session_id": "session-uuid",
+    "page_id": "session-uuid",
     "channel_id": "cli:default",
     "user_id": "local-user",
     "content": "What is the capital of France?",
@@ -80,7 +80,7 @@ Sent by the adapter to submit a new user prompt or command turn.
 - **Response Result**: `AgentResponse` struct.
   ```json
   {
-    "session_id": "session-uuid",
+    "page_id": "session-uuid",
     "content": "The capital of France is Paris.",
     "format": "markdown",
     "consent_requests": [],

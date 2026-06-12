@@ -269,13 +269,13 @@ function renderShelves() {
     
     shelvesList.forEach(shelf => {
         const item = document.createElement('div');
-        item.className = 'room-item';
+        item.className = 'node-item';
         item.innerHTML = `
-            <div class="room-info">
-                <span class="room-title">📚 ${shelf.label}</span>
-                <span class="room-id">Shelf ID: ${shelf.id.substring(0, 8)}</span>
+            <div class="node-info">
+                <span class="node-title">📚 ${shelf.label}</span>
+                <span class="node-id">Shelf ID: ${shelf.id.substring(0, 8)}</span>
             </div>
-            <div class="room-actions">
+            <div class="node-actions">
                 <button class="btn-icon" onclick="event.stopPropagation(); openRenameModal('${shelf.id}', '${shelf.label}')">✏️</button>
                 <button class="btn-icon" onclick="event.stopPropagation(); deleteNode('${shelf.id}')">🗑️</button>
             </div>
@@ -297,13 +297,13 @@ function renderBooks() {
     
     booksList.forEach(book => {
         const item = document.createElement('div');
-        item.className = 'room-item';
+        item.className = 'node-item';
         item.innerHTML = `
-            <div class="room-info">
-                <span class="room-title">📘 ${book.label}</span>
-                <span class="room-id">Book ID: ${book.id.substring(0, 8)}</span>
+            <div class="node-info">
+                <span class="node-title">📘 ${book.label}</span>
+                <span class="node-id">Book ID: ${book.id.substring(0, 8)}</span>
             </div>
-            <div class="room-actions">
+            <div class="node-actions">
                 <button class="btn-icon" onclick="event.stopPropagation(); openRenameModal('${book.id}', '${book.label}')">✏️</button>
                 <button class="btn-icon" onclick="event.stopPropagation(); deleteNode('${book.id}')">🗑️</button>
             </div>
@@ -331,15 +331,15 @@ function renderPages() {
     pagesList.forEach(page => {
         const isActive = page.id === activePageId;
         const item = document.createElement('div');
-        item.className = `room-item ${isActive ? 'active' : ''}`;
+        item.className = `node-item ${isActive ? 'active' : ''}`;
         item.onclick = () => selectPage(page.id, page.label);
         
         item.innerHTML = `
-            <div class="room-info">
-                <span class="room-title">📄 ${page.label}</span>
-                <span class="room-id">Page ID: ${page.id.substring(0, 8)}</span>
+            <div class="node-info">
+                <span class="node-title">📄 ${page.label}</span>
+                <span class="node-id">Page ID: ${page.id.substring(0, 8)}</span>
             </div>
-            <div class="room-actions">
+            <div class="node-actions">
                 <button class="btn-icon" onclick="event.stopPropagation(); openRenameModal('${page.id}', '${page.label}')">✏️</button>
                 <button class="btn-icon" onclick="event.stopPropagation(); deleteNode('${page.id}')">🗑️</button>
             </div>
@@ -347,13 +347,13 @@ function renderPages() {
         container.appendChild(item);
         
         if (isActive) {
-            const display = document.getElementById('header-active-room');
+            const display = document.getElementById('header-active-page');
             if (display) display.innerText = page.label;
         }
     });
 }
 
-// Select Page (session context)
+// Select Page (switch context)
 function selectPage(pageId, pageLabel) {
     if (pageId === activePageId) {
         // If already active, just close the webapp to return to chat

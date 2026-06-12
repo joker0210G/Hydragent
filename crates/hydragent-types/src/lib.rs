@@ -281,7 +281,7 @@ pub struct CronJob {
     pub id: String,               // UUID
     pub cron_expr: String,        // e.g., "0 9 * * *"
     pub description: String,      // Human-readable description
-    pub task_type: String,        // "react_loop" or "message"
+    pub task_type: String,        // "react_loop" | "heartbeat" | "work_iq_digest"
     pub task_params: String,      // JSON params for the task
     pub target_channel_id: String,// Where to deliver results
     pub status: String,           // "active" | "paused" | "deleted"

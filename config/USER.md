@@ -3,3 +3,430 @@
 
 # Style & Communication Habits
 - The user frequently uses parentheses (...) to provide meta-insights, self-corrections, or humorous side-notes.
+- The user issues short, literal, and directive instructions, often specifying exactly what output is expected (e.g., requesting a single specific word).
+- The user issues direct imperative commands that explicitly name the tool to use (e.g., 'Use the file_read tool to read...', 'Use web_search to find...').
+- The user frequently specifies output format and scope constraints, such as 'Reply with just the color word', 'Do not call any tools', and 'Summarise the result'.
+- The user tests edge cases and boundary conditions, such as attempting path traversal with sequences like '../../../../../../etc/passwd'.
+- The user communicates in a terse, directive style, providing short imperative instructions with explicit constraints.
+- The user uses terse, imperative commands with precise output specifications, including explicit prohibitions like 'No tools.'
+- The user writes concise, imperative, command-style instructions.
+- The user issues terse, direct, single-instruction commands with explicit constraints.
+- The user uses hyphenated alphanumeric identifiers (e.g., PONG-4) as session or test tokens.
+- The user uses terse, imperative, command-style phrasing when issuing instructions (e.g., 'Reply with the word X. No tools.').
+- The user gives explicit, imperative tool-calling instructions such as 'Use memory_store' and 'Use memory_search'.
+- The user communicates using brief, direct, imperative-style commands without formal punctuation or capitalization.
+- The user issues terse, direct commands that specify exact tools, exact output text, and exact output length.
+- The user requests concise responses when they want brief answers.
+- The user issues short, imperative, tool-oriented commands such as 'Use memory_store to remember: ...'.
+- The user gives short, imperative commands that specify the exact confirmation word to use in response.
+- The user communicates in very terse, imperative commands (e.g., 'Tell me about X', 'Use tool to do Y').
+- The user wraps the content to be stored or referenced in single quotes within instructional messages.
+- The user issues instructions as direct imperatives beginning with 'Use ... to ...'.
+- The user encloses tool names and action keywords in single quotes.
+- The user provides short, single-purpose instructions, one task per message.
+- The user issues imperative, direct commands with exact specifications (e.g., tool names, argument values, required reply phrasing).
+- The user uses single quotes to delimit exact reply strings and argument values within instructions.
+- The user provides explicit importance ratings on a numeric scale when directing memory storage operations.
+- The user uses direct, imperative-style commands without preamble or pleasantries.
+- The user combines multiple tasks into a single concise instruction (e.g., execute a command and then produce a summary in a specific word count).
+- The user uses exact quoted strings to specify precise output content.
+- The user specifies concise output constraints, such as a specific word count (e.g., 'in 3 words').
+- The user writes concise, direct task instructions combining a concrete command with a follow-up constraint.
+- User writes in lowercase with no capitalization at the start of sentences.
+- User gives concise, direct task instructions without preamble or pleasantries.
+- User specifies explicit constraints on output format, such as exact word counts.
+- The user explicitly names the tools to use in imperative instructions (e.g., 'Use the memory_store tool to...').
+- The user wraps identifiers and markers in single quotes (e.g., 'cobalt-lantern-f1cd44').
+- The user specifies exact reply constraints, including format and brevity (e.g., 'Reply concisely', 'and nothing else').
+- The user issues very terse, imperative instructions with no surrounding context or pleasantries.
+- The user gives direct, imperative, single-line instructions without conversational filler.
+- The user explicitly names the tool to be used within the request itself (e.g., 'Use the memory_search tool').
+- The user uses ALL CAPS for emphasis on key instructional words (e.g., 'RIGHT NOW').
+- The user formats tool invocation instructions as bulleted or newline-separated key-value pairs with a colon separator.
+- The user uses single quotes to delimit content values within instructions.
+- The user uses code blocks to specify exact tool parameters and arguments.
+- The user uses capitalized words such as 'EXACTLY' for emphasis in instructions.
+- The user writes short, direct, lowercase instructions that combine a concrete task with a meta-task like summarization.
+- The user prefers concise output, as evidenced by requesting a 3-word summary.
+- The user writes requests as short, direct imperative sentences combining a command and a follow-up task.
+- The user issues short, direct imperative commands that bundle multiple requirements into a single instruction (e.g., asking for an action and a specific output format together).
+- The user writes very concise, imperative-style instructions combining task and constraint in a single sentence.
+- The user uses single quotes to denote exact string literals in their instructions.
+- The user writes terse, imperative-style requests with no extraneous politeness or preamble.
+- The user uses explicit argument labels (e.g., 'content:', 'importance:') with quoted values when specifying tool call parameters.
+- The user capitalizes words for emphasis, such as 'EXACTLY' in instructions.
+- The user writes imperative, direct instructions that specify both the action and the exact required response.
+- The user gives terse, imperative commands without pleasantries or introductory context.
+- The user specifies the exact expected response by enclosing it in single quotes (e.g., 'Stored.').
+- The user frequently uses the phrase 'and nothing else' to restrict the scope of the agent's response.
+- The user issues precise, imperative commands specifying exact argument values without variation.
+- The user requests minimal literal responses, such as replying with a specific single word like 'Done.'
+- The user uses kebab-case identifiers with descriptive prefixes (e.g., 'forget-me-4ea036') when naming memory entries.
+- The user issues short, direct imperative commands without greeting or pleasantries.
+- The user uses uppercase words like 'EXACTLY' to emphasize precision requirements in instructions.
+- The user structures requests as exact, literal commands with specified parameters rather than open-ended prompts.
+- The user writes instructions in a structured, imperative command style, specifying tool calls with exact argument names and values.
+- The user wraps marker identifiers in single quotes (e.g., 'x-session-09ae5c').
+- The user issues direct imperative commands, often specifying the exact tool to invoke by name.
+- The user message uses all-caps for forceful emphasis (e.g., 'RIGHT NOW').
+- The user uses capitalized words like EXACTLY to emphasize strict compliance with instructions.
+- The user requests extremely terse, literal responses (e.g., a single word) when specific output is required.
+- The user combines multiple tasks into a single instruction, chaining requests together (e.g., 'use echo to print... and then summarize in 3 words').
+- The user frequently requests highly concise output formats, such as summaries in a specific number of words.
+- The user writes very concise, direct, instruction-style requests without extra context or explanation.
+- The user writes very short, direct, and concise task instructions.
+- The user uses explicit, imperative instructions specifying exact response text and length (e.g., requesting only a specific word as a reply).
+- The user frequently uses ALL CAPS for emphasis on critical instructions (e.g., 'TWICE', 'EXACTLY').
+- The user uses em-dashes (—) to connect clauses and add emphasis in instructions.
+- The user provides highly precise, step-by-step sequential instructions with exact specifications.
+- The user often requests a specific literal response word or phrase at the end of multi-step instructions.
+- The user requests concise replies when they want a brief answer.
+- The user uses bold markdown formatting (**...**) to emphasize critical words like 'EXACTLY' in their instructions.
+- The user wraps technical identifiers such as memory IDs in backtick-style code formatting.
+- The user provides precise, step-by-step directives specifying the exact function call and arguments to use.
+- The user uses capitalized words for emphasis on key terms within otherwise lowercase sentences.
+- The user references internal/system identifiers such as session markers (e.g., 'x-session-d63173') when making requests.
+- The user uses ALL CAPS for emphasis on critical instructions, such as 'EXACTLY'.
+- The user structures tool call requests with indented key-value arguments for clarity.
+- The user explicitly requests literal responses when needed, distinguishing them from natural language replies.
+- The user uses ALL CAPS to emphasize urgency and non-negotiable instructions (e.g., 'RIGHT NOW', 'exact', 'Do not').
+- The user issues direct, imperative commands and structures tool-call arguments with line breaks and indentation for readability.
+- The user explicitly constrains agent responses (e.g., 'Do not reply with text until after the tool call succeeds', 'reply with the literal word').
+- The user formats instructions in a code-like structure, explicitly labeling arguments such as 'content' and 'importance' on separate lines.
+- The user requests concise, constrained-length summaries (e.g., exactly 3 words) following task completion.
+- The user writes concise, imperative instructions using lowercase without terminal punctuation.
+- The user issues terse, imperative commands combining a shell action with a follow-up formatting constraint.
+- The user issues precise, imperative commands with exact wording requirements for tool invocations and replies.
+- The user uses kebab-case string markers with alphanumeric suffixes (e.g., 'cobalt-lantern-95522f') as project codenames.
+- The user often appends formatting constraints to instructions (e.g., 'reply concisely', 'and nothing else').
+- The user uses ALL CAPS for emphasis on key instructional words such as TWICE and EXACTLY.
+- The user structures multi-step instructions using sequential bullet points and clearly labeled argument names like content and importance.
+- The user prefers concise replies.
+- The user issues terse, imperative, single-step instructions and often capitalizes words for emphasis (e.g., 'EXACTLY').
+- The user uses structured, command-like formatting with explicit parameter names and values when giving instructions.
+- The user uses all-caps words like 'EXACTLY' to emphasize precision requirements.
+- The user references custom memory markers by quoting them in single quotes (e.g., 'x-session-09f83b') when issuing retrieval requests.
+- The user issues short, imperative, tool-directed instructions (e.g., 'Use the memory_search tool').
+- The user uses ALL CAPS for emphasis on key directives (e.g., 'RIGHT NOW', 'Do not reply with text until after the tool call succeeds').
+- The user issues imperative, direct commands with specific formatting for tool arguments (indented key-value pairs).
+- The user provides explicit post-conditions after tool calls (e.g., specifying exactly what the agent should output after a tool returns).
+- The user issues direct imperative commands instructing the agent to call specific tools with exact arguments.
+- The user uses the uppercase word 'EXACTLY' to emphasize strict adherence to specified parameters.
+- The user requests the assistant reply with a specific literal word as confirmation after completing a task.
+- The user formats multi-argument tool calls with indented key-value pairs for clarity.
+- The user gives concise, direct task instructions combining an action and a follow-up constraint in a single message.
+- The user issues short, direct, compound commands that combine an action with a follow-up task (e.g., 'do X and then summarize').
+- The user specifies precise output constraints such as exact word counts for summaries.
+- The user issues compound instructions that combine multiple sequential tasks into a single sentence.
+- The user communicates in a terse, imperative command style with minimal context.
+- The user specifies exact text in quotation marks when requiring verbatim or precise output.
+- The user gives explicit output constraints such as 'and nothing else' or 'Reply concisely' to control response format.
+- The user uses direct, imperative commands when instructing the agent.
+- The user uses ALL CAPS for emphasis on critical constraints within instructions (e.g., 'EXACTLY').
+- The user prefers terse, imperative-style instructions with minimal context.
+- The user formats tool arguments using a structured key-value layout with indentation.
+- The user demands literal, word-for-word responses when specifying exact reply text.
+- The user uses UPPERCASE letters to emphasize urgency or key instructions (e.g., 'RIGHT NOW').
+- The user formats tool call arguments in a structured, code-block style with explicit key-value pairs (e.g., 'action:', 'rule:').
+- The user issues commands as explicit, imperative instructions with precise procedural requirements (e.g., specifying what to do before and after a tool call).
+- The user uses ALL CAPS to emphasize critical instructions (e.g., 'EXACTLY').
+- The user issues terse, imperative, step-by-step commands with precise expected output (e.g., requesting a 'literal word' reply).
+- The user formats instructions using indented, code-block-style parameter blocks with key/value pairs.
+- The user uses all-caps emphasis (e.g., 'EXACTLY') to stress precision requirements in instructions.
+- The user repeats the same instruction template verbatim when chaining multiple similar tasks.
+- The user issues short, imperative commands specifying exact desired output phrases.
+- The user issues concise, imperative, multi-step commands combining an action with a constraint (e.g., 'do X and then Y in N words').
+- The user issues short, direct, command-style requests that chain multiple tasks together using 'and then'.
+- The user writes requests in lowercase without starting capitalization.
+- The user gives very concise, direct, instruction-style requests with no pleasantries.
+- The user issues short, direct, task-oriented requests that combine a concrete technical action with a constraint (e.g., a word-count limit).
+- The user uses lowercase imperative phrasing without excessive politeness markers.
+- The user writes concise, imperative instructions that combine multiple tasks in a single sentence.
+- The user uses single quotes to denote exact text strings they want produced.
+- The user uses precise alphanumeric codenames with UUID-like suffixes (e.g., 'cobalt-lantern-c26f9d').
+- The user issues terse, command-style instructions with explicit output constraints (e.g., 'reply X and nothing else').
+- The user requests concise replies when performing retrieval operations.
+- The user uses all-caps for emphasis on key instructional words such as 'TWICE' and 'EXACTLY'.
+- The user formats function parameters using a structured colon-prefixed notation (e.g., 'content:', 'importance:').
+- The user employs em-dashes to connect and emphasize sequential instructions.
+- The user references projects using lowercase hyphenated codename identifiers (e.g., cobalt-lantern-c26f9d).
+- The user gives direct, command-style instructions with explicit tool directives (e.g., 'Use the memory_search tool.').
+- The user phrases requests as chained commands specifying both the action and the expected output format.
+- The user uses ALL CAPS for emphasis and urgency when giving instructions (e.g., 'RIGHT NOW').
+- The user provides very precise, exact specifications including parameter names, values, and formatting requirements.
+- The user explicitly specifies post-action response format, such as requiring the literal word 'Done.' with exact punctuation.
+- The user uses ALL CAPS for emphasis on critical instruction words such as 'EXACTLY'.
+- The user provides structured, command-like instructions with explicit argument names and values.
+- The user requests literal/verbatim text responses when specifying exact output.
+- The user uses structured, code-like formatting when giving instructions, specifying exact arguments and expected outputs.
+- The user uses ALL CAPS to emphasize strict requirements within instructions.
+- The user issues imperative, precisely structured commands with exact argument specifications.
+- The user demands literal, word-for-word responses without embellishment or additional content.
+- The user issues terse, imperative instructions when directing the agent to perform tool actions.
+- The user wraps the content to be stored in single quotes and specifies exact reply strings.
+- The user chains multiple instructions in a single message using 'and then' (e.g., 'do X and then do Y').
+- The user combines multiple requests into a single sentence, chaining an action with a follow-up summarization task.
+- The user gives concise, direct task instructions that specify exact requirements such as word counts.
+- The user writes in lowercase with minimal punctuation and no capitalization at the start of sentences.
+- The user uses single quotes when specifying exact strings to print or reference.
+- The user keeps instructions brief and direct, combining multiple tasks into a single short sentence.
+- The user uses quoted strings to specify exact verbatim content to be stored.
+- The user provides short, imperative, command-style instructions with clear delimiters.
+- The user uses UPPERCASE text for emphasis on key instructions (e.g., 'TWICE', 'EXACTLY').
+- The user requests concise replies when they want brief answers.
+- The user uses ALL CAPS for emphasis on critical constraints (e.g., 'EXACTLY').
+- The user writes instructions in a highly directive, imperative tone with precise, literal expectations.
+- The user frequently requests literal exact word responses (e.g., instructing the agent to reply with the word 'Done.').
+- The user communicates using a highly directive, imperative tone with precise, specification-style instructions.
+- The user uses indented key-value formatting (e.g., 'content:', 'importance:') resembling function call parameter syntax.
+- The user uses all-caps emphasis for strict constraints (e.g., 'EXACTLY', 'literal word').
+- The user uses casual, direct phrasing when asking for information, such as 'Tell me about [topic]'.
+- The user uses capitalized words such as 'EXACTLY' and 'literal' to emphasize strict compliance requirements in their instructions.
+- The user uses ALL CAPS for emphasis on key directive words (e.g., 'RIGHT NOW').
+- The user structures requests with labeled key-value argument blocks in their natural language messages.
+- The user issues imperative, command-style instructions with explicit constraints (e.g., 'Do not reply with text until after...').
+- The user emphasizes precision by capitalizing the word 'EXACTLY' when giving instructions.
+- The user uses literal quotes to specify exact argument values for tool calls.
+- The user specifies the exact verbatim reply they expect from the agent (e.g., 'reply with the literal word').
+- The user gives concise, direct, lowercase instructions combining a command task with a formatting constraint.
+- The user combines a specific action instruction with a secondary request (e.g., summarization) in a single concise message.
+- The user gives concise, direct, task-oriented instructions combining a specific action with a formatting constraint.
+- The user frequently imposes word-count or formatting constraints on responses (e.g., 'summarize in 3 words').
+- The user writes concise, imperative instructions that combine multiple tasks in a single short message.
+- The user uses direct imperative commands with chained steps connected by 'and then' or 'Then'.
+- The user references specific tool names (e.g., memory_store, memory_search) when issuing instructions.
+- The user wraps exact verbatim text in double quotes when specifying what should be stored or remembered.
+- The user uses em-dashes (—) to connect related clauses within instructions.
+- The user capitalizes words like TWICE and EXACTLY for emphasis when issuing commands.
+- The user employs a structured key-value style (content: ..., importance: ...) when specifying tool arguments.
+- The user references named tools (memory_store) in uppercase or exact casing when instructing the agent.
+- The user structures commands using multi-line code-like formatting with indented key-value arguments.
+- The user writes direct, imperative requests, often explicitly naming the tool the agent should use (e.g., 'Use the memory_search tool').
+- The user provides highly structured, literal instructions with explicit arguments and expects them to be followed exactly as written.
+- The user uses ALL CAPS for emphasis on critical or urgent instructions.
+- The user formats tool arguments and structured input using code blocks.
+- The user provides explicit, step-by-step prescriptive instructions with strict sequencing requirements.
+- The user provides highly specific, literal instructions and expects the assistant to comply exactly with the requested output format, including exact wording.
+- The user writes terse, imperative commands and uses emphasis such as capitalized words like 'EXACTLY' to stress precision in instructions.
+- The user issues instructions in a structured format with explicit tool-call arguments and expected literal responses.
+- The user gives terse, imperative instructions with specific tool names, parameter values, and exact expected reply strings enclosed in quotes.
+- The user issues concise, imperative-style instructions that combine a command request with a specific output constraint.
+- The user combines a tool action request with a specific output constraint (e.g., 'use echo to print X and then summarize in 3 words') in a single, concise instruction.
+- User writes commands and requests in a single sentence with no capital letters at the start.
+- The user composes concise, multi-part requests that combine an action and a summary constraint in a single sentence.
+- The user wraps exact text to be processed in double quotation marks to indicate it is verbatim.
+- The user issues terse, imperative, single-step commands with strict output constraints.
+- The user uses ALL CAPS for emphasis on key terms such as 'EXACTLY' and 'TWICE' in instructions.
+- The user structures multi-step instructions with explicit numbered sequencing (e.g., 'first', 'Then', 'Then').
+- The user uses em dashes to connect or emphasize parts of a sentence.
+- The user specifies nested key-value formatting (e.g., 'content:', 'importance:') for parameter specifications.
+- The user explicitly requests concise replies when desired.
+- The user references projects by their exact codename or identifier when inquiring about them.
+- The user uses kebab-case prefixed identifiers for session markers (e.g., 'x-session-410fe5').
+- The user gives concise, direct commands without extra context or pleasantries.
+- The user uses all-caps for emphasis on imperative instructions (e.g., 'RIGHT NOW').
+- The user formats tool arguments in a structured layout with explicit parameter names and quoted values.
+- The user provides strict procedural constraints, such as 'Do not reply with text until after the tool call succeeds,' indicating a preference for deterministic, step-by-step execution.
+- The user uses capitalized emphasis words such as 'EXACTLY' to demand strict precision in execution.
+- The user formats requests in a structured, programmatic style using labeled fields (e.g., 'content:', 'importance:') resembling function arguments.
+- The user specifies exact expected literal output words for replies to constrain agent responses.
+- The user communicates using precise, imperative instructions with specific formatting like indentation and explicit parameter specifications.
+- The user uses code-formatted blocks to convey exact instructions to the agent.
+- The user uses precise, imperative phrasing with capitalization for emphasis when issuing instructions (e.g., 'EXACTLY these arguments').
+- The user formats function call arguments using a key: value structure with code-block indentation.
+- The user gives concise, direct task instructions combining a specific command with a format requirement.
+- The user combines multiple tasks into a single concise, imperative instruction (e.g., 'Use echo to print... and then summarize in 3 words').
+- The user gives concise, compound instructions that combine a specific technical action with a follow-up processing task (e.g., execute a command and then summarize).
+- The user issues concise, imperative instructions combining multiple tasks in a single request.
+- The user uses lowercase text without punctuation at the end of commands.
+- The user frequently uses verbatim quotes to delimit exact text that should be stored or processed.
+- The user gives terse, imperative instructions with precise output constraints.
+- The user uses all-caps words like 'EXACTLY' and 'TWICE' for emphatic instruction.
+- The user uses em-dashes to separate preamble from structured instructions.
+- The user structures multi-step instructions with ordered markers like 'first' and 'Then'.
+- The user encloses exact required text in double quotes to eliminate ambiguity.
+- The user prefers literal, verbatim responses when a specific reply word or phrase is requested.
+- The user encloses specific technical identifiers or codenames in single quotation marks when referring to them.
+- The user uses capitalized emphasis words like 'EXACTLY' to stress the importance of precision in instructions.
+- The user structures tool call arguments in a labeled key/value format (e.g., memory_id: "...").
+- The user provides concise, step-by-step procedural instructions with minimal context.
+- The user uses all-caps emphasis (e.g., "EXACTLY") to stress precision requirements.
+- The user embeds session or reference markers in parentheses, such as "(marker=x-session-a04e72)".
+- The user gives imperative, step-by-step instructions with explicit expectations about the agent's response format.
+- The user used ALL CAPS for emphasis on key instructions such as 'RIGHT NOW'.
+- The user structured imperative requests with specific, exact argument specifications in a code-like format.
+- The user uses ALL CAPS for emphasis on critical instructions (e.g., 'EXACTLY').
+- The user wraps function names and specific values in inline code formatting.
+- The user gives highly precise, literal instructions and expects word-for-word compliance with the requested output.
+- The user uses imperative, template-style instructions with fields like 'content:' and 'importance:' to specify exact parameters.
+- The user capitalizes emphasis words like 'EXACTLY' and 'literal' to stress precision requirements.
+- The user pairs each instruction with a demand for a specific, literal output response (e.g., 'reply with the literal word...').
+- The user issues direct, imperative commands with period-terminated sentences and specific parameters.
+- The user uses single quotes to delimit exact strings to be stored or referenced.
+- The user prefers concise output, as demonstrated by requesting a 3-word summary.
+- The user wraps the exact desired output text in single quotes within their instructions.
+- The user writes short, imperative, multi-part instructions combining a task and a formatting constraint in a single message.
+- The user writes instructions in a direct, concise, command-oriented style with lowercase imperatives.
+- The user uses quotation marks to delimit text that must be preserved verbatim.
+- The user writes terse, command-style instructions with explicit constraints on the allowed response format.
+- The user explicitly limits the response scope with phrases such as 'and nothing else'.
+- The user uses ALL CAPS for emphasis on critical instruction keywords (e.g., TWICE, EXACTLY).
+- The user prefers highly structured, step-by-step imperative instructions with explicit parameters laid out in a clear list format.
+- The user uses all-lowercase identifiers and string content even when emphasizing strict adherence to them.
+- The user specifies exact expected responses (e.g., replying with a literal word) to constrain agent output.
+- The user gives concise, direct instructions and asks for concise replies.
+- The user explicitly references internal tool names (e.g., memory_search, memory_store) when issuing commands.
+- The user uses precise, structured instructions with indented key-value formatting when specifying function arguments.
+- The user emphasizes exactness by capitalizing the word 'EXACTLY' when specifying required parameters.
+- User tends to write very short, direct, single-sentence requests without additional context or pleasantries.
+- User writes short, direct questions when asking about specific topics or projects.
+- The user uses ALL CAPS (e.g., 'EXACTLY') to emphasize critical or non-negotiable instructions.
+- The user employs a structured field-value format with explicit labels (e.g., 'content:', 'importance:') when specifying tool arguments.
+- The user references session context using a short, hyphenated 'x-session-XXXXXXXX' style marker notation.
+- The user specifies literal expected responses by quoting the exact word or phrase (e.g., reply with the literal word 'Stored').
+- The user separates the tool-call instruction from the expected reply behavior into distinct, ordered steps.
+- The user issues direct, tool-oriented commands (e.g., 'Use the memory_search tool') without conversational filler.
+- The user uses imperative, command-style language and employs ALL CAPS for emphasis on key directives.
+- The user emphasizes precision by capitalizing key constraint words like 'EXACTLY' when giving tool-calling instructions.
+- The user issues precise, command-style instructions emphasizing literal and exact compliance, often capitalizing words like EXACTLY and literal for stress.
+- The user formats instructions with labeled arguments (e.g., content:, importance:) followed by a constrained final action.
+- The user consistently uses quotation marks to denote exact target strings the agent must reproduce.
+- The user wraps exact text strings in quotes when specifying content to be remembered.
+- The user writes requests in lowercase without capitalizing the beginning of sentences.
+- The user uses imperative phrasing to issue instructions (e.g., 'Use echo to print...').
+- The user specifies output constraints such as desired word count for summaries.
+- The user writes concise, single-sentence compound instructions combining a command action with a follow-up task (e.g., 'do X and then summarize').
+- The user uses lowercase when referencing command-line tools like 'echo'.
+- The user writes instructions in lowercase with a direct, imperative tone combining multiple sub-tasks in a single sentence.
+- The user issues very precise, directive instructions, often specifying exact phrases the agent should say (e.g., 'reply "Stored." and nothing else').
+- The user uses ALL CAPS for emphasis on key directives such as 'TWICE' and 'EXACTLY'.
+- The user structures tool-call instructions with indented labeled arguments (e.g., 'content:', 'importance:') for unambiguous formatting.
+- The user issues commands in an imperative, step-by-step enumerated tone with explicit sequencing instructions.
+- The user requests literal-output responses (e.g., asking the agent to reply with the exact word 'Done.').
+- The user prefers concise replies without additional commentary.
+- The user uses ALL-CAPS words (e.g., EXACTLY) for emphasis on key instructions.
+- The user formats structured arguments using key-value syntax with double-quoted values (e.g., memory_id: "...").
+- The user uses quoted literal strings to specify exact expected responses.
+- User uses code-block formatted arguments with explicit field labels (e.g., memory_id: "...") when specifying function call parameters.
+- User provides exact literal response requirements (e.g., reply with the literal word "Done.") to control agent output precisely.
+- The user uses capitalized emphasis words like 'EXACTLY' to signal strict adherence requirements in instructions.
+- The user employs structured, code-block-like formatting with explicit labeled arguments when issuing system-like commands.
+- The user sometimes issues directives that expect literal-word responses (e.g., instructing the agent to reply with a specific word).
+- The user uses single quotes when referring to specific identifier strings or markers (e.g., 'x-session-c788b7').
+- The user writes requests in a direct, imperative, command-style format (e.g., 'Search memory for... and tell me...').
+- The user explicitly names the tool to be used within the same request that triggers the action.
+- The user gives highly precise, literal instructions, specifying exact argument values and expected verbatim responses.
+- The user uses ALL-CAPS for emphasis on key instructions (e.g., 'RIGHT NOW', 'Do Not').
+- The user structures tool-call requests with explicit labeled arguments in a code-like format (action:, rule:).
+- User issues brief, direct, multi-part instructions that specify both an action and a required output format.
+- The user writes short, direct, imperative-style requests combining a specific tool action with a follow-up formatting requirement.
+- The user issues terse, imperative instructions that bundle multiple requirements into a single request (e.g., 'do X and then Y').
+- The user specifies precise constraints and exact output values (e.g., quoting the exact string to print and the exact summary length).
+- User tends to write requests in lowercase with direct, compound instructions.
+- The user wraps exact text to be remembered in double quotation marks to indicate verbatim storage.
+- The user wraps tool search markers in single quotes, as in 'cobalt-lantern-038ae0'.
+- The user issues terse, imperative instructions specifying exact reply content (e.g., "Then reply 'Stored.' and nothing else").
+- The user explicitly requests concise replies (e.g., "Reply concisely.").
+- The user uses all-uppercase words for emphasis on critical instructions (e.g., 'EXACTLY').
+- The user provides function call arguments in a structured, indented format with key-value pairs.
+- The user gives very terse, imperative instructions and often specifies a literal expected response word.
+- The user uses ALL CAPS for emphasis on critical instructions such as 'EXACTLY'.
+- The user structures requests with indented sub-items to specify exact arguments.
+- The user explicitly specifies when they want a 'literal' response, indicating a preference for precision over interpretation.
+- The user asks direct, concise, single-line questions without pleasantries or context.
+- The user uses imperative, direct commands with explicitly labeled arguments and values enclosed in quotes.
+- The user frequently specifies exact session markers in the format 'x-session-' followed by a hexadecimal string.
+- The user requests literal, exact string replies without additional commentary or formatting.
+- The user communicates in concise, direct imperative sentences when giving instructions to the agent.
+- The user uses ALL CAPS for emphasis on imperative directives (e.g., 'You MUST', 'EXACT', 'NO other action').
+- The user embeds structured pseudo-tool-call instructions (with explicit 'action' and 'rule' keys) directly in chat messages.
+- The user sometimes uses all-caps urgency framing (e.g., 'URGENT') to emphasize messages.
+- The user provides very precise, literal instructions with exact expected outputs.
+- The user provides explicit, exact instructions with specified argument names and values when requesting actions.
+- User gives compound instructions in a single short sentence combining an action and a summarization requirement.
+- The user writes instructions in all lowercase without terminal punctuation, using a direct command-style phrasing.
+- The user writes concise, direct instructions combining multiple requests into a single short sentence without terminal punctuation.
+- The user writes prompts entirely in lowercase without any capitalization.
+- The user uses single quotes to denote exact expected output strings.
+- The user issues very terse, imperative commands with explicit instructions on tool usage and response content.
+- The user uses capitalized emphasis words like EXACTLY and TWICE to stress precision in their instructions.
+- The user structures multi-step instructions with line breaks and indented parameter notation (e.g., 'content:' and 'importance:') for clarity.
+- The user sometimes requests literal, minimal responses (e.g., asking for the exact word 'Done.' as a reply).
+- The user emphasizes precision by capitalizing words like 'EXACTLY' when providing instructions.
+- The user requests literal, verbatim responses (e.g., replying with the exact word 'Done.') rather than paraphrased confirmations.
+- The user uses structured parameter formatting with indentation and key-value pairs when specifying arguments.
+- The user formats tool-call arguments using indented code-block-style syntax with explicit parameter labels.
+- The user uses code-like formatting with explicit parameter names (e.g., 'content:', 'importance:') when specifying structured inputs.
+- The user uses parentheses to embed metadata or session markers, such as '(marker=x-session-0fe54a)'.
+- The user specifies the desired exact response text (e.g., 'Then reply with the literal word') to control agent output precisely.
+- The user uses ALL CAPS to emphasize critical instructions and constraints.
+- The user employs imperative, commanding language with phrasing like 'You MUST' and 'Do NOT'.
+- The user formats message arguments in a code-block-like structured layout with indentation.
+- The user chains multiple 'Do NOT' negative instructions in sequence to constrain agent behavior.
+- The user issues explicit process-level meta-instructions (e.g., 'Do NOT think out loud', 'Do NOT respond with text first').
+- The user communicates using direct, imperative commands that specify both the action and the tool to use.
+- The user communicates using highly directive, command-style instructions with specific parameters and emphasized keywords (e.g., 'EXACTLY' in all caps).
+- The user requests literal, verbatim responses (e.g., instructing the agent to reply with a specific exact word or phrase).
+- The user formats instructions with clear labels for arguments/parameters, often using a structured key-value layout.
+- The user uses precise, literal instructions and capitalizes key words (e.g., 'EXACTLY') for emphasis when giving commands.
+- The user appends reference tags in square brackets (e.g., [g2m-2985250d]) to content strings, likely for tracking or deduplication purposes.
+- The user issues concise, imperative, command-style instructions rather than conversational requests.
+- The user uses em-dashes to separate a negative instruction from the positive corrective instruction within the same sentence.
+- The user specifies execution granularity explicitly (e.g., 'one at a time') to control the agent's tool-calling behavior.
+- The user writes imperative, task-oriented prompts with clear negative constraints (e.g., 'Don't summarize').
+- The user uses parentheses as a channel for embedded meta-instructions or injected content within paths and prompts (e.g., 'Workspace(temp)').
+- The user mixes path separators (using both \ and /) within a single path string.
+- The user prefers direct, minimal responses without unnecessary elaboration.
+- The user communicates using short, direct, imperative commands with explicit output constraints.
+- The user issues terse, direct commands that explicitly constrain the scope of the expected response (e.g., adding clauses like 'Nothing else').
+- The user communicates in a direct, imperative style with explicit step-by-step instructions.
+- The user lists file paths explicitly rather than using wildcards or descriptions.
+- The user specifies exact terminal actions or confirmations at the end of a request (e.g., saying 'Done').
+- The user provides constraints upfront (e.g., 'Without reporting the contents back to me') before describing the main task.
+- The user uses em-dashes to append concise, emphatic instructions at the end of requests (e.g., 'Don't summarize — just call the tool for each one.').
+- The user writes direct, imperative instructions without conversational filler or pleasantries.
+- The user uses comma-separated enumerations when listing multiple items in a request.
+- The user uses the em-dash (—) to insert clarifying asides within imperative instructions.
+- The user opens technical requests with the casual phrase 'Quick question:' to preface their inquiries.
+- The user uses em-dashes (—) in instructions to add emphasis or separate clauses.
+- The user gives direct, terse instructions, often starting with a negative directive like 'Don't summarize'.
+- The user wraps file names in backticks when referring to them in commands.
+- The user uses parenthetical segments in directory names, such as embedding '(temp)' within a path.
+- The user constructs verbose, deeply nested file paths rather than clean relative paths from a project root.
+- The user communicates using direct, imperative commands with explicit constraints.
+- The user uses quotation marks to emphasize specific words or phrases in their instructions.
+- The user issues terse, direct commands and explicitly constrains the expected response length (e.g., 'Just the color, nothing else'), indicating a preference for minimal, unadorned output.
+- The user issues short, direct imperative instructions to constrain the response format (e.g., 'Just reply with the number.').
+- The user issues concise, command-style instructions using imperative phrasing.
+- The user prefers minimal agent output and explicitly limits what should be reported back.
+- The user provides upfront constraints (e.g., 'Without reporting the contents back to me') to set expectations before describing the action.
+- The user specifies exact output phrasing (e.g., 'say Done') for terminal confirmations.
+- The user prefers direct, terse responses with minimal output.
+- The user provides technical instructions in a highly structured, parameter-explicit format (e.g., key='value' assignments).
+- The user uses parenthetical clarifications like '(every minute)' to explain terse technical parameters.
+- The user uses single quotes around string values in technical instructions.
+- The user employs kebab-case or hyphenated identifiers in identifiers (e.g., 'push-target-1781286553', 'schedule_task').
+- The user often ends complex multi-step instructions with a precise, short expected output (e.g., 'reply with the single word: DONE').
+- The user uses parentheses to provide clarifications alongside parameters, e.g., cron_expr='* * * * *' (every minute).
+- The user writes in a precise, imperative, technical style with clearly labeled parameter assignments using single quotes around values.
+- The user uses snake_case naming for technical parameters (e.g., cron_expr, task_type, channel_id, page_id).
+- The user explicitly specifies expected agent output format, e.g., 'reply with the single word: DONE'.
+- The user gives very terse, direct instructions with explicit constraints on response format.
+- The user provides highly structured, parameterized instructions with explicit values for each field.
+- The user uses single-word confirmation tokens (like 'DONE') to signal task completion.
+- The user writes highly precise, imperative technical instructions specifying exact parameter values, tool names, and expected outputs.
+- The assistant uses bold Markdown (**text**) to emphasize key status words like FAILED, Suggested, and not.
+- The assistant wraps error messages, code, and cron expressions in fenced code blocks for clarity.
+- The assistant structures suggested retry parameters as bulleted lists with explicit key-value formatting.
+- The user writes lowercase, direct imperative instructions with explicit parameter naming (e.g., cron_expr, task_type, channel_id).
+- The user surrounds technical string values and code-like tokens with single quotes.
+- The user structures requests as explicit key=value pair listings separated by commas for clarity.
+- The user uses parentheses to provide clarifying technical context after a value, for example '(6-field with seconds, fires every minute)' after a cron expression.
+- The user wraps exact parameter values in single quotes to prevent ambiguity (e.g., '0 * * * * *', 'heartbeat', 'PUSH_TEST_42').
+- The user uses snake_case for parameter key names in instructions (e.g., cron_expr, task_type, channel_id, page_id).
+- The user employs kebab-case and numeric suffixes for identifier-style page IDs (e.g., 'push-target-1781289557').
+- The user writes highly structured, parameter-explicit instructions with named arguments and expected values in single quotes.
+- The user uses parenthetical clarifications (e.g., '6-field with seconds, fires every minute') to provide context for technical parameters.
+- The user uses uppercase words (e.g., 'DONE') to emphasize specific required response formats.
+- The user uses single quotes to delimit string values when passing parameters.
+- The user formats tool call instructions as a single inline command listing parameter names and values separated by commas.

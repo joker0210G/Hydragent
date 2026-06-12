@@ -3,6 +3,27 @@
 > **Timeline**: Weeks 15–18
 > **Theme**: Hydragent escapes the terminal. A **unified channel gateway** connects Telegram, Discord, WhatsApp, Slack, Signal, email, webhooks, and the CLI through a single routing bus. A **proactive heartbeat daemon** lets the agent push notifications, reminders, and ambient intelligence to the user unprompted. A **cron scheduler** enables recurring autonomous tasks. **Work IQ** is a persistent background awareness layer that monitors feeds, watches for anomalies, and surfaces actionable insights without being asked.
 
+> ## ✅ Implementation Status — Core Complete (Weeks 15–18, as of June 2026)
+> 
+> Cross-checked against [`doc/STATE.md`](../STATE.md) at `git rev 3d99366` (June 2026).
+> 
+> **What is live:**
+> - **Six messaging adapters** are live in `adapters/`: `cli_adapter.py`, `telegram_adapter.py`, `discord_adapter.py`, `slack_adapter.py`, `email_adapter.py`, `webhook_adapter.py`. The `bus_client.py`, `formatter.py`, `test_connection.py`, and a D3-based `miniapp/` (graph + glassmorphism UI) ship alongside.
+> - **`hydragent-gateway`** (`channel_trait`, `router`, `dedup`, `rate_limiter`) is the hosting process for all adapters. `GatewayRouter::inbound_check` runs dedup + rate limiting, `outbound` and `push` dispatch to the right adapter.
+> - **`hydragent-scheduler`** ships three engines:
+>   - `heartbeat.rs` — proactive push to any channel via `GatewayRouter::push`.
+>   - `cron_scheduler.rs` — `tokio-cron-scheduler` wrapper with SQLite persistence; **reloads active jobs on startup** via `reload_from_db()`.
+>   - `work_iq.rs` — `WorkIqEngine` with `add_feed()`, `run_poll_cycle()`, RSS parsing via `feed-rs`, and keyword alert dispatch through the heartbeat engine.
+> - **Three Phase-4 tools** are live: `send_message`, `schedule_task`, `rss_subscribe`.
+> 
+> **What is missing / not yet implemented:**
+> - **Cron `task_type` is restricted** to `react_loop` and `message`. `heartbeat` and `work_iq_poll` are reserved strings but not currently emitted as cron task types; those run on their own dedicated loops, not through the cron executor.
+> - **Out of the 40+ channels listed in the phase title**, only 6 are implemented. **Not implemented:** WhatsApp, Signal, Matrix, iMessage, Microsoft Teams, Lark, DingTalk, WeChat, QQ.
+> - **Voice (Whisper STT / Coqui TTS), WebSocket-based web chat, and OAuth-broked IMAP/SMTP** are also not implemented.
+> - **Work IQ is implemented at the engine level** (polling, digest persistence, alert push). The channel adapters for digest delivery rely on the standard `heartbeat.push` path; the digest *synthesis* step (LLM summarization of collected entries) is not yet wired.
+> 
+> **Definition of done coverage:** hard goals G1, G3, G4, G6, G7, G9 are met. G2 (Discord slash + DM), G5 (email IMAP/SMTP roundtrip), G8 (Work IQ ≥ 1 RSS feed with digest to Telegram) are partially met — the engines exist but end-to-end e2e tests against live platform APIs are not in the tree.
+
 ---
 
 ## 📋 Table of Contents

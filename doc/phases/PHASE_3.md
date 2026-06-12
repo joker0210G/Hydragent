@@ -3,6 +3,25 @@
 > **Timeline**: Weeks 11–14
 > **Theme**: Make Hydragent **safe enough to trust with secrets and shell access** — a WASM capability sandbox that eliminates tool escape, an XChaCha20-Poly1305 encrypted credential vault where the LLM never sees raw keys, and a 3-tier user-consent permission gate for every state-mutating action.
 
+> ## ⚠️ Implementation Status — Partially Implemented (as of June 2026)
+> 
+> Cross-checked against [`doc/STATE.md`](../STATE.md) at `git rev 3d99366` (June 2026).
+> 
+> **Schedule note:** The Docker-execution-sandbox week (originally the final week of Phase 3) has been **moved to a later phase** and is **not implemented** in this tree. Treat §5.7 of this document as deferred scope. The rest of Phase 3 ships as follows.
+> 
+> **What is live:**
+> - **`PermissionTier` enum and `ToolStatus` are live** in `hydragent-types` and threaded through the tool registry.
+> - **`hydragent-vault` crate exists** and provides XChaCha20-Poly1305 + Argon2id key derivation. The encryption surface is in place; the prompt-injection guard, taint tracking, and Merkle audit chain from this doc are **not**.
+> - **`hydragent-sandbox` crate exists** with `engine.rs`, `wasm_tool.rs`, and `limits.rs`. It is wired to `wasmtime` with fuel-based CPU metering and can load the pre-compiled WASM tool artifacts under `sandbox/tools/`. Integration tests (`test_echo_tool_execution`, `test_file_read_tool_sandbox`) pass.
+> - **Taint tracking surface** (`hydragent-vault::taint::TaintedString`) is present as a basic type wrapper that redacts on `Display`/`Debug`. The full 6-category propagation graph from this doc is **not** built.
+> - **`KeyInjector` placeholder substitution** (`hydragent-vault::injector`) is implemented and unit-tested.
+> 
+> **What is stubbed or missing:**
+> - **Docker execution sandbox is NOT implemented** and is deferred to a later phase. The Docker-related week in Phase 3 has been moved out of the schedule.
+> - **Audit log is a stub.** The Merkle-chain audit log (§5.6) and full taint propagation (§5.8) are not built — the more complete versions live in Phase 6.
+> - **Permission gate UI** (the 60-second-prompt flow) is the next milestone; the tier is declared on the tool but the user-facing prompt loop is not wired in `hydragent-core` yet.
+> - **Open question (see STATE.md §4):** the sandbox crate's production runtime — Wasmtime vs. process isolation — has not been picked yet for non-WASM tool types.
+
 ---
 
 ## 📋 Table of Contents
@@ -240,21 +259,23 @@ docker run
 
 ---
 
-### Week 14 — Docker Sandbox, Audit Log & Hardening
+### Week 14 — Docker Sandbox, Audit Log & Hardening — ⏸️ **DEFERRED**
 
-**Goal**: `code_exec` runs in Docker with zero host exposure. Audit log records every sensitive event. Phase 3 is hardened and ready for Phase 4 channel expansion.
+> **Status:** Week 14 work has been **moved to a later phase** per the project owner. The Docker execution sandbox is **not implemented** in this tree. The Merkle-chain audit log, taint propagation, and audit CLI listed below are likewise deferred. The Phase 3 audit-log story is fully re-imagined in [Phase 6](./PHASE_6.md).
+
+**Goal (deferred)**: `code_exec` runs in Docker with zero host exposure. Audit log records every sensitive event. Phase 3 is hardened and ready for Phase 4 channel expansion.
 
 | Day | Task |
 |---|---|
-| Mon | Implement `docker_runner.rs`: `DockerTool::run(code: &str, lang: &str, timeout_ms: u64) -> ToolResult`. Writes code to temp file, calls `docker run` with the hardened flags (Section 3.3). Streams stdout/stderr back as `ToolResult.output_json`. |
-| Tue | Build `hydragent-sandbox:latest` Docker image: based on `python:3.12-slim`, adds `nodejs`, `bash`. No network access baked in — enforced at `docker run` time via `--network none`. |
-| Wed | Implement `audit.rs` in `hydragent-core`: `AuditEvent` struct with fields `{event_type, actor, tool_id, permission_tier, decision, timestamp_ms}`. `emit_audit_event()` async fn writes to `audit_log` SQLite table. |
-| Thu | Apply `emit_audit_event()` at every decision point: (1) vault access, (2) tool invocation start, (3) permission gate decision, (4) key injection event (logs placeholder name, not value), (5) Docker container spawn/exit. |
-| Fri | Implement `./hydragent audit list` and `./hydragent audit export --json > audit.json` CLI subcommands. |
-| Sat | Full regression suite: `cargo test --workspace` (all crates including sandbox and vault) + `pytest adapters/` — must both exit 0 with zero failures. |
-| Sun | Performance profiling: ensure permission gate adds < 2 ms for auto-approve tier, vault get < 1 ms. Tag `v0.3.0` pre-release. Write CHANGELOG entry. |
+| Mon | ~~Implement `docker_runner.rs`: `DockerTool::run(code: &str, lang: &str, timeout_ms: u64) -> ToolResult`. Writes code to temp file, calls `docker run` with the hardened flags (Section 3.3). Streams stdout/stderr back as `ToolResult.output_json`.~~ **Deferred.** |
+| Tue | ~~Build `hydragent-sandbox:latest` Docker image: based on `python:3.12-slim`, adds `nodejs`, `bash`. No network access baked in — enforced at `docker run` time via `--network none`.~~ **Deferred.** |
+| Wed | ~~Implement `audit.rs` in `hydragent-core`: `AuditEvent` struct with fields `{event_type, actor, tool_id, permission_tier, decision, timestamp_ms}`. `emit_audit_event()` async fn writes to `audit_log` SQLite table.~~ **Deferred to Phase 6** (Merkle-chained variant). |
+| Thu | ~~Apply `emit_audit_event()` at every decision point: (1) vault access, (2) tool invocation start, (3) permission gate decision, (4) key injection event (logs placeholder name, not value), (5) Docker container spawn/exit.~~ **Deferred.** |
+| Fri | ~~Implement `./hydragent audit list` and `./hydragent audit export --json > audit.json` CLI subcommands.~~ **Deferred.** |
+| Sat | ~~Full regression suite: `cargo test --workspace` (all crates including sandbox and vault) + `pytest adapters/` — must both exit 0 with zero failures.~~ Partially done (existing crates green; deferred items not yet testable). |
+| Sun | ~~Performance profiling: ensure permission gate adds < 2 ms for auto-approve tier, vault get < 1 ms. Tag `v0.3.0` pre-release. Write CHANGELOG entry.~~ Tagging deferred until Docker work lands. |
 
-**Deliverable**: `v0.3.0` pre-release. All Phase 3 exit criteria met. Full audit trail operational.
+**Deliverable (deferred)**: `v0.3.0` pre-release. All Phase 3 exit criteria met once Docker work returns to the schedule. Until then, see [Phase 6 §5.7](./PHASE_6.md#57-memory-encryption-at-rest) and [Phase 6 §5.2](./PHASE_6.md#52-merkle-audit-chain) for the planned home of the audit log.
 
 ---
 

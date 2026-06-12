@@ -55,7 +55,7 @@ impl crate::tool_trait::Tool for ScheduleTaskTool {
                 },
                 "task_type": {
                     "type": "string",
-                    "description": "Type of task, e.g. 'react_loop' or 'message'"
+                    "description": "Type of task. Use 'react_loop' to run a full LLM ReAct loop, or 'heartbeat' to push a static message via the HeartbeatEngine. 'work_iq_digest' is reserved and auto-set by rss_subscribe."
                 },
                 "task_params": {
                     "type": "string",

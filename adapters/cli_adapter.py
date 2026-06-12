@@ -12,17 +12,18 @@ console = Console()
 
 async def main():
     parser = argparse.ArgumentParser(description="Hydragent CLI Chat Adapter")
-    parser.add_argument("--session", type=str, help="Specific session ID to join or resume")
+    parser.add_argument("--page", type=str, help="Specific Page ID to join or resume (legacy alias: --session)")
+    parser.add_argument("--session", type=str, help=argparse.SUPPRESS)  # legacy alias
     args = parser.parse_args()
 
-    session_id = args.session if args.session else str(uuid.uuid4())
+    page_id = args.page or args.session or str(uuid.uuid4())
     user_id = "local-user"
     channel_id = "cli:default"
 
     bus = BusClient()
-    
+
     console.print("\n[bold cyan]🐉 Hydragent[/bold cyan] v0.1.0 — Local AI Agent")
-    console.print(f"Session ID: [dim]{session_id}[/dim] (type [bold red]exit[/bold red] to quit)")
+    console.print(f"Page ID: [dim]{page_id}[/dim] (type [bold red]exit[/bold red] to quit)")
     console.print("Connecting to Event Bus...")
     
     try:
@@ -51,7 +52,7 @@ async def main():
 
         import time
         event = {
-            "session_id": session_id,
+            "page_id": page_id,
             "channel_id": channel_id,
             "user_id":    user_id,
             "content":    user_input,

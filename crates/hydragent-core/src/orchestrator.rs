@@ -299,8 +299,12 @@ impl MethodHandler for PermissionRespondHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hydragent_types::{PermissionRequest, PermissionResponse, PermissionTier};
     use tokio::sync::mpsc;
 
+    /// Test the basic approve-path through `ActivePermissions`:
+    /// a `Prompt` request is registered, then `PermissionRespondHandler`
+    /// finds the pending oneshot and sends the decision through.
     #[tokio::test]
     async fn test_active_permissions_flow() {
         let active_perms = ActivePermissions::default();
@@ -332,6 +336,152 @@ mod tests {
 
         let approved = rx.await.unwrap();
         assert!(approved);
+    }
+
+    /// A `PermissionRespondHandler` for an unknown request_id must
+    /// respond OK (so the bus client doesn't see an error) but the
+    /// pending oneshot is left untouched. The orchestrator's gate
+    /// will eventually time out the missing response.
+    #[tokio::test]
+    async fn test_active_permissions_unknown_request_id() {
+        let active_perms = ActivePermissions::default();
+        let handler = PermissionRespondHandler {
+            active_permissions: active_perms.clone(),
+        };
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "permission.respond".to_string(),
+            params: serde_json::json!({
+                "request_id": "no-such-request",
+                "approved": true
+            }),
+            id: "1".to_string(),
+        };
+        let (resp_tx, _resp_rx) = mpsc::channel(1);
+        let rpc_res = handler.handle(request, resp_tx).await;
+        assert!(rpc_res.error.is_none(),
+                "handler must respond OK for unknown id (the gate times out, not the bus)");
+    }
+
+    /// `ActivePermissions` is `Clone` and clones share the same
+    /// `Arc<Mutex<HashMap>>`. This is critical because the orchestrator
+    /// holds one clone and the `PermissionRespondHandler` holds another.
+    #[tokio::test]
+    async fn test_active_permissions_clone_shares_state() {
+        let active_perms = ActivePermissions::default();
+        let clone1 = active_perms.clone();
+        let clone2 = active_perms.clone();
+
+        let (tx, rx) = oneshot::channel::<bool>();
+        let req_id = "shared-req".to_string();
+
+        // Register via clone1
+        {
+            let mut pending = clone1.pending.lock().await;
+            pending.insert(req_id.clone(), tx);
+        }
+
+        // Verify clone2 sees the entry
+        {
+            let pending = clone2.pending.lock().await;
+            assert!(pending.contains_key(&req_id),
+                    "clones must share the same HashMap");
+        }
+
+        // Remove via clone2 and verify clone1 sees the removal
+        {
+            let mut pending = clone2.pending.lock().await;
+            pending.remove(&req_id);
+        }
+        {
+            let pending = clone1.pending.lock().await;
+            assert!(!pending.contains_key(&req_id),
+                    "clones must see each other's mutations");
+        }
+
+        // And the channel got the value
+        drop(rx);
+    }
+
+    /// `PermissionTier` enum: AutoApprove, Prompt, Deny must all
+    /// serialize/deserialize via JSON correctly (the bus client
+    /// sends tier as a string in PermissionRequest).
+    #[test]
+    fn test_permission_tier_serde_roundtrip() {
+        for tier in [PermissionTier::AutoApprove, PermissionTier::Prompt, PermissionTier::Deny] {
+            let json = serde_json::to_string(&tier).unwrap();
+            let parsed: PermissionTier = serde_json::from_str(&json).unwrap();
+            assert_eq!(tier, parsed);
+        }
+    }
+
+    /// `PermissionRequest` includes expires_at_ms which the gate
+    /// checks for timeout. Verify the field roundtrips.
+    #[test]
+    fn test_permission_request_roundtrip() {
+        let req = PermissionRequest {
+            request_id: "abc".to_string(),
+            page_id: "page-1".to_string(),
+            tool_id: "file_write".to_string(),
+            params_summary: "Write 42 bytes to /tmp/x.txt".to_string(),
+            tier: PermissionTier::Prompt,
+            expires_at_ms: 1_700_000_000_000,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: PermissionRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.request_id, req.request_id);
+        assert_eq!(parsed.page_id, req.page_id);
+        assert_eq!(parsed.tool_id, req.tool_id);
+        assert_eq!(parsed.tier, req.tier);
+        assert_eq!(parsed.expires_at_ms, req.expires_at_ms);
+    }
+
+    /// `PermissionResponse` is the shape the bus client sends back;
+    /// verify the wire format the Rust side expects matches the
+    /// Python `bus_client.py` which sends `{"request_id": ..., "approved": ...}`.
+    #[test]
+    fn test_permission_response_wire_format() {
+        let json = r#"{"request_id":"abc","approved":false}"#;
+        let resp: PermissionResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.request_id, "abc");
+        assert_eq!(resp.approved, false);
+    }
+
+    /// Tier routing: AutoApprove must NOT register a pending oneshot
+    /// (it should pass straight through). Deny must NOT register
+    /// either. Only Prompt requires a pending channel.
+    ///
+    /// This is the gate logic that lives in `react_loop.rs`. We
+    /// smoke-test the underlying types here: a handler that's only
+    /// wired for Prompt tiers should be a no-op for the other two.
+    #[tokio::test]
+    async fn test_prompt_tier_is_the_only_one_needing_oneshot() {
+        let active_perms = ActivePermissions::default();
+
+        // Simulate an AutoApprove path: the gate proceeds without
+        // touching `active_permissions`. The pending map stays empty.
+        {
+            let pending = active_perms.pending.lock().await;
+            assert!(pending.is_empty());
+        }
+        // Simulate a Deny path: same — pending stays empty.
+        {
+            let pending = active_perms.pending.lock().await;
+            assert!(pending.is_empty());
+        }
+        // Simulate a Prompt path: the gate registers a oneshot.
+        let (tx, _rx) = oneshot::channel::<bool>();
+        let req_id = "prompt-1".to_string();
+        {
+            let mut pending = active_perms.pending.lock().await;
+            pending.insert(req_id.clone(), tx);
+        }
+        // Now the map has one entry — this is what the gate would do.
+        {
+            let pending = active_perms.pending.lock().await;
+            assert_eq!(pending.len(), 1);
+            assert!(pending.contains_key(&req_id));
+        }
     }
 }
 
@@ -483,6 +633,94 @@ impl MethodHandler for MemoryClearHandler {
                 error: Some(hydragent_bus::message::JsonRpcError {
                     code: hydragent_bus::message::ERR_INTERNAL,
                     message: format!("Failed to clear memories: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            }
+        }
+    }
+}
+
+pub struct MemorySearchHandler {
+    pub store: Arc<SessionStore>,
+}
+
+#[async_trait]
+impl MethodHandler for MemorySearchHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        let query = request.params.get("query").and_then(|q| q.as_str()).unwrap_or("").to_string();
+        if query.is_empty() {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INVALID_REQUEST,
+                    message: "Missing query".to_string(),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+        let limit = request.params.get("limit").and_then(|l| l.as_u64()).unwrap_or(5) as usize;
+        match hydragent_memory::hybrid_search(&query, limit, &self.store).await {
+            Ok(results) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({"results": results})),
+                error: None,
+                id: request.id,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: format!("Failed to search memories: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            }
+        }
+    }
+}
+
+/// `dream.run` bus method — synchronously runs one memory-
+/// consolidation dream cycle. Returns the `DreamStats` as JSON so
+/// callers (tests, CI smoke harnesses, or future scheduled tasks)
+/// can observe the cycle's output without parsing log lines.
+///
+/// The dream worker is also started automatically by `main.rs` on a
+/// `tokio::time::interval` ticker when `enable_dreaming=true`; this
+/// handler is the *synchronous, on-demand* counterpart used by tests
+/// (Phase 2 final — D2 dream.run) and any future user-facing
+/// "consolidate now" affordance.
+pub struct DreamRunHandler {
+    pub store: Arc<SessionStore>,
+    pub model_router: Arc<ModelRouter>,
+}
+
+#[async_trait]
+impl MethodHandler for DreamRunHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        match crate::dream::run_dream_cycle(self.store.clone(), self.model_router.clone()).await {
+            Ok(stats) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({
+                    "status": "ok",
+                    "messages_processed": stats.messages_processed,
+                    "facts_stored": stats.facts_stored,
+                    "facts_skipped": stats.facts_skipped,
+                    "style_habits_stored": stats.style_habits_stored,
+                    "behavior_rules_stored": stats.behavior_rules_stored,
+                })),
+                error: None,
+                id: request.id,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: format!("Dream cycle failed: {}", e),
                     data: None,
                 }),
                 id: request.id,

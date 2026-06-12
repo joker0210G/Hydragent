@@ -88,6 +88,14 @@ enum Commands {
         #[command(subcommand)]
         action: VaultAction,
     },
+    /// Send a real prompt to the live brain and stream the reply
+    /// (a real-time end-to-end test of the swappable BRAIN_* config)
+    TestBrain {
+        /// The prompt to send. Default: a one-liner that asks the model
+        /// to introduce itself so you can confirm the brain is wired up.
+        #[arg(default_value = "In one sentence, who are you and which model are you?")]
+        prompt: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -151,7 +159,12 @@ async fn main() {
                         app_config.openrouter_api_keys = keys.expose_secret().to_string();
                     }
                     if let Some(model) = secrets.get("PRIMARY_MODEL") {
-                        app_config.primary_model = model.expose_secret().to_string();
+                        // Legacy key — re-export as BRAIN_MODEL so it seeds
+                        // the new effective_brain_model() helper.
+                        app_config.brain_model = model.expose_secret().to_string();
+                    }
+                    if let Some(model) = secrets.get("BRAIN_MODEL") {
+                        app_config.brain_model = model.expose_secret().to_string();
                     }
                     // Load any other configuration keys from Vault dynamically
                     for (scope, secret) in secrets {
@@ -311,39 +324,145 @@ async fn main() {
 
     // Build SQLite DB filepath
     let db_path = format!("{}/sessions.db", app_config.data_dir);
-    let store = Arc::new(SessionStore::new(&db_path).await.unwrap_or_else(|e| {
+    let mut store = SessionStore::new(&db_path).await.unwrap_or_else(|e| {
         error!("Failed to initialize session database: {}", e);
         std::process::exit(1);
-    }));
+    });
 
-    // Parse API keys list
-    let keys: Vec<String> = app_config.openrouter_api_keys
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    // Apply the LRU eviction cap from config (no-op when usize::MAX).
+    store.with_max_memories(app_config.max_semantic_memories);
+    if app_config.max_semantic_memories < usize::MAX {
+        info!(
+            cap = app_config.max_semantic_memories,
+            "🧹 Memory LRU eviction enabled"
+        );
+    }
+    let store = Arc::new(store);
 
-    for key in &keys {
-        if key.contains("9b9c8f09436e") {
-            tracing::warn!("⚠️ Warning: Default placeholder API key detected in configuration. Please replace it with a valid OpenRouter API key in your .env file.");
-            break;
-        }
+    // ── The "brain" (single live provider) ────────────────────────────
+    //
+    // The agent has one brain, swappable via 4 env vars:
+    //   BRAIN_BASE     = https://api.together.xyz/v1   (or openai, openrouter, ollama, ...)
+    //   BRAIN_KEY      = sk-...                       (empty for local providers)
+    //   BRAIN_MODEL    = meta-llama/Llama-3-70b-chat-hf
+    //   BRAIN_FALLBACKS= smaller-model1,smaller-model2
+    //
+    // Backward compat: if BRAIN_BASE is unset but OPENROUTER_API_KEYS is set,
+    // we use OpenRouter's URL. If BRAIN_MODEL is unset we use PRIMARY_MODEL,
+    // and BRAIN_FALLBACKS falls back to FALLBACK_MODELS.
+    let brain_base = app_config.effective_brain_base();
+    let brain_key = app_config.effective_brain_key();
+    let brain_model = app_config.effective_brain_model();
+    let brain_fallbacks = app_config.effective_brain_fallbacks();
+
+    if brain_base.is_empty() {
+        eprintln!(
+            "🤔 I don't know where to connect. Set `BRAIN_BASE` in `.env`.\n\
+             Examples:\n\
+               BRAIN_BASE=https://api.openai.com/v1\n\
+               BRAIN_BASE=https://openrouter.ai/api/v1\n\
+               BRAIN_BASE=http://localhost:11434/v1  (Ollama in OpenAI-compat mode)\n\
+             Or set `OPENROUTER_API_KEYS` for backward compatibility."
+        );
+        std::process::exit(1);
     }
 
-    // Parse fallback models list
-    let fallbacks: Vec<String> = app_config.fallback_models
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    if !brain_key.is_empty() && brain_key.contains("9b9c8f09436e") {
+        tracing::warn!(
+            "⚠️ Default placeholder API key detected. Replace it with a valid key in `.env`."
+        );
+    }
 
-    // Initialize Model Provider (OpenRouter) & Model Router
-    let provider = Arc::new(hydragent_model::openrouter::OpenRouterClient::new(keys));
+    info!(
+        base = brain_base.as_str(),
+        primary = brain_model.as_str(),
+        fallbacks = ?brain_fallbacks,
+        "🧠 Building live brain"
+    );
+
+    let brain_config = hydragent_model::custom_openai::CustomProviderConfig {
+        base_url: brain_base.clone(),
+        api_key: brain_key,
+        default_model: brain_model.clone(),
+        provider_label: "brain".to_string(),
+        // 180s gives slow LLM providers (tokenrouter rate-limits, long
+        // ReAct loops with multiple tool calls) enough headroom to
+        // complete without aborting. The test harness uses
+        // `TIMEOUT_LLM=90.0` / `TIMEOUT_LLM_LONG=180.0`; matching the
+        // upper bound here keeps the rust side from being the bottleneck.
+        timeout: std::time::Duration::from_secs(180),
+        max_retries: 3,
+    };
+    let brain_client: Arc<dyn hydragent_model::ModelProvider> =
+        Arc::new(hydragent_model::custom_openai::CustomOpenAIClient::new(brain_config));
+
     let model_router = Arc::new(hydragent_model::router::ModelRouter::new(
-        provider.clone(),
-        app_config.primary_model.clone(),
-        fallbacks,
+        brain_client,
+        brain_model,
+        brain_fallbacks,
     ));
+
+    // ── `test-brain` subcommand ─────────────────────────────────────────
+    //
+    // Real-time practical test: stream a prompt through the live brain and
+    // print the response. Exercises the full BRAIN_* → ModelRouter →
+    // CustomOpenAIClient → SSE pipeline. This is the quickest way to
+    // confirm a freshly pasted key actually works end-to-end.
+    if let Some(Commands::TestBrain { prompt }) = &args.command {
+        println!("------------------------------------------------------------------------");
+        println!("  🧠 Hydragent live-brain test");
+        println!("  base     : {}", brain_base);
+        println!("  primary  : {}", app_config.effective_brain_model());
+        println!("  fallbacks: {:?}", app_config.effective_brain_fallbacks());
+        println!("  prompt   : {}", prompt);
+        println!("------------------------------------------------------------------------");
+        println!();
+
+        use hydragent_model::openrouter::ChatMessage;
+        use tokio::sync::mpsc;
+        let (tx, mut rx) = mpsc::channel::<String>(256);
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: prompt.clone(),
+        }];
+
+        // Spawn the stream consumer so we can print tokens as they arrive.
+        let printer = tokio::spawn(async move {
+            let mut stdout = tokio::io::stdout();
+            use tokio::io::AsyncWriteExt;
+            while let Some(token) = rx.recv().await {
+                let _ = stdout.write_all(token.as_bytes()).await;
+                let _ = stdout.flush().await;
+            }
+        });
+
+        let started = std::time::Instant::now();
+        match model_router.chat_stream(messages, tx).await {
+            Ok((content, used_model)) => {
+                let _ = printer.await;
+                let elapsed = started.elapsed();
+                println!();
+                println!();
+                println!("------------------------------------------------------------------------");
+                println!(
+                    "  ✅ Brain spoke (model={}, {:.2}s, {} chars)",
+                    used_model,
+                    elapsed.as_secs_f64(),
+                    content.chars().count()
+                );
+                println!("------------------------------------------------------------------------");
+            }
+            Err(e) => {
+                eprintln!();
+                eprintln!();
+                eprintln!("------------------------------------------------------------------------");
+                eprintln!("  ❌ Brain failed: {}", e);
+                eprintln!("------------------------------------------------------------------------");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     if args.list_sessions {
         println!("------------------------------------------------------------------------");
@@ -409,7 +528,7 @@ async fn main() {
                     }
                 }
             }
-            Commands::Embed { .. } | Commands::Vault { .. } => unreachable!(),
+            Commands::Embed { .. } | Commands::Vault { .. } | Commands::TestBrain { .. } => unreachable!(),
         }
         return;
     }
@@ -427,7 +546,11 @@ async fn main() {
             loop {
                 ticker.tick().await;
                 info!("Dreaming worker waking up...");
-                match dream::run_dream_cycle(store_clone.clone(), model_router_clone.clone()).await {
+                let cycle = dream::run_dream_cycle(
+                    store_clone.clone(),
+                    model_router_clone.clone(),
+                ).await;
+                match cycle {
                     Ok(stats) => {
                         if stats.messages_processed > 0 {
                             info!(?stats, "Dream cycle completed successfully");
@@ -595,8 +718,36 @@ async fn main() {
                 if !accumulated_tokens.is_empty() {
                     let _ = heartbeat.push(job.target_channel_id, page_id, accumulated_tokens).await;
                 }
-            } else if job.task_type == "message" {
-                let _ = heartbeat.push(job.target_channel_id, format!("cron-{}", job.id), job.task_params).await;
+            } else if job.task_type == "heartbeat" {
+                // Phase 4 G6: Proactive push — relay a static or pre-summarized
+                // string to the target channel without spinning the LLM.
+                // Renamed from "message" to "heartbeat" for clarity (the
+                // delivery path is the HeartbeatEngine).
+                //
+                // task_params may be a plain string (treated as content
+                // addressed to a `cron-<job_id>` page) OR a JSON object
+                // with explicit `page_id` and `content` fields, in which
+                // case we honour the LLM's routing intent.
+                let default_page = format!("cron-{}", job.id);
+                let (target_page, target_content) =
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&job.task_params) {
+                        if let Some(obj) = val.as_object() {
+                            let page = obj.get("page_id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or(default_page.clone());
+                            let content = obj.get("content")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| job.task_params.clone());
+                            (page, content)
+                        } else {
+                            (default_page, job.task_params.clone())
+                        }
+                    } else {
+                        (default_page, job.task_params.clone())
+                    };
+                let _ = heartbeat.push(job.target_channel_id, target_page, target_content).await;
             } else if job.task_type == "work_iq_digest" {
                 if let Err(e) = work_iq.generate_and_send_digest(&job.task_params, &job.target_channel_id).await {
                     tracing::error!("Work IQ: failed to run digest: {}", e);
@@ -702,6 +853,13 @@ async fn main() {
     });
     router.register("memory.clear", orchestrator::MemoryClearHandler {
         store: store.clone(),
+    });
+    router.register("memory.search", orchestrator::MemorySearchHandler {
+        store: store.clone(),
+    });
+    router.register("dream.run", orchestrator::DreamRunHandler {
+        store: store.clone(),
+        model_router: model_router.clone(),
     });
     router.register("library.create_node", orchestrator::LibraryNodeCreateHandler {
         store: store.clone(),

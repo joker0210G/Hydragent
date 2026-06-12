@@ -91,7 +91,8 @@ hydragent/
 ├── FEATURES.md                 # Comprehensive feature matrix & capability catalog
 ├── doc/
 │   ├── ARCHITECTURE.md         # Technical specification, layers, and API schemas
-│   └── ROADMAP.md              # Phased milestones and implementation timeline
+│   ├── ROADMAP.md              # Phased milestones and implementation timeline
+│   └── STATE.md                # ⚡ Ground truth: what is actually in the code
 │
 ├── crates/                     # Rust Multi-Crate Workspace
 │   ├── hydragent-core/         # Main orchestrator binary & react loop
@@ -126,8 +127,8 @@ Hydragent's runtime is composed of seven decoupled layers communicating over a g
 │ 1. Channel Gateway  [Telegram | Discord | Web | CLI | …]  │
 └───────────────────────────────┬──────────────────────────┘
                                 │  JSON-RPC Event Payload
-┌───────────────────────────────▼──────────────────────────┐
-│ 2. Event Bus & API Router  [gRPC / HTTP2 Message Bus]      │
+┌──────────────────────────────────────────────────────────┐
+│ 2. Event Bus & API Router  [JSON-RPC over TCP socket]    │
 └───────────────────────────────┬──────────────────────────┘
                                 │  Dispatched Task
 ┌───────────────────────────────▼──────────────────────────┐

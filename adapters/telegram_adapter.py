@@ -223,21 +223,27 @@ class PageManager:
         pages = self.get_pages(chat_id)
         if len(pages) <= 1:
             return False
-            
+
         self._query_db(
             "DELETE FROM nodes WHERE node_id = ?",
             (page_uuid,)
         )
+        # Canonical column name is `page_id` (see crates/hydragent-memory/src/session_store.rs).
+        # The `session_meta` table was renamed to `page_meta` when the Pages concept was adopted.
         self._query_db(
-            "DELETE FROM messages WHERE session_id = ?",
+            "DELETE FROM messages WHERE page_id = ?",
             (page_uuid,)
         )
         self._query_db(
-            "DELETE FROM tool_calls WHERE session_id = ?",
+            "DELETE FROM tool_calls WHERE page_id = ?",
             (page_uuid,)
         )
         self._query_db(
-            "DELETE FROM session_meta WHERE session_id = ?",
+            "DELETE FROM page_meta WHERE page_id = ?",
+            (page_uuid,)
+        )
+        self._query_db(
+            "DELETE FROM user_insights WHERE page_id = ?",
             (page_uuid,)
         )
         
@@ -822,7 +828,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/library` - List, switch, and delete active Pages\n"
         "• `/newpage <Title>` - Create and switch to a new Page\n"
         "• `/renamepage <New Title>` - Rename the active Page\n"
-        "• `/clear` - Reset context (wipes active session memory)\n\n"
+        "• `/clear` - Reset context (wipes active Page memory)\n\n"
         "Send me a message to begin reasoning!",
         parse_mode="Markdown",
         reply_markup=reply_markup
@@ -837,7 +843,7 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     room_manager.rename_room(chat_id, active_id, "General Chat")
     new_sess = room_manager.create_room(chat_id, "General Chat")
     await update.message.reply_text(
-        f"🔄 *Conversation Context Reset!*\n\nStarted a fresh Page ID: `{new_sess[-8:]}`",
+        f"🔄 *Page Context Reset!*\n\nStarted a fresh Page ID: `{new_sess[-8:]}`",
         parse_mode="Markdown"
     )
 
@@ -1655,7 +1661,7 @@ async def main_async():
 
     # Set bot commands in Telegram UI autocomplete list automatically
     await app.bot.set_my_commands([
-        BotCommand("start", "Welcome message and capabilities description"),
+        BotCommand("start", "Show welcome message and full command list"),
         BotCommand("library", "List, switch, and delete active library Pages"),
         BotCommand("newpage", "Create and switch to a new Page"),
         BotCommand("renamepage", "Rename the active Page"),

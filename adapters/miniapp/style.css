@@ -100,7 +100,7 @@ header {
     100% { transform: scale(0.95); opacity: 0.8; }
 }
 
-.active-room-display {
+.active-page-display {
     background: rgba(123, 44, 191, 0.2);
     border: 1px solid rgba(123, 44, 191, 0.4);
     padding: 6px 12px;
@@ -236,14 +236,14 @@ button:active {
     transform: translateY(1px);
 }
 
-/* Room Items */
-.rooms-list-container {
+/* Library Node Items */
+.nodes-list-container {
     display: flex;
     flex-direction: column;
     gap: 10px;
 }
 
-.room-item {
+.node-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -255,33 +255,33 @@ button:active {
     transition: all 0.2s ease;
 }
 
-.room-item:hover {
+.node-item:hover {
     border-color: var(--accent-color);
     background: rgba(123, 44, 191, 0.05);
 }
 
-.room-item.active {
+.node-item.active {
     background: rgba(123, 44, 191, 0.12);
     border-color: rgba(123, 44, 191, 0.5);
 }
 
-.room-info {
+.node-info {
     display: flex;
     flex-direction: column;
     gap: 2px;
 }
 
-.room-title {
+.node-title {
     font-size: 15px;
     font-weight: 600;
 }
 
-.room-id {
+.node-id {
     font-size: 11px;
     color: var(--hint-color);
 }
 
-.room-actions {
+.node-actions {
     display: flex;
     gap: 8px;
 }
@@ -543,17 +543,17 @@ button:active {
 }
 
 /* Themed card items */
-.shelf-theme .room-item {
+.shelf-theme .node-item {
     border-left: 3px solid #a370f7;
 }
-.book-theme .room-item {
+.book-theme .node-item {
     border-left: 3px solid #4cc9f0;
 }
-.page-theme .room-item {
+.page-theme .node-item {
     border-left: 3px solid #4caf50;
 }
 
-.room-item {
+.node-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -567,13 +567,13 @@ button:active {
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.room-item:hover {
+.node-item:hover {
     transform: translateX(4px);
     background: rgba(30, 30, 42, 0.85);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
-.room-item.active {
+.node-item.active {
     background: rgba(123, 44, 191, 0.1);
     border-color: rgba(123, 44, 191, 0.4);
     box-shadow: 0 0 10px rgba(123, 44, 191, 0.15);

@@ -14,7 +14,7 @@ async def main():
         sys.exit(1)
 
     event = {
-        "session_id": "test-session",
+        "page_id": "test-session",
         "channel_id": "cli:test",
         "user_id": "test-user",
         "content": "Hello Rust Core!",

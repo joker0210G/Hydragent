@@ -2,6 +2,10 @@
 
 > The phased plan to build the **Hydragent Unified AI Agent** — from a single Zig binary to a 16-layer security-hardened, self-improving, edge-deployable AI agent.
 
+> **⚠️ This file is a *plan*, not a status report.** Several `[x]` checkboxes below describe design *intent*, not code that is actually present in the working tree.
+> For what is *really* in the code (which crates ship, which adapters wire, which tools run), see **[`STATE.md`](STATE.md)**.
+> When the two disagree, **trust `STATE.md`** — it is generated from the actual files in this repository.
+
 ---
 
 ## 🗓️ Roadmap Overview
@@ -49,17 +53,17 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 |---|---|---|
 | Zig workspace init | Initialize Zig 0.13+ compiler workspace with cross-compile targets | Core |
 | vtable interfaces | Design pluggable interfaces for Channel, Memory, Model, and Tool adapters | Core |
-| gRPC event bus | Implement Zig-native HTTP/2 message bus for layer communication | Core |
+| TCP event bus | Implement JSON-RPC over TCP socket for layer communication | Core |
 | OpenRouter SDK | Integrate OpenRouter API with streaming support and retry logic | Core |
 | CLI channel | Implement basic terminal I/O as the first channel adapter | Gateway |
 | ReAct loop | Build the Think-Act-Observe-Evaluate reasoning loop | Orchestrator |
 | Basic tool registry | Implement tool registration, invocation, and result handling | Tools |
-| Session state | SQLite-backed session state persistence across restarts | Orchestrator |
+| Page state | SQLite-backed page and message state persistence across restarts | Orchestrator |
 
 #### Success Criteria
 ```
 ✓ Agent responds to "What time is it in Tokyo?" using web_search in < 3 seconds
-✓ Agent survives a process restart with session context intact (SQLite)
+✓ Agent survives a process restart with page context intact (SQLite)
 ✓ Binary compiles for Linux x86_64 AND Linux RISC-V targets from same codebase
 ✓ All OpenRouter API calls stream tokens back to CLI in real-time
 ```
@@ -77,45 +81,70 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 **Timeline**: Weeks 7–10
 **Theme**: Build the memU-style memory file-system and QwenPaw ReMe compaction pipeline.
 
+> **Code status for Phase 2** (updated 2026-06-12, after stress-test sweep):
+> Stress test is **GREEN 21/21** — see [`TODO_PHASE2.md`](TODO_PHASE2.md) for the full
+> report. Several original doc claims do not match the code; see the
+> divergence note below and the per-section banners in
+> [`doc/phases/PHASE_2.md`](phases/PHASE_2.md).
+>
+> **Doc-vs-code divergences (still present)**:
+> - No ChromaDB — vector index is a **linear scan** over `HashMap<String, Vec<f32>>`
+>   in `crates/hydragent-memory/src/vector_index.rs`. The 100k-fact / 10ms target is
+>   not achievable with the current code. (Doc §5.4 / `PHASE_2.md` has a banner.)
+> - The tool is named **`soul`**, not `standing_orders`; file is `config/SOUL.md`.
+> - FTS5 uses the default `unicode61` tokenizer, not trigram; trigger names are
+>   `fts_insert` / `fts_update` / `fts_delete` (not `sm_ai` / `sm_au` / `sm_ad`).
+> - Dream worker is gated by `enable_dreaming` config flag (default `true` in
+>   `config.rs:81`); not "running nightly" as the doc narrative implies.
+> - LRU eviction SQL is documented but **not** wired up — the
+>   `semantic_memories` table grows unbounded.
+> - The `bench` target latency numbers (5ms fast, 300ms deep) are unverified
+>   — no `benches/retrieval_benchmark.rs` exists in the repo.
+
 #### Milestones
 - [x] Deploy hierarchical SQLite schema (Episodic, Semantic, Emotional tables)
 - [x] Implement dual-mode retrieval: fast embedding pass (zero LLM cost) + deep reasoning escalation
-- [x] BM25 + ChromaDB hybrid retrieval scoring ≥ 88.78% on HaluMem QA benchmark
-- [x] HaluMem memory accuracy score ≥ 94.06%
-- [x] Nightly "Dreaming" compaction pipeline: Compress → Link → Strengthen (3-stage biological model)
-- [x] SOUL.md and USER.md auto-generation from extracted facts
-- [x] **Standing Orders** system: persistent behavioral rules loaded at startup, auto-suggested by Dreaming pipeline
+- [x] BM25 + ChromaDB hybrid retrieval scoring ≥ 88.78% on HaluMem QA benchmark — **partially**: BM25 + linear-scan-vector works, ChromaDB is not used; **stress test passed (G1)**
+- [x] HaluMem memory accuracy score ≥ 94.06% — **not measured**; cross-session recall verified (E1) but no HaluMem benchmark suite
+- [x] Nightly "Dreaming" compaction pipeline: Compress → Link → Strengthen — **scaffolded**: `run_dream_cycle` exists, gated by `enable_dreaming` config flag, not yet observed to actually consolidate in normal runs
+- [x] SOUL.md and USER.md auto-generation from extracted facts — **partially**: `soul` tool writes `config/SOUL.md`; `USER.md` has a `user_profile` tool but no auto-generation loop
+- [x] **Soul (a.k.a. "Standing Orders")** system: persistent behavioral rules loaded at startup — **live**: verified by F1 + F2
 
 #### Key Tasks
-| Task | Description |
+| Task | Status (as of 2026-06-12) |
 |---|---|
-| SQLite WAL schema | Design and implement full memory schema (episodic, semantic, emotional, social) |
-| ChromaDB integration | Integrate ChromaDB Python bridge for vector embedding storage |
-| nomic-embed-text | Integrate local embedding model for offline embedding generation |
-| BM25 implementation | Implement BM25 scoring over SQLite full-text search (FTS5) |
-| RRF fusion | Reciprocal Rank Fusion to merge BM25 and vector search results |
-| Dual-mode retrieval | Fast path (embedding-only) vs. deep path (LLM re-ranking) |
-| Dreaming pipeline | Nightly cron: read logs, compress, extract facts, update DB and MD files |
-| ReMe context split | Mid-session context window management (retention vs. compaction groups) |
-| Memory CLI | `hydragent memory query`, `memory purge`, `memory export` commands |
+| SQLite WAL schema | ✅ Live (episodic, semantic, memory_tags, messages w/ `requires_consolidation`) |
+| ChromaDB integration | ❌ Not used; replaced by in-house `VectorStore` linear scan |
+| nomic-embed-text | ❌ Replaced by `all-MiniLM-L6-v2` via Candle |
+| BM25 implementation | ✅ Live (SQLite FTS5, unicode61; triggers `fts_insert`/`fts_update`/`fts_delete` keep it in sync) |
+| RRF fusion | ✅ Live (`hydragent_memory::hybrid_search`) |
+| Dual-mode retrieval | ⚠️ Hybrid only; no fast/deep path split |
+| Dreaming pipeline | ⚠️ Scaffolded; gated by `enable_dreaming=true` (default); consolidation logic minimal |
+| ReMe context split | ❌ Not implemented |
+| Memory CLI | ✅ `hydragent memory list` + `clear` (subcommand at `main.rs:805-815`) |
+| `memory_store` / `memory_search` / `memory_forget` tools | ✅ Live; bus RPC `memory.search` added 2026-06-12 (see `TODO_PHASE2.md` Bug 1) |
+| LRU eviction | ❌ Documented SQL in §5.10 but not wired into runtime |
+| `benches/retrieval_benchmark.rs` | ❌ Not present |
 
 #### Success Criteria
 ```
-✓ Agent recalls a fact mentioned 5 sessions ago with > 85% accuracy
-✓ Nightly compaction runs unattended and reduces episodic token count by > 60%
-✓ HaluMem QA benchmark score ≥ 88.78%
-✓ USER.md contains accurate facts after 3 days of test conversations
-✓ Dual-mode retrieval adds < 5 ms latency for fast path, < 300 ms for deep path
+✓ Agent recalls a fact mentioned 5 sessions ago with > 85% accuracy   — E1 PASS
+? Nightly compaction runs unattended and reduces episodic token count by > 60%  — not measured (D2 deferred)
+? HaluMem QA benchmark score ≥ 88.78%                                — no benchmark suite
+? USER.md contains accurate facts after 3 days of test conversations  — not exercised
+? Dual-mode retrieval adds < 5 ms latency for fast path, < 300 ms for deep path  — no bench
 ```
 
 #### Benchmark Targets
-| Metric | Target | Source |
-|---|---|---|
-| HaluMem QA accuracy | ≥ 88.78% | QwenPaw ReMe baseline |
-| Fast retrieval latency | < 5 ms | memU spec |
-| Deep retrieval latency | < 300 ms | Internal target |
-| Memory recall after 5 sessions | > 85% | Internal target |
-| Compaction token reduction | > 60% | Internal target |
+| Metric | Target | Actual (as of 2026-06-12) | Source |
+|---|---|---|---|
+| HaluMem QA accuracy | ≥ 88.78% | **not measured** | QwenPaw ReMe baseline |
+| Fast retrieval latency | < 5 ms | **unverified** (linear scan, O(N)) | memU spec |
+| Deep retrieval latency | < 300 ms | **unverified** | Internal target |
+| Memory recall after 5 sessions | > 85% | **E1 PASS** (single cross-session recall) | Internal target |
+| Compaction token reduction | > 60% | **not measured** | Internal target |
+| Bus `memory.list` p95 (20 concurrent) | — | **87.4ms** | Phase 2 test H1 |
+| 5 concurrent LLM intents end-to-end | — | **51.8s** | Phase 2 test H2 |
 
 ---
 
@@ -123,12 +152,16 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 **Timeline**: Weeks 11–14
 **Theme**: Implement the security cage around every tool execution — WASM sandbox, Docker isolation, and the IronClaw/Microsoft Scout permission model.
 
+> **Code status for Phase 3:** the **3-tier permission enum** and the **encrypted vault** are shipped (see `STATE.md`). The **Wasmtime and Docker sandboxes**, the **Playwright browser sandbox**, and the **Merkle audit log** are *not yet wired* — they remain design targets.
+
 #### Milestones
-- [x] Deploy isolated WebAssembly (Wasmtime) runtime with zero net/fs capability
-- [x] Deploy Docker-sandboxed code execution environment (Python, Node.js, Bash)
 - [x] Deploy XChaCha20-Poly1305 + Argon2id encrypted vault with process isolation
 - [x] Implement 3-tier permission gate: Auto-approve / Prompt / Deny
-- [x] Playwright headless browser running in isolated Docker container
+- [ ] Deploy isolated WebAssembly (Wasmtime) runtime with zero net/fs capability
+- [ ] Deploy Docker-sandboxed code execution environment (Python, Node.js, Bash)
+- [ ] Playwright headless browser running in isolated Docker container
+- [ ] Per-tool permission policy map (`Tool` → `PermissionLevel`) in `hydragent-core` config
+- [ ] Merkle audit log with tamper detection
 
 #### Key Tasks
 | Task | Description |
@@ -159,13 +192,18 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 **Timeline**: Weeks 15–17
 **Theme**: Connect Hydragent to the real world — 40+ channel adapters, cron-triggered proactive tasks, and voice I/O.
 
+> **Code status for Phase 4:** **Telegram, Discord, Slack, Email, Webhook, and CLI** adapters are shipped; **WhatsApp is not** (no `whatsapp_adapter.py` in `adapters/`). The cron daemon and `WorkIQ` awareness bus are wired in `hydragent-scheduler`; the proactive knowledge base (persistence + summarisation) is not yet built. Voice I/O is not started.
+
 #### Milestones
-- [x] Deploy Telegram, Discord, WhatsApp, and Slack adapters (total 40+ channels)
-- [ ] Web chat UI (embedded widget, REST API + WebSocket)
+- [x] Deploy Telegram, Discord, and Slack adapters (3 of the target 40+ channels)
+- [x] Deploy Email and Webhook adapters
+- [x] Deploy CLI adapter
 - [x] Persistent cron daemon for proactive task triggers
+- [x] **`WorkIQ` awareness bus** (event bus only; persistence + summarisation pending)
+- [ ] WhatsApp / Signal / iMessage / Matrix adapters
+- [ ] Web chat UI (embedded widget, REST API + WebSocket)
 - [ ] Voice I/O: Whisper STT + Coqui TTS integration
-- [ ] IMAP/SMTP email adapter with OAuth brokering
-- [x] **Work IQ**: always-on background intelligence layer that proactively flags schedule conflicts, surfaces relevant documents pre-meeting, anticipates needs from calendar + email context
+- [ ] Work IQ knowledge base (persistence + summarisation on top of the bus)
 - [ ] Auth profile rotation with exponential backoff (1 min → 5 min → 25 min, capped at 1 hour)
 
 #### Key Tasks

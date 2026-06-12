@@ -3,6 +3,31 @@
 > **Timeline**: Weeks 19–22
 > **Theme**: Hydragent stops being a single brain and becomes a **coordinated intelligence**. A Directed Acyclic Graph (DAG) planner decomposes complex tasks into parallel sub-problems. A pool of up to **300 specialist sub-agents** executes independently, each with scoped system prompts, isolated tool permissions, and separate context windows. A **Model Council** routes each sub-problem to the optimal LLM from a pool of 20+ models. A **self-healing re-planner** (Devin-style) detects failures, diagnoses root causes, and autonomously restructures the DAG without user intervention.
 
+> ## 🚧 Implementation Status — Week 19 Done; Weeks 20–22 Not Started (as of June 2026)
+> 
+> Cross-checked against [`doc/STATE.md`](../STATE.md) at `git rev 3d99366` (June 2026).
+> 
+> **What is live (Week 19 only):**
+> - **`hydragent-planner` crate is real and working.** It is not a stub.
+>   - `dag.rs` defines `DagNode`, `DagEdge`, `DagSpec`, `NodeStatus`, `TaskType`, `NodeResult` with `validate()` (cycle detection via `petgraph::algo::is_cyclic_directed`) and `topological_order()`.
+>   - `decomposer.rs` ships `classify_complexity()` (heuristic: >40 tokens or compound connectives → `Complex`) and `DECOMPOSITION_SYSTEM_PROMPT` with a few-shot example, calling `llm.generate_non_streaming()` and parsing JSON.
+>   - `scheduler.rs` provides `ReadyQueue` with `get_ready_nodes()` (computes nodes whose dependencies are `Completed` or `Skipped`) and `update_status()`.
+>   - `serializer.rs` provides `save_dag()` / `load_dag()` to `./data/swarm/{swarm_id}/dag.json`.
+>   - `bin/planner_demo.rs` is an interactive CLI demo: save → load → step through ready nodes, marking them complete.
+>   - 5 unit tests in `tests/planner_tests.rs` cover linear-chain topo sort, diamond dependencies, cycle detection, JSON roundtrip, and the complexity classifier.
+> - **No 300-agent / 4,000-step swarm ceiling.** The swarm ceiling numbers in this doc are aspirational, not enforced.
+> 
+> **What is not built (Weeks 20–22 deferred):**
+> - **No `hydragent-swarm` crate.** No `spawner.rs`, no `agent.rs`, no `coordinator.rs`, no `mailbox.rs`, no `supervisor.rs`, no `context_manager.rs`, no `cache.rs`. The `crates/hydragent-swarm/` directory described in §2 of this doc does not exist in the tree.
+> - **No SubAgent lifecycle / spawner / mailbox / file-locking IPC.**
+> - **No Model Council.** A single primary model (with a small fallback chain) is what the Rust code actually uses today. No `council.rs`, no `profiles.rs`.
+> - **No Hermes Kanban + heartbeat** for swarm observability.
+> - **No self-healing re-planner.** Failure recovery in the current loop is just a re-prompt, not a DAG restructure. `replan.rs` is not present.
+> - **Wiki** (`data/wiki/`, `wiki_write` tool) is not implemented.
+> - **Swarm CLI** (`hydragent swarm status`, etc.) is not implemented.
+> 
+> **Schedule note:** This phase is **paused at the end of Week 19**. Weeks 20–22 are not yet implemented and have not been scheduled for any later date.
+
 ---
 
 ## 📋 Table of Contents
@@ -247,75 +272,81 @@ Each sub-agent is isolated at three levels:
 
 ## 4. Week-by-Week Breakdown
 
-### Week 19 — DAG Planner & Task Decomposition
+### Week 19 — DAG Planner & Task Decomposition — ✅ **COMPLETED (June 2026)**
 
 **Goal**: Complex user requests are automatically decomposed into a dependency graph. The graph is correctly topologically sorted and ready for parallel execution.
 
-| Day | Task |
-|---|---|
-| Mon | Create `crates/hydragent-planner` crate. Add `petgraph`, `serde`, `uuid` to `Cargo.toml`. Define `DagNode`, `DagEdge`, `TaskDag` structs. Implement `TaskDag::new()`, `add_node()`, `add_edge()`, `validate()` (cycle detection via `petgraph::algo::is_cyclic_directed()`). |
-| Tue | Implement `decomposer.rs`: `async fn decompose(task: &str, llm: &dyn ModelProvider) -> Result<DagSpec>`. Crafts a structured decomposition prompt. Parses LLM JSON output into `DagSpec`. Validates the resulting DAG for cycles and orphan nodes. |
-| Wed | Define the `DagSpec` JSON schema (see Section 5.1). Write the decomposition LLM prompt with few-shot examples for 3 task categories: research, coding, and report writing. Verify JSON schema compliance with `serde_json::from_str`. |
-| Thu | Implement `scheduler.rs`: `ReadyQueue` — computes which nodes have all dependencies satisfied (in-degree = 0 after marking complete). `TopologicalIterator` yields nodes in execution order. |
-| Fri | Implement `serializer.rs`: `DagSpec::to_json()` and `DagSpec::from_json()`. Write to `data/swarm/{swarm_id}/dag.json`. Load on restart for crash recovery. |
-| Sat | Unit tests: (1) 5-node linear chain → correct topo order; (2) diamond dependency (A → B, A → C, B → D, C → D) → B and C are concurrent, D waits; (3) cycle A → B → A → `Err(CycleDetected)`; (4) DAG survives JSON serialization round-trip. |
-| Sun | Implement the `complexity_classifier` heuristic in `decomposer.rs`: if user message < 50 tokens AND no "and", "then", "also" connectives → `TaskComplexity::Simple` (skip DAG, use direct ReAct); else → `TaskComplexity::Complex` (decompose). |
+| Day | Task | Status |
+|---|---|---|
+| Mon | Create `crates/hydragent-planner` crate. Add `petgraph`, `serde`, `uuid` to `Cargo.toml`. Define `DagNode`, `DagEdge`, `TaskDag` structs. Implement `TaskDag::new()`, `add_node()`, `add_edge()`, `validate()` (cycle detection via `petgraph::algo::is_cyclic_directed()`). | ✅ Done |
+| Tue | Implement `decomposer.rs`: `async fn decompose(task: &str, llm: &dyn ModelProvider) -> Result<DagSpec>`. Crafts a structured decomposition prompt. Parses LLM JSON output into `DagSpec`. Validates the resulting DAG for cycles and orphan nodes. | ✅ Done |
+| Wed | Define the `DagSpec` JSON schema (see Section 5.1). Write the decomposition LLM prompt with few-shot examples for 3 task categories: research, coding, and report writing. Verify JSON schema compliance with `serde_json::from_str`. | ✅ Done |
+| Thu | Implement `scheduler.rs`: `ReadyQueue` — computes which nodes have all dependencies satisfied (in-degree = 0 after marking complete). `TopologicalIterator` yields nodes in execution order. | ✅ Done |
+| Fri | Implement `serializer.rs`: `DagSpec::to_json()` and `DagSpec::from_json()`. Write to `data/swarm/{swarm_id}/dag.json`. Load on restart for crash recovery. | ✅ Done |
+| Sat | Unit tests: (1) 5-node linear chain → correct topo order; (2) diamond dependency (A → B, A → C, B → D, C → D) → B and C are concurrent, D waits; (3) cycle A → B → A → `Err(CycleDetected)`; (4) DAG survives JSON serialization round-trip. | ✅ Done — 5 tests in `tests/planner_tests.rs` |
+| Sun | Implement the `complexity_classifier` heuristic in `decomposer.rs`: if user message < 50 tokens AND no "and", "then", "also" connectives → `TaskComplexity::Simple` (skip DAG, use direct ReAct); else → `TaskComplexity::Complex` (decompose). | ✅ Done — `classify_complexity()` live |
 
-**Deliverable**: `cargo test -p hydragent-planner` green. DAG decomposition produces valid, cycle-free graphs for test inputs.
-
----
-
-### Week 20 — SubAgent Spawner & Model Council
-
-**Goal**: Sub-agents spawn as Tokio tasks with scoped configurations. Model Council routes each to the optimal LLM.
-
-| Day | Task |
-|---|---|
-| Mon | Create `crates/hydragent-swarm` crate. Define `SubAgentSpec`: `id`, `role`, `system_prompt`, `allowed_tools`, `model_hint`, `token_budget`, `timeout_ms`. Define `SubAgent` struct with its own `ReActContext` and `ToolRegistry` slice. |
-| Tue | Implement `spawner.rs`: `SubAgentSpawner::spawn(spec: SubAgentSpec, ...) -> SubAgentHandle`. Spawns a `tokio::task` for the sub-agent's ReAct loop. `SubAgentHandle` holds the task's `JoinHandle` and a `mpsc::Sender` for sending messages to the agent. |
-| Wed | Implement the `ModelCouncil` in `crates/hydragent-model/src/council.rs`. Load `config/model_council.yaml`. Implement `route(task_type: TaskType, budget: TokenBudget) -> ModelProfile`. Priority: (1) exact tag match; (2) cost-fits-budget; (3) fallback to primary model. |
-| Thu | Implement `ModelProfile` in `profiles.rs`: `{ model_id, context_window, cost_per_1k_tokens, task_type_tags: Vec<TaskType>, benchmark_scores: HashMap<String, f64> }`. Load all 20+ profiles from `config/model_council.yaml`. |
-| Fri | Wire `ModelCouncil` into `SubAgentSpawner`: when spawning a sub-agent, call `council.route(task_type)` to select the model. Override with `model_hint` if explicitly set. Log the routing decision at `tracing::info!`. |
-| Sat | Implement `coordinator.rs`: `SwarmCoordinator` tracks all active `SubAgentHandle`s by `agent_id`. Provides `status_all()` → `Vec<AgentStatus>`, `cancel(agent_id)`, `await_all()`. Uses `tokio::task::JoinSet` for structured concurrency. |
-| Sun | Load test: spawn 20 concurrent sub-agents each executing `EchoTool`. Assert all complete within 1 s. Assert `SwarmCoordinator::status_all()` correctly reports terminal state for all 20. |
-
-**Deliverable**: 20 sub-agents execute concurrently. Model Council routes correctly per task type in unit tests.
+**Deliverable**: ✅ `cargo test -p hydragent-planner` green. DAG decomposition produces valid, cycle-free graphs for test inputs. Interactive demo (`bin/planner_demo.rs`) exercises save → load → step-through-ready-nodes.
 
 ---
 
-### Week 21 — DAG Execution Engine, Mailbox & Result Aggregation
+### Week 20 — SubAgent Spawner & Model Council — ⏸️ **NOT STARTED**
 
-**Goal**: The DAG planner and SubAgent spawner are integrated. Nodes execute with correct dependency ordering. Agent-to-agent mailboxes work.
+> **Status:** The `crates/hydragent-swarm/` crate does not exist in the tree. SubAgent spawner, Model Council router, and ModelProfile registry are not implemented.
 
-| Day | Task |
-|---|---|
-| Mon | Implement `crates/hydragent-planner/src/dag.rs` execution engine: `DagExecutionEngine::run(dag, spawner, coordinator)`. Main loop: pull ready nodes → spawn sub-agents → mark complete on JoinHandle resolve → update ready queue. Loop until all nodes complete or a node fails. |
-| Tue | Implement `mailbox.rs`: `AgentMailbox::write(to_agent_id, from_agent_id, payload: Value)`. Writes to `data/swarm/{swarm_id}/mailbox/{to_agent_id}/{from_agent_id}.json`. `AgentMailbox::read(for_agent_id)` reads all files in inbox. `AgentMailbox::watch(agent_id)` uses `notify` crate for file-system events. |
-| Wed | Implement `supervisor.rs`: `SwarmSupervisor::aggregate(results: Vec<NodeResult>) -> String`. Collects all node results, builds a structured synthesis prompt, calls `ModelCouncil::route(TaskType::Summarization)` to select the cheapest model for synthesis, returns final response. |
-| Thu | Implement `context_manager.rs`: `ContextWindowManager::build_prompt(agent_spec, conversation_history) -> Vec<Message>`. Uses `tiktoken-rs` to count tokens. Reserves `token_budget * 0.2` for the response. Truncates oldest messages if budget exceeded. Injects relevant semantic memories (Phase 2 hybrid search). |
-| Fri | Integrate DAG execution into `orchestrator.rs`: if `complexity_classifier` returns `Complex`, call `decomposer.decompose()` → `DagExecutionEngine::run()` → `SwarmSupervisor::aggregate()` → return final response to user. |
-| Sat | Integration test: user sends "Research the top 3 Rust web frameworks, compare them in a table, and write a 200-word recommendation" → verifies 3 independent research nodes run in parallel → comparison node waits → recommendation node waits for comparison. |
-| Sun | Implement `cache.rs`: `ResultCache` with 60-second TTL. Key: `SHA-256(task_description + model_id)`. If hit, return cached result instead of spawning new agent. Log cache hits at `tracing::debug!`. |
+**Goal (deferred)**: Sub-agents spawn as Tokio tasks with scoped configurations. Model Council routes each to the optimal LLM.
 
-**Deliverable**: Full 5-node DAG executes. Parallel nodes confirmed by timing (parallel batch < sequential batch). Mailbox integration test green.
+| Day | Task | Status |
+|---|---|---|
+| Mon | Create `crates/hydragent-swarm` crate. Define `SubAgentSpec`: `id`, `role`, `system_prompt`, `allowed_tools`, `model_hint`, `token_budget`, `timeout_ms`. Define `SubAgent` struct with its own `ReActContext` and `ToolRegistry` slice. | ⏸️ Deferred |
+| Tue | Implement `spawner.rs`: `SubAgentSpawner::spawn(spec: SubAgentSpec, ...) -> SubAgentHandle`. Spawns a `tokio::task` for the sub-agent's ReAct loop. `SubAgentHandle` holds the task's `JoinHandle` and a `mpsc::Sender` for sending messages to the agent. | ⏸️ Deferred |
+| Wed | Implement the `ModelCouncil` in `crates/hydragent-model/src/council.rs`. Load `config/model_council.yaml`. Implement `route(task_type: TaskType, budget: TokenBudget) -> ModelProfile`. Priority: (1) exact tag match; (2) cost-fits-budget; (3) fallback to primary model. | ⏸️ Deferred |
+| Thu | Implement `ModelProfile` in `profiles.rs`: `{ model_id, context_window, cost_per_1k_tokens, task_type_tags: Vec<TaskType>, benchmark_scores: HashMap<String, f64> }`. Load all 20+ profiles from `config/model_council.yaml`. | ⏸️ Deferred |
+| Fri | Wire `ModelCouncil` into `SubAgentSpawner`: when spawning a sub-agent, call `council.route(task_type)` to select the model. Override with `model_hint` if explicitly set. Log the routing decision at `tracing::info!`. | ⏸️ Deferred |
+| Sat | Implement `coordinator.rs`: `SwarmCoordinator` tracks all active `SubAgentHandle`s by `agent_id`. Provides `status_all()` → `Vec<AgentStatus>`, `cancel(agent_id)`, `await_all()`. Uses `tokio::task::JoinSet` for structured concurrency. | ⏸️ Deferred |
+| Sun | Load test: spawn 20 concurrent sub-agents each executing `EchoTool`. Assert all complete within 1 s. Assert `SwarmCoordinator::status_all()` correctly reports terminal state for all 20. | ⏸️ Deferred |
+
+**Deliverable (deferred)**: 20 sub-agents execute concurrently. Model Council routes correctly per task type in unit tests.
 
 ---
 
-### Week 22 — Self-Healing Re-Planner, Observability & Release
+### Week 21 — DAG Execution Engine, Mailbox & Result Aggregation — ⏸️ **NOT STARTED**
 
-**Goal**: Agent swarm recovers from failures autonomously. Live DAG visualization. Phase 5 tagged.
+> **Status:** The DAG execution engine and mailbox live only in the planner demo's manual step loop (`bin/planner_demo.rs`). There is no automated `DagExecutionEngine::run`, no file-mailbox, and no `SwarmSupervisor`.
 
-| Day | Task |
-|---|---|
-| Mon | Implement `replan.rs`: `SelfHealingReplanner::on_failure(dag, failed_node, error)`. Step 1: Classify failure type via LLM diagnosis prompt. Step 2: Based on diagnosis, choose `RepairStrategy` (Retry / Reroute / Decompose / Escalate). Step 3: Apply strategy to live DAG via `petgraph` graph mutation. |
-| Tue | Implement `RepairStrategy::Retry`: increment `retry_count` on the node; re-add to ready queue with modified params. `RepairStrategy::Decompose`: replace the failed node with 2–3 smaller sub-nodes; re-wire edges. `RepairStrategy::Escalate`: push a `PermissionRequest` to the user explaining the failure and asking for guidance. |
-| Wed | Implement `wiki.rs`: `AgentWiki::write(topic, content)`. Creates `data/wiki/{topic}.md`. `AgentWiki::read(topic)` reads the file. `AgentWiki::index()` lists all wiki pages. Used by sub-agents to share findings that persist beyond a single swarm run. |
-| Thu | Implement swarm observability: `SwarmDiagramRenderer::render(dag, coordinator)` produces an ASCII tree using `rich.tree` (Python) or `comfy-table` (Rust). Each node shows: status emoji (⏳ pending / 🔄 running / ✅ done / ❌ failed), assigned model, token usage. |
-| Fri | Implement `./hydragent swarm status` CLI subcommand: reads `data/swarm/{swarm_id}/state.json`; renders the diagram for the most recent (or specified) swarm run. |
-| Sat | Phase 5 full regression suite: `cargo test --workspace` + `pytest adapters/ -v`. Self-healing integration test: inject deliberate failure into node 2 of a 5-node DAG → verify re-planner fires → verify swarm completes with repaired DAG. |
-| Sun | Tag `v0.5.0`. Write CHANGELOG. Update `ARCHITECTURE.md` with swarm layer diagram. Demo: complex 10-node DAG task from CLI with live diagram output. |
+**Goal (deferred)**: The DAG planner and SubAgent spawner are integrated. Nodes execute with correct dependency ordering. Agent-to-agent mailboxes work.
 
-**Deliverable**: `v0.5.0` tag. Self-healing verified. All Phase 1–5 tests green.
+| Day | Task | Status |
+|---|---|---|
+| Mon | Implement `crates/hydragent-planner/src/dag.rs` execution engine: `DagExecutionEngine::run(dag, spawner, coordinator)`. Main loop: pull ready nodes → spawn sub-agents → mark complete on JoinHandle resolve → update ready queue. Loop until all nodes complete or a node fails. | ⏸️ Deferred |
+| Tue | Implement `mailbox.rs`: `AgentMailbox::write(to_agent_id, from_agent_id, payload: Value)`. Writes to `data/swarm/{swarm_id}/mailbox/{to_agent_id}/{from_agent_id}.json`. `AgentMailbox::read(for_agent_id)` reads all files in inbox. `AgentMailbox::watch(agent_id)` uses `notify` crate for file-system events. | ⏸️ Deferred |
+| Wed | Implement `supervisor.rs`: `SwarmSupervisor::aggregate(results: Vec<NodeResult>) -> String`. Collects all node results, builds a structured synthesis prompt, calls `ModelCouncil::route(TaskType::Summarization)` to select the cheapest model for synthesis, returns final response. | ⏸️ Deferred |
+| Thu | Implement `context_manager.rs`: `ContextWindowManager::build_prompt(agent_spec, conversation_history) -> Vec<Message>`. Uses `tiktoken-rs` to count tokens. Reserves `token_budget * 0.2` for the response. Truncates oldest messages if budget exceeded. Injects relevant semantic memories (Phase 2 hybrid search). | ⏸️ Deferred |
+| Fri | Integrate DAG execution into `orchestrator.rs`: if `complexity_classifier` returns `Complex`, call `decomposer.decompose()` → `DagExecutionEngine::run()` → `SwarmSupervisor::aggregate()` → return final response to user. | ⏸️ Deferred |
+| Sat | Integration test: user sends "Research the top 3 Rust web frameworks, compare them in a table, and write a 200-word recommendation" → verifies 3 independent research nodes run in parallel → comparison node waits → recommendation node waits for comparison. | ⏸️ Deferred |
+| Sun | Implement `cache.rs`: `ResultCache` with 60-second TTL. Key: `SHA-256(task_description + model_id)`. If hit, return cached result instead of spawning new agent. Log cache hits at `tracing::debug!`. | ⏸️ Deferred |
+
+**Deliverable (deferred)**: Full 5-node DAG executes. Parallel nodes confirmed by timing (parallel batch < sequential batch). Mailbox integration test green.
+
+---
+
+### Week 22 — Self-Healing Re-Planner, Observability & Release — ⏸️ **NOT STARTED**
+
+> **Status:** No `replan.rs`, no `wiki.rs`, no swarm status CLI. Failure recovery in the current ReAct loop is just a re-prompt, not DAG surgery.
+
+**Goal (deferred)**: Agent swarm recovers from failures autonomously. Live DAG visualization. Phase 5 tagged.
+
+| Day | Task | Status |
+|---|---|---|
+| Mon | Implement `replan.rs`: `SelfHealingReplanner::on_failure(dag, failed_node, error)`. Step 1: Classify failure type via LLM diagnosis prompt. Step 2: Based on diagnosis, choose `RepairStrategy` (Retry / Reroute / Decompose / Escalate). Step 3: Apply strategy to live DAG via `petgraph` graph mutation. | ⏸️ Deferred |
+| Tue | Implement `RepairStrategy::Retry`: increment `retry_count` on the node; re-add to ready queue with modified params. `RepairStrategy::Decompose`: replace the failed node with 2–3 smaller sub-nodes; re-wire edges. `RepairStrategy::Escalate`: push a `PermissionRequest` to the user explaining the failure and asking for guidance. | ⏸️ Deferred |
+| Wed | Implement `wiki.rs`: `AgentWiki::write(topic, content)`. Creates `data/wiki/{topic}.md`. `AgentWiki::read(topic)` reads the file. `AgentWiki::index()` lists all wiki pages. Used by sub-agents to share findings that persist beyond a single swarm run. | ⏸️ Deferred |
+| Thu | Implement swarm observability: `SwarmDiagramRenderer::render(dag, coordinator)` produces an ASCII tree using `rich.tree` (Python) or `comfy-table` (Rust). Each node shows: status emoji (⏳ pending / 🔄 running / ✅ done / ❌ failed), assigned model, token usage. | ⏸️ Deferred |
+| Fri | Implement `./hydragent swarm status` CLI subcommand: reads `data/swarm/{swarm_id}/state.json`; renders the diagram for the most recent (or specified) swarm run. | ⏸️ Deferred |
+| Sat | Phase 5 full regression suite: `cargo test --workspace` + `pytest adapters/ -v`. Self-healing integration test: inject deliberate failure into node 2 of a 5-node DAG → verify re-planner fires → verify swarm completes with repaired DAG. | ⏸️ Deferred |
+| Sun | Tag `v0.5.0`. Write CHANGELOG. Update `ARCHITECTURE.md` with swarm layer diagram. Demo: complex 10-node DAG task from CLI with live diagram output. | ⏸️ Deferred |
+
+**Deliverable (deferred)**: `v0.5.0` tag. Self-healing verified. All Phase 1–5 tests green.
 
 ---
 

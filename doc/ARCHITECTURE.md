@@ -2,6 +2,11 @@
 
 > Deep technical specification of the **Hydragent Unified AI Agent** — layers, interfaces, data schemas, execution flows, and security boundaries.
 
+> **⚠️ This file is the *design* specification.** It describes the full target architecture across all 9 phases.
+> Several items in this document (ChromaDB semantic store, Dreaming pipeline, Wasmtime/Docker sandboxes, WhatsApp/Signal/Matrix adapters, Model Council, 16-layer security, Merkle audit, etc.) are **planned but not yet present in the code**.
+> For what is *really* implemented right now, see **[`STATE.md`](STATE.md)**.
+> **Naming convention:** throughout this document the term **`session_id`** is used interchangeably with **`page_id`**. The Rust code currently calls the unit of memory `Page` and the field `page_id` (see `crates/hydragent-memory/src/lib.rs`); a future schema may rename the field back to `session_id`. The *shape* (parent, links, tags, embedding) is unchanged.
+
 ---
 
 ## Table of Contents
@@ -69,11 +74,11 @@ Zig edge footprint:
 | Layer | Language | Key Dependencies |
 |---|---|---|
 | Core Orchestrator | **Rust** (tokio async) | `tokio`, `anyhow`, `tracing`, `clap` |
-| Event Bus | **Rust** | `tokio::net::UnixListener`, `serde_json` |
+| Event Bus | **Rust** | `tokio::net::TcpListener`, `serde_json` |
 | Channel Gateway (adapters) | **Python** | `asyncio`, `python-telegram-bot`, `discord.py`, `rich` |
 | Memory Engine | **Rust** + SQLite | `sqlx` (WAL mode), `serde` |
 | Vector Store | **Python** bridge | `chromadb`, `faiss`, `sentence-transformers` |
-| Tool Dispatcher | **Rust** | `reqwest`, `tokio`, Unix socket IPC |
+| Tool Dispatcher | **Rust** | `reqwest`, `tokio`, TCP socket IPC |
 | Browser Bot | **Python** | `playwright`, async subprocess |
 | Code Sandbox | Docker Engine API | Daytona/E2B-compatible; managed from Rust via `bollard` |
 | Security Vault | **Rust** + `libsodium` | `sodiumoxide` (XChaCha20, Argon2id) |
@@ -157,7 +162,7 @@ service GatewayService {
 }
 
 message IntentEvent {
-  string session_id = 1;
+  string page_id    = 1;
   string channel_id = 2;
   string user_id    = 3;
   string content    = 4;
@@ -308,7 +313,7 @@ sequenceDiagram
     participant SB as Sandbox
 
     User->>GW: "What did I work on last Tuesday?"
-    GW->>Bus: IntentEvent {session_id, content, user_id}
+    GW->>Bus: IntentEvent {page_id, content, user_id}
     Bus->>Orch: Dispatch TaskSpec
 
     Note over Orch,Mem: Dual-Mode Retrieval
@@ -388,7 +393,7 @@ sequenceDiagram
 ```sql
 CREATE TABLE episodic_logs (
   id          INTEGER PRIMARY KEY,
-  session_id  TEXT NOT NULL,
+  page_id     TEXT NOT NULL,
   timestamp   INTEGER NOT NULL,
   role        TEXT CHECK(role IN ('user','agent','system')),
   content     TEXT NOT NULL,
@@ -434,7 +439,7 @@ CREATE TABLE user_profile (
 
 CREATE TABLE sentiment_log (
   id          INTEGER PRIMARY KEY,
-  session_id  TEXT,
+  page_id     TEXT,
   timestamp   INTEGER,
   sentiment   TEXT CHECK(sentiment IN ('positive','neutral','negative')),
   intensity   REAL,
@@ -540,7 +545,7 @@ Leaf data:
     "tool_id":      "send_email",
     "params_hash":  "sha256(redacted_params)",  // credentials already removed
     "user_id":      "user-abc",
-    "session_id":   "sess-xyz",
+    "page_id":      "sess-xyz",
     "outcome":      "success",
     "approved_by":  "user|auto"
   }
@@ -693,7 +698,7 @@ Local Ollama calls use the same interface format with `"model": "ollama/{model_n
 ```typescript
 // IntentEvent — inbound from gateway
 interface IntentEvent {
-  session_id:   string;          // UUID v4
+  page_id:      string;          // UUID v4
   channel_id:   string;          // e.g., "telegram:123456"
   user_id:      string;
   content:      string;          // User's message text
@@ -705,7 +710,7 @@ interface IntentEvent {
 
 // AgentResponse — outbound to gateway
 interface AgentResponse {
-  session_id:   string;
+  page_id:      string;
   content:      string;
   format:       "markdown" | "plain" | "html";
   actions:      ConsentRequest[];  // Any pending approval requests
@@ -853,7 +858,7 @@ Hydragent implements an interconnected **Library Knowledge Graph System** in the
 
 ### 11.1 SQLite Knowledge Graph Schema
 
-All nodes and relation edges are stored in the local `data/sessions.db` database using the following schemas:
+All nodes and relation edges are stored in the local `data/hydragent.db` database using the following schemas:
 
 ```sql
 CREATE TABLE IF NOT EXISTS nodes (

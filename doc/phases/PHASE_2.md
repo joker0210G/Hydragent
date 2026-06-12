@@ -3,7 +3,54 @@
 > **Timeline**: Weeks 7–10
 > **Theme**: Transform Hydragent from a stateless chat loop into a **continuously learning entity** — a multi-tiered memory system that persists facts, preferences, and project state indefinitely. Retrieval is hybrid (BM25 + vector), context injection is automatic and token-budget-aware, and a nightly "Dreaming" background worker compacts raw conversation logs into dense, searchable knowledge.
 
+> ## ✅ Implementation Status — Implemented (subset, as of June 2026)
+> 
+> Cross-checked against [`doc/STATE.md`](../STATE.md) at `git rev 3d99366` (June 2026).
+> 
+> **What is live:**
+> - **SQLite-backed memory** is live in `hydragent-memory` (semantic store, session log, vector index, retrieval, context injector).
+> - **Vector index** is a **linear scan** over `HashMap<String, Vec<f32>>` in `crates/hydragent-memory/src/vector_index.rs`. **NOT HNSW** — the spec called for `hnsw_rs` but that was never integrated. The 100k-fact / 10ms latency target is not achievable with the current code. Persistence is via bincode to `vectors.bin`; on disk it's just a serialized HashMap. See §5.4 for the actual code and §3.4 for the original design rationale (which was not implemented).
+> - **Hybrid retrieval (BM25 + vector + RRF)** is wired and exposed through the `memory_search` tool AND the bus RPC `memory.search` (added 2026-06-12).
+> - **Memory tools** are live: `memory_store`, `memory_search`, `memory_forget` (plus `soul` and `user_profile`).
+> - **Local embedder** (`hydragent-embed`) downloads and runs `all-MiniLM-L6-v2` via Candle; model artifacts are committed to `data/models/`.
+> - **Dreaming pipeline** is **scaffolded but not running nightly**. The background worker entrypoint exists; consolidation logic is minimal.
+> - **Type note**: `MemoryDocument.importance` is an `i64` (integer), not the `f32` shown in some Phase 2 diagrams.
+> - **`soul` tool** (a.k.a. "Standing Orders") lives in `hydragent-tools` (file: `crates/hydragent-tools/src/standing_orders.rs` — file name is historical, the registered tool name is `soul`). Reads / writes `config/SOUL.md`.
+> 
+> **Not yet built / not exercised:**
+> - The Dreaming worker has not been observed to actually consolidate logs in normal runs.
+> - LRU eviction policy is described but not enforced.
+> - The 100k-fact / 10ms retrieval target is unverified; no benchmark suite ships in `benches/`.
+
 ---
+
+> **Doc vs Code Reality (as of 2026-06-12):** Stress-test sweep is GREEN
+> (21/21, see [`TODO_PHASE2.md`](../../TODO_PHASE2.md)). Several
+> components in this file are **aspirational** rather than the current
+> implementation. Specifically:
+>
+> - **§5.2 (DB Schema)** — the FTS5 table here is shown as external-content
+>   with `tokenize='trigram'`. The real code uses a **standard** (non-external)
+>   FTS5 table with the default `unicode61` tokenizer. The triggers ARE
+>   present (good!), but the trigger names are `fts_insert` / `fts_update` /
+>   `fts_delete` (not `sm_ai` / `sm_au` / `sm_ad`).
+> - **§5.4 (HNSW Vector Index)** — shows `hnsw_rs::Hnsw<f32, DistCosine>`.
+>   Reality is a **linear scan** over `HashMap<String, Vec<f32>>` in
+>   `crates/hydragent-memory/src/vector_index.rs`. The 100k-fact / 10ms
+>   target is **not achievable** with the current implementation.
+>   Real HNSW integration is deferred to a later phase.
+> - **§5.9 (Standing Orders)** — code shows `load_standing_orders()` reading
+>   `config/standing_orders.md`. Reality: the tool is named **`soul`**
+>   (struct `SoulTool` in `crates/hydragent-tools/src/standing_orders.rs`)
+>   and writes **`config/SOUL.md`**.
+> - **§5.7.3 (Background Worker)** — accurate, but the `enable_dreaming`
+>   default is `true` in code (`config.rs:81`), not a `false`/unknown
+>   default as the doc table implies. Verified via Phase 2 test I1.
+> - **§10 (Risks)** — FTS5 is **not** using trigram in code; trigram
+>   would have ~3× storage overhead which we don't actually pay.
+>
+> The full divergence table lives in [`TODO_PHASE2.md`](../../TODO_PHASE2.md)
+> §"Doc-vs-code divergences still present".
 
 ## 📋 Table of Contents
 
@@ -46,7 +93,7 @@ Phase 2 makes Hydragent's memory **infinite, autonomous, and searchable**. The a
 | G5 | `memory_store`, `memory_search`, `memory_forget` tools all functional in ReAct loop | Integration test: full ReAct turn for each tool with expected output verified |
 | G6 | Context injection respects `MEMORY_CONTEXT_TOKEN_LIMIT` — never injects more tokens than configured | Unit test: inject 200 memories with a 500-token limit; assert injected block ≤ 500 tokens |
 | G7 | FTS5 triggers keep keyword index perfectly in sync — no orphaned rows | Unit test: insert/update/delete 100 records; verify FTS row count matches main table row count |
-| G8 | `Standing Orders` file is parsed and injected at every session start as immutable system context | Integration test: `config/standing_orders.md` content appears in every LLM system prompt regardless of user input |
+| G8 | `SOUL.md` file is parsed and injected at every session start as immutable system context | Integration test: `config/SOUL.md` content appears in every LLM system prompt regardless of user input. **Note**: the doc historically called this file `standing_orders.md` and the tool `standing_orders`; reality is `SOUL.md` and the `soul` tool. See §5.9. |
 | G9 | HNSW index persists to disk on graceful shutdown; reloads on next startup | Test: insert 1,000 vectors, restart process, assert all 1,000 are searchable |
 
 ### Soft Goals (target but not blocking)
@@ -76,7 +123,7 @@ hydragent/
 │   │       └── dream.rs                      # NEW: run_dream_cycle() background worker
 │   │
 │   ├── hydragent-memory/                     # HEAVILY UPDATED
-│   │   ├── Cargo.toml                        # UPDATED: adds sqlx FTS5 feature, hnsw_rs, bincode
+│   │   ├── Cargo.toml                        # UPDATED: adds sqlx FTS5 feature, bincode (NOT hnsw_rs — that was never added)
 │   │   └── src/
 │   │       ├── lib.rs                        # UPDATED: re-exports all memory APIs
 │   │       ├── session_store.rs              # UPDATED: requires_consolidation column support
@@ -84,8 +131,8 @@ hydragent/
 │   │       ├── models.rs                     # NEW: SemanticMemory, MemoryConsolidationJob structs
 │   │       ├── retrieval.rs                  # NEW: hybrid_search(), RRF algorithm
 │   │       ├── context_injector.rs           # NEW: build_system_prompt_with_memory()
-│   │       ├── vector_index.rs              # NEW: VectorStore (HNSW wrapper)
-│   │       └── standing_orders.rs           # NEW: parse and inject standing_orders.md
+│   │       ├── vector_index.rs              # NEW: VectorStore (linear-scan HashMap; HNSW not implemented)
+│   │       └── dream.rs                      # NEW: run_dream_cycle() background worker (defined here, not in hydragent-core)
 │   │
 │   ├── hydragent-embed/                      # NEW CRATE: local embedding model
 │   │   ├── Cargo.toml                        # candle-core, candle-transformers, tokenizers
@@ -99,7 +146,8 @@ hydragent/
 │   │   └── src/
 │   │       ├── memory_store.rs              # NEW tool: MemoryStoreTool
 │   │       ├── memory_search.rs             # NEW tool: MemorySearchTool
-│   │       └── memory_forget.rs             # NEW tool: MemoryForgetTool
+│   │       ├── memory_forget.rs             # NEW tool: MemoryForgetTool
+│   │       └── standing_orders.rs           # NEW: SoulTool (registered tool name: "soul") — file name is historical
 │   │
 │   └── hydragent-types/                      # UPDATED
 │       └── src/
@@ -111,12 +159,11 @@ hydragent/
 │   │   ├── all-MiniLM-L6-v2.safetensors    # ~90 MB embedding model (downloaded at first run)
 │   │   ├── tokenizer.json                   # HuggingFace tokenizer config
 │   │   └── config.json                      # BERT model config
-│   └── vectors.bin                          # NEW: serialized HNSW index (grows with usage)
+│   └── vectors.bin                          # NEW: serialized VectorStore (HashMap, not HNSW)
 │
 ├── config/
-│   ├── SOUL.md                               # Existing
-│   ├── USER.md                               # Existing
-│   └── standing_orders.md                   # NEW: persistent behavioral rules injected into every session
+│   ├── SOUL.md                               # Persistent behavioral rules (a.k.a. "Standing Orders")
+│   └── USER.md                               # Persistent user profile
 │
 ├── migrations/
 │   ├── 001_initial.sql                       # Existing Phase 1 migration
@@ -135,7 +182,7 @@ hydragent/
 
 ## 3. Technology Decisions
 
-> **Team consensus**: local-first embedding, SQLite FTS5 for keywords, `hnsw_rs` for vectors. No hosted vector databases (Pinecone, Weaviate, Qdrant) in Phase 2 — all data stays on the user's machine.
+> **Team consensus (revised 2026-06-12)**: local-first embedding, SQLite FTS5 for keywords. The `hnsw_rs` decision was not implemented — see §3.4 for what shipped instead. No hosted vector databases (Pinecone, Weaviate, Qdrant) in Phase 2 — all data stays on the user's machine.
 
 ---
 
@@ -362,30 +409,28 @@ CREATE INDEX IF NOT EXISTS idx_semantic_memories_importance
     ON semantic_memories(importance_score DESC, timestamp DESC);
 
 -- 3. FTS5 Virtual Table for BM25 keyword retrieval
--- trigram tokenizer: allows substring matching (e.g., "actix" matches "actix-web")
+-- ⚠️ Reality: the actual code uses a STANDARD (non-external-content) FTS5
+-- table with the default unicode61 tokenizer, NOT trigram. The doc's
+-- trigram choice was an aspirational design that wasn't implemented.
 CREATE VIRTUAL TABLE IF NOT EXISTS semantic_memories_fts
 USING fts5(
-    content,
-    content='semantic_memories',
-    content_rowid='id',
-    tokenize='trigram'
+    id UNINDEXED,
+    content
 );
 
--- 4. Synchronization triggers — NEVER let FTS fall out of sync with the main table
-
-CREATE TRIGGER sm_ai AFTER INSERT ON semantic_memories BEGIN
-    INSERT INTO semantic_memories_fts(rowid, content) VALUES (new.id, new.content);
+-- 4. Synchronization triggers — present in code with names
+-- `fts_insert` / `fts_update` / `fts_delete` (not the `sm_ai` / `sm_au`
+-- / `sm_ad` names shown below). Verified by Phase 2 test G1.
+CREATE TRIGGER IF NOT EXISTS fts_insert AFTER INSERT ON semantic_memories BEGIN
+    INSERT INTO semantic_memories_fts (id, content) VALUES (new.id, new.content);
 END;
 
-CREATE TRIGGER sm_ad AFTER DELETE ON semantic_memories BEGIN
-    INSERT INTO semantic_memories_fts(semantic_memories_fts, rowid, content)
-        VALUES ('delete', old.id, old.content);
+CREATE TRIGGER IF NOT EXISTS fts_update AFTER UPDATE ON semantic_memories BEGIN
+    UPDATE semantic_memories_fts SET content = new.content WHERE id = new.id;
 END;
 
-CREATE TRIGGER sm_au AFTER UPDATE ON semantic_memories BEGIN
-    INSERT INTO semantic_memories_fts(semantic_memories_fts, rowid, content)
-        VALUES ('delete', old.id, old.content);
-    INSERT INTO semantic_memories_fts(rowid, content) VALUES (new.id, new.content);
+CREATE TRIGGER IF NOT EXISTS fts_delete AFTER DELETE ON semantic_memories BEGIN
+    DELETE FROM semantic_memories_fts WHERE id = old.id;
 END;
 
 -- 5. Dreaming job tracker — crash recovery support
@@ -573,215 +618,85 @@ pub fn l2_normalize(tensor: Tensor) -> Result<Tensor> {
 
 ---
 
-### 5.4 HNSW Vector Index
+### 5.4 Vector Index — **Linear Scan** (NOT HNSW)
+
+> ⚠️ **Doc vs Code Reality**: The original spec called for `hnsw_rs` with
+> `DistCosine`. The actual implementation is a simple linear scan over
+> a `HashMap<String, Vec<f32>>`. Real HNSW integration is deferred to a
+> later phase (see `TODO_PHASE2.md` divergence table). The 100k-fact /
+> 10ms latency target is **not** met by the current code.
 
 ```rust
 // crates/hydragent-memory/src/vector_index.rs
 
-use hnsw_rs::prelude::*;
-use parking_lot::RwLock;
+use serde::{Serialize, Deserialize};
+use std::path::Path;
+use anyhow::Result;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use anyhow::{Context, Result};
 
-/// Thread-safe, in-memory HNSW vector index backed by disk serialization.
+/// In-memory vector store. Linear scan over HashMap.
 ///
-/// All reads (search) can run concurrently.
-/// Writes (insert) require exclusive access via parking_lot::RwLock.
+/// ⚠️ Performance: O(N) per query. Not HNSW. Do not use beyond ~10k facts
+/// without a real index migration. Phase 2 stress test passed because
+/// the test corpus is small (≤100 facts per run).
+#[derive(Serialize, Deserialize, Default)]
 pub struct VectorStore {
-    hnsw: RwLock<Hnsw<f32, DistCosine>>,
-    /// Maps HNSW-internal usize ID → Hydragent UUID string
-    id_map: RwLock<HashMap<usize, String>>,
-    /// Maps Hydragent UUID → HNSW-internal usize ID (for delete support)
-    reverse_map: RwLock<HashMap<String, usize>>,
-    counter: AtomicUsize,
-    file_path: String,
-    dimensions: usize,
+    embeddings: HashMap<String, Vec<f32>>,
 }
 
 impl VectorStore {
-    /// Create a new empty index.
-    ///
-    /// HNSW parameters:
-    /// - `max_nb_connection` (M=16): number of bidirectional links per node at non-zero layers
-    /// - `max_elements`: pre-allocated capacity (can grow dynamically)
-    /// - `ef_construction` (64): exploration factor during index build — higher = better quality, slower inserts
-    pub fn new(file_path: &str, dimensions: usize) -> Self {
-        let hnsw = Hnsw::new(16, dimensions, 100_000, 64, DistCosine);
-        Self {
-            hnsw: RwLock::new(hnsw),
-            id_map: RwLock::new(HashMap::new()),
-            reverse_map: RwLock::new(HashMap::new()),
-            counter: AtomicUsize::new(0),
-            file_path: file_path.to_string(),
-            dimensions,
-        }
+    pub fn new() -> Self {
+        Self { embeddings: HashMap::new() }
     }
 
-    /// Load an existing index from disk. Falls back to empty index if file missing or corrupt.
-    pub fn load_or_create(file_path: &str, dimensions: usize) -> Self {
-        if std::path::Path::new(file_path).exists() {
-            match Self::load_from_disk(file_path, dimensions) {
-                Ok(store) => {
-                    tracing::info!(
-                        file_path,
-                        count = store.len(),
-                        "Vector index loaded from disk"
-                    );
-                    return store;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, file_path, "Vector index corrupted; creating fresh index");
-                    // Delete corrupt file and fall through to create new
-                    let _ = std::fs::remove_file(file_path);
-                }
-            }
-        }
-        tracing::info!(file_path, "Creating new empty vector index");
-        Self::new(file_path, dimensions)
+    pub fn insert(&mut self, id: String, vector: Vec<f32>) {
+        self.embeddings.insert(id, vector);
     }
 
-    /// Insert a new vector. The UUID must correspond to a row in `semantic_memories`.
-    pub fn insert(&self, uuid: String, vector: Vec<f32>) -> Result<()> {
-        if vector.len() != self.dimensions {
-            anyhow::bail!(
-                "Vector dimension mismatch: expected {}, got {}",
-                self.dimensions,
-                vector.len()
-            );
+    /// Cosine similarity search. Iterates ALL stored vectors.
+    /// Returns top-k by descending similarity.
+    pub fn search(&self, query_vec: &[f32], k: usize) -> Vec<(String, f32)> {
+        let mut results = Vec::new();
+        for (id, vec) in &self.embeddings {
+            let sim = hydragent_embed::cosine_similarity(query_vec, vec);
+            results.push((id.clone(), sim));
         }
-
-        let internal_id = self.counter.fetch_add(1, Ordering::SeqCst);
-
-        {
-            let mut hnsw = self.hnsw.write();
-            hnsw.insert((&vector, internal_id));
-        }
-
-        {
-            let mut map = self.id_map.write();
-            let mut rev = self.reverse_map.write();
-            map.insert(internal_id, uuid.clone());
-            rev.insert(uuid, internal_id);
-        }
-
-        Ok(())
-    }
-
-    /// Search for the top `k` nearest neighbors.
-    /// Returns `Vec<(uuid, cosine_similarity)>` sorted by similarity descending.
-    pub fn search(&self, query_vec: &[f32], k: usize) -> Result<Vec<(String, f32)>> {
-        if query_vec.len() != self.dimensions {
-            anyhow::bail!("Query vector dimension mismatch");
-        }
-
-        let hnsw = self.hnsw.read();
-        let map = self.id_map.read();
-
-        // ef_search=32: exploration factor at query time. Higher = more accurate, slower.
-        let raw_results = hnsw.search(query_vec, k, 32);
-
-        let mut results = Vec::with_capacity(raw_results.len());
-        for nn in raw_results {
-            // HNSW DistCosine returns distance ∈ [0, 2]
-            // Convert to similarity ∈ [0, 1]: similarity = 1 - (distance / 2)
-            let similarity = (1.0 - nn.distance / 2.0).clamp(0.0, 1.0);
-
-            if let Some(uuid) = map.get(&nn.d_id) {
-                results.push((uuid.clone(), similarity));
-            }
-        }
-
-        // Sort by similarity descending
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        Ok(results)
+        results.truncate(k);
+        results
     }
 
-    /// Number of vectors currently indexed.
-    pub fn len(&self) -> usize {
-        self.counter.load(Ordering::SeqCst)
+    pub fn delete(&mut self, id: &str) {
+        self.embeddings.remove(id);
     }
 
-    /// Persist the index and id_map to disk using bincode.
-    /// Called on graceful shutdown.
-    pub fn save_to_disk(&self) -> Result<()> {
-        use std::io::Write;
+    pub fn clear(&mut self) {
+        self.embeddings.clear();
+    }
 
-        let map = self.id_map.read();
-        let rev = self.reverse_map.read();
-
-        let map_bytes = bincode::serialize(&*map)
-            .context("Failed to serialize HNSW id_map")?;
-        let rev_bytes = bincode::serialize(&*rev)
-            .context("Failed to serialize HNSW reverse_map")?;
-        let counter = self.counter.load(Ordering::SeqCst);
-
-        let mut file = std::fs::File::create(&self.file_path)
-            .with_context(|| format!("Failed to create vector index file: {}", self.file_path))?;
-
-        // Format: [magic 4B] [counter 8B] [map_len 8B] [map_bytes] [rev_len 8B] [rev_bytes]
-        file.write_all(b"HVEC")?;
-        file.write_all(&counter.to_be_bytes())?;
-        file.write_all(&(map_bytes.len() as u64).to_be_bytes())?;
-        file.write_all(&map_bytes)?;
-        file.write_all(&(rev_bytes.len() as u64).to_be_bytes())?;
-        file.write_all(&rev_bytes)?;
-
-        tracing::info!(
-            file_path = %self.file_path,
-            count = counter,
-            "Vector index saved to disk"
-        );
-
+    /// Persist to disk via bincode. The on-disk format is just a serialized
+    /// HashMap; no index structure.
+    pub fn save_to_disk(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = bincode::serialize(self)?;
+        std::fs::write(path, bytes)?;
         Ok(())
     }
 
-    fn load_from_disk(file_path: &str, dimensions: usize) -> Result<Self> {
-        use std::io::Read;
-
-        let mut file = std::fs::File::open(file_path)?;
-        let mut magic = [0u8; 4];
-        file.read_exact(&mut magic)?;
-
-        if &magic != b"HVEC" {
-            anyhow::bail!("Invalid vector index magic bytes");
-        }
-
-        let mut counter_bytes = [0u8; 8];
-        file.read_exact(&mut counter_bytes)?;
-        let counter = usize::from_be_bytes(counter_bytes);
-
-        let mut map_len_bytes = [0u8; 8];
-        file.read_exact(&mut map_len_bytes)?;
-        let map_len = u64::from_be_bytes(map_len_bytes) as usize;
-
-        let mut map_bytes = vec![0u8; map_len];
-        file.read_exact(&mut map_bytes)?;
-        let id_map: HashMap<usize, String> = bincode::deserialize(&map_bytes)?;
-
-        let mut rev_len_bytes = [0u8; 8];
-        file.read_exact(&mut rev_len_bytes)?;
-        let rev_len = u64::from_be_bytes(rev_len_bytes) as usize;
-
-        let mut rev_bytes = vec![0u8; rev_len];
-        file.read_exact(&mut rev_bytes)?;
-        let reverse_map: HashMap<String, usize> = bincode::deserialize(&rev_bytes)?;
-
-        // Rebuild HNSW from scratch by re-inserting all vectors from SQLite
-        // (Phase 2 stub: we rebuild the graph from the id_map on next search)
-        let hnsw = Hnsw::new(16, dimensions, counter + 1000, 64, DistCosine);
-
-        Ok(Self {
-            hnsw: RwLock::new(hnsw),
-            id_map: RwLock::new(id_map),
-            reverse_map: RwLock::new(reverse_map),
-            counter: AtomicUsize::new(counter),
-            file_path: file_path.to_string(),
-            dimensions,
-        })
+    pub fn load_from_disk(path: &Path) -> Result<Self> {
+        let bytes = std::fs::read(path)?;
+        let store: Self = bincode::deserialize(&bytes)?;
+        Ok(store)
     }
 }
 ```
+
+> **Migration plan (Phase 5+)**: replace this struct with
+> `hnsw_rs::Hnsw<'static, f32, DistCosine>` (or `instant-distance`) and
+> add a real benchmark in `benches/retrieval_benchmark.rs`. Until then,
+> the search cost is O(N) per query and grows linearly with fact count.
 
 ---
 
@@ -1364,62 +1279,72 @@ impl Tool for MemoryStoreTool {
 
 ---
 
-### 5.9 Standing Orders Module
+### 5.9 Soul Tool (a.k.a. "Standing Orders")
 
-Standing Orders are persistent behavioral rules that apply to *every* session, regardless of user input. They are inspired by OpenClaw's architectural innovation.
+> ⚠️ **Doc vs Code Reality**: This section was originally titled
+> "Standing Orders Module" and described a `load_standing_orders()` function
+> reading `config/standing_orders.md`. **The actual implementation** is
+> the **`soul` tool** (struct `SoulTool` in
+> `crates/hydragent-tools/src/standing_orders.rs`) which reads and writes
+> **`config/SOUL.md`**. The file name is a deliberate match for the
+> docstring reference; treat `soul` ↔ `standing_orders` as synonyms.
+
+The `soul` tool is a persistent behavioral-rule store that applies to
+every session, regardless of user input. It is exposed to the LLM as a
+normal `Tool`, so the model can `read` / `add` / `remove` rules
+conversationally.
 
 ```rust
-// crates/hydragent-memory/src/standing_orders.rs
+// crates/hydragent-tools/src/standing_orders.rs  (file name is historical)
 
-use std::path::Path;
+use std::path::PathBuf;
+use serde::Deserialize;
+use hydragent_types::{ToolResult, ToolStatus, Tool};
 
-/// Load `config/standing_orders.md` and return its content.
-/// Returns `None` if the file doesn't exist (graceful degradation).
-pub fn load_standing_orders(config_dir: &str) -> Option<String> {
-    let path = Path::new(config_dir).join("standing_orders.md");
-    match std::fs::read_to_string(&path) {
-        Ok(content) if !content.trim().is_empty() => {
-            tracing::debug!("Standing Orders loaded ({} bytes)", content.len());
-            Some(content)
-        }
-        Ok(_) => {
-            tracing::debug!("standing_orders.md is empty, skipping");
-            None
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::debug!("standing_orders.md not found, skipping");
-            None
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to read standing_orders.md");
-            None
-        }
+pub struct SoulTool {
+    config_dir: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct SoulParams {
+    action: String,        // "read" | "add" | "remove"
+    #[serde(default)]
+    rule: Option<String>,
+    #[serde(default)]
+    rule_id: Option<usize>,
+}
+
+impl Tool for SoulTool {
+    fn name(&self) -> &str { "soul" }
+
+    fn description(&self) -> &str {
+        "Allows viewing, adding, or removing persistent behavioral rules \
+         or instructions in `./config/SOUL.md` that guide the AI's behavior."
+    }
+
+    async fn execute(&self, params_json: &str) -> ToolResult {
+        // ... reads / appends / removes numbered rules in SOUL.md ...
+        // The file path is `config_dir.join("SOUL.md")` — NOT standing_orders.md.
     }
 }
 ```
 
-**Example `config/standing_orders.md`**:
+**Example `config/SOUL.md`** (auto-created on first `add`):
 
 ```markdown
-# Standing Orders — Hydra
+# Agent Soul & Personality
+- Name: Hydra
+- Tone: Helpful, intelligent, and adaptive.
 
-These rules apply to every conversation, overriding any conflicting session-level instructions.
-
-## Communication Style
-- Always use concise, technically precise language.
-- Prefer code examples over prose explanations for technical topics.
-- When uncertain, say "I don't know" rather than guessing.
-
-## Security Rules (NEVER violate)
-- Never reveal API keys, vault contents, or credentials in any response.
-- Never claim to be human.
-- Never execute destructive commands (rm -rf, DROP TABLE) without explicit confirmation.
-
-## Project Context
-- The user is building Hydragent — a multi-phase AI agent in Rust + Python.
-- Default to Rust idioms and patterns consistent with the project codebase.
-- Reference `doc/phases/PHASE_*.md` when discussing implementation plans.
+# Behavior Rules
+1. Always use concise, technically precise language.
+2. Never reveal API keys, vault contents, or credentials in any response.
+3. Never execute destructive commands (rm -rf, DROP TABLE) without explicit confirmation.
 ```
+
+**Injection point**: `crates/hydragent-core/src/orchestrator.rs` reads
+`SOUL.md` on every system-prompt build and prepends the contents to the
+LLM's system message. Verified by Phase 2 tests F1 + F2.
 
 ---
 

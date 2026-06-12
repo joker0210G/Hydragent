@@ -13,6 +13,12 @@ pub struct SessionStore {
     pub(crate) vector_store_path: PathBuf,
     pub(crate) vector_store: Mutex<VectorStore>,
     pub(crate) embedder: tokio::sync::OnceCell<LocalEmbedder>,
+    /// Soft cap on the `semantic_memories` table size. When an insert
+    /// pushes the count above this, the oldest+least-important rows are
+    /// evicted. Default is `usize::MAX` (unbounded). Set via
+    /// [`SessionStore::with_max_memories`] (called from `main.rs` based
+    /// on the `MAX_SEMANTIC_MEMORIES` env var / `AppConfig`).
+    pub(crate) max_memories: usize,
 }
 
 impl SessionStore {
@@ -49,6 +55,7 @@ impl SessionStore {
             vector_store_path,
             vector_store: Mutex::new(vector_store),
             embedder: tokio::sync::OnceCell::new(),
+            max_memories: usize::MAX,
         };
         store.init_db().await?;
 
@@ -61,6 +68,18 @@ impl SessionStore {
             let embedder = LocalEmbedder::new(&paths.model_path, &paths.tokenizer_path)?;
             Ok(embedder)
         }).await
+    }
+
+    /// Public accessor for the in-memory vector store. The `Mutex`
+    /// guarantees safe concurrent access, so callers can hold a lock
+    /// guard and call `insert` / `search` / `clear` / `delete` directly.
+    ///
+    /// Exposed primarily so the Criterion retrieval benchmark can
+    /// drive raw cosine scans independently of the `hybrid_search` RRF
+    /// path. Application code should prefer [`Self::insert_memory`]
+    /// and [`crate::hybrid_search`].
+    pub fn vector_store(&self) -> &Mutex<VectorStore> {
+        &self.vector_store
     }
 
     async fn init_db(&self) -> Result<()> {

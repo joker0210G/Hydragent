@@ -3,6 +3,15 @@
 > **Timeline**: Weeks 27–30
 > **Theme**: Hydragent becomes **self-improving**. A Hermes-inspired skill engine learns reusable, composable programs from agent interaction logs. A **7-Day Curator** autonomously reviews, grades, and promotes or demotes skills on a weekly cycle. A **LoRA fine-tuning pipeline** lets the agent adapt a local language model to its own interaction patterns — making it measurably smarter at its specific tasks over time. A **benchmarking harness** tracks capability regression and improvement across every deployment cycle, with automated SKILL-BENCH scoring and golden-set evaluation.
 
+> ## ❌ Implementation Status — Not Yet Implemented (Weeks 27–30, scheduled after Phase 6)
+> 
+> Cross-checked against [`doc/STATE.md`](../STATE.md) at `git rev 3d99366` (June 2026).
+> 
+> - **No `hydragent-skills` crate** and **no `hydragent-bench` crate** exist in the workspace.
+> - `SkillSpec` YAML format, `SkillExtractor` (Hermes-style induction), `SkillExecutor` (ReAct subroutine replay), `SevenDayCurator`, `tools/finetune/` LoRA trainer, `SKILL-BENCH` task suite, and the **golden-set evaluator** are all described here but not built.
+> - Skill composition / chaining (§5.9) and the observability dashboard (§5.10) are similarly unimplemented.
+> - Files referenced by this doc that are not in the tree: `crates/hydragent-skills/`, `crates/hydragent-bench/`, `tools/finetune/`, `bench/`, `skills/`, `migrations/005_*.sql`.
+
 ---
 
 ## 📋 Table of Contents

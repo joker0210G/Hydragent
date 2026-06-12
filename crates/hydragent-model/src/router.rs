@@ -20,6 +20,13 @@ impl ModelRouter {
         }
     }
 
+    /// Human-readable name of the underlying provider (e.g. "openrouter",
+    /// "custom-openai", "ollama"). Useful for logging when a "librarian"
+    /// role is routed through a different provider than the primary.
+    pub fn provider_label(&self) -> &str {
+        self.provider.provider_name()
+    }
+
     pub async fn chat_stream(
         &self,
         messages: Vec<ChatMessage>,

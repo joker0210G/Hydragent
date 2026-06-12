@@ -61,16 +61,17 @@ async def handle_webhook(request):
         return web.json_response({"error": "Invalid JSON"}, status=400)
         
     content = payload.get("content", "").strip()
-    session_id = payload.get("session_id", "default-webhook-session")
+    # Accept both `page_id` (canonical) and `session_id` (legacy alias) on input.
+    session_id = payload.get("page_id") or payload.get("session_id", "default-webhook-session")
     user_id = payload.get("user_id", "default-webhook-user")
-    
+
     if not content:
         return web.json_response({"error": "content is required"}, status=400)
-        
+
     logger.info(f"Received webhook event for session {session_id}")
     try:
         reply = await send_intent_to_bus(content, session_id, user_id)
-        return web.json_response({"response": reply, "session_id": session_id})
+        return web.json_response({"response": reply, "page_id": session_id})
     except Exception as e:
         logger.error(f"Error communicating with Event Bus: {e}")
         return web.json_response({"error": f"Core engine offline or error: {e}"}, status=503)

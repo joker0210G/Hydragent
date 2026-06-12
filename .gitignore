@@ -44,3 +44,7 @@ Thumbs.db
 **/*.bin
 **/vectors.bin
 
+
+# Runtime logs and PID files (managed by tests/start_bus.py and start_websocket_adapter.py)
+logs/
+*.pid

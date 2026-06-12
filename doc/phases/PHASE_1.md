@@ -3,6 +3,27 @@
 > **Timeline**: Weeks 1–6  
 > **Theme**: Build the minimum viable agent loop — a persistent **Rust binary** (Tokio async) that can hold a conversation, reason step-by-step, call an LLM, execute a tool, and survive a process restart. An optional ultra-small **Zig edge binary** is scaffolded in parallel for MCU/RISC-V targets.
 
+> ## ✅ Implementation Status — Completed (Weeks 1–6, June 2026)
+> 
+> Cross-checked against [`doc/STATE.md`](../STATE.md) at `git rev 3d99366` (June 2026).
+> 
+> **What is live in the tree:**
+> - **Rust core runtime** is live: `hydragent-core` (ReAct loop, LLM streaming, tool dispatch) is wired and runs end-to-end.
+> - **CLI channel adapter** ships in `adapters/cli_adapter.py` and talks to the Rust bus.
+> - **12 tools** are registered: `echo`, `web_search`, `file_read`, `memory_store`, `memory_search`, `memory_forget`, `standing_orders`, `user_profile`, `send_message`, `schedule_task`, `rss_subscribe`. See [`STATE.md` §1.3](../STATE.md#13-tools-actually-registered) and the canonical list in §6 of this doc.
+> - **12 Rust crates** in the workspace: `hydragent-core`, `hydragent-types`, `hydragent-bus`, `hydragent-model`, `hydragent-tools`, `hydragent-memory`, `hydragent-embed` (MiniLM-L6-v2 embedder), `hydragent-vault` (encrypted secrets), `hydragent-sandbox` (Wasmtime tool runner), `hydragent-gateway` (JSON-RPC gateway), `hydragent-scheduler` (cron + RSS), `hydragent-planner` (DAG planner).
+> - **JSON-RPC event bus** over TCP is present in `hydragent-bus` and acts as the system spine.
+> - **SQLite via sqlx** persists `page_id`-keyed message state. Canonical type name is `page_id`, **not** `session_id` (the Phase 1 diagram's "Session" labelling is colloquial; the Rust struct field is `page_id`).
+> - **LLM provider** is configured via the swappable `BRAIN_BASE` / `BRAIN_KEY` / `BRAIN_MODEL` / `BRAIN_FALLBACKS` quartet (Plan v4). Any OpenAI-compatible endpoint works; legacy `OPENROUTER_API_KEY` / `PRIMARY_MODEL` env vars are still accepted.
+> 
+> **What is only scaffolded / not yet wired:**
+> - **Zig edge binary** in `edge/` is a scaffold only (`build.zig`, `build.zig.zon`, `src/main.zig`); it is **not** the production runtime and does not run a model. Treat it as Phase 8 / Edge territory.
+> - **Plan Mode** (read-only analysis) is **not** wired into the public CLI yet.
+> - **Ollama local provider** is not implemented (the doc describes a stub that was never filled in).
+> - **Cross-compile targets** (aarch64, RISC-V) compile but are not part of the regular CI / dev loop.
+> 
+> **Definition of done coverage:** hard goals G1, G3 (latency), G4, G5, G6, G7, G8 are met. G2 (Zig size budget) and G9 (Plan Mode) are not yet met.
+
 ---
 
 ## 📋 Table of Contents
@@ -14,15 +35,15 @@
 5. [Component Specifications](#5-component-specifications)
    - 5.1 [Rust Workspace & Build System (Cargo)](#51-rust-workspace--build-system-cargo)
    - 5.2 [Core Data Types & Schemas](#52-core-data-types--schemas)
-   - 5.3 [Event Bus: JSON-RPC over Unix Socket](#53-event-bus-json-rpc-over-unix-socket)
+   - 5.3 [Event Bus: JSON-RPC over TCP Socket](#53-event-bus-json-rpc-over-tcp-socket)
    - 5.4 [Core Orchestrator & ReAct Loop](#54-core-orchestrator--react-loop)
    - 5.5 [OpenRouter SDK Integration](#55-openrouter-sdk-integration)
    - 5.6 [CLI Channel Adapter (Python)](#56-cli-channel-adapter-python)
    - 5.7 [Basic Tool Registry](#57-basic-tool-registry)
-   - 5.8 [Session State (SQLite via sqlx)](#58-session-state-sqlite-via-sqlx)
+   - 5.8 [Page and Message State (SQLite via sqlx)](#58-page-and-message-state-sqlite-via-sqlx)
    - 5.9 [Trait-Based Plugin Interfaces](#59-trait-based-plugin-interfaces)
    - 5.10 [Zig Edge Binary Scaffold (Optional)](#510-zig-edge-binary-scaffold-optional)
-6. [Built-in Tools (Phase 1 Subset)](#6-built-in-tools-phase-1-subset)
+6. [Built-in Tools](#6-built-in-tools)
 7. [Configuration & Environment](#7-configuration--environment)
 8. [Testing Strategy](#8-testing-strategy)
 9. [Performance Targets](#9-performance-targets)
@@ -85,7 +106,7 @@ hydragent/
 │   │   └── src/
 │   │       └── lib.rs            # IntentEvent, AgentResponse, ToolCall, Message, etc.
 │   │
-│   ├── hydragent-bus/            # Event bus: JSON-RPC over Unix socket
+│   ├── hydragent-bus/            # Event bus: JSON-RPC over TCP socket
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -110,10 +131,23 @@ hydragent/
 │   │       ├── file_read.rs      # Tool: scoped file read with path-traversal guard
 │   │       └── echo.rs           # Tool: echo (debug)
 │   │
-│   └── hydragent-memory/         # Phase 1: session log only (Phase 2 expands)
-│       ├── Cargo.toml
-│       └── src/
-│           └── session_store.rs  # sqlx SQLite session CRUD
+│   ├── hydragent-memory/         # Page-keyed SQLite session/message log
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       └── session_store.rs  # sqlx SQLite session CRUD
+│   │
+│   ├── hydragent-embed/          # Local MiniLM-L6-v2 embedder (ONNX, no network)
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── embedder.rs       # safetensors inference via candle
+│   │       └── model_downloader.rs
+│   │
+│   ├── hydragent-vault/          # XChaCha20-Poly1305 + Argon2id encrypted secrets
+│   ├── hydragent-sandbox/        # Wasmtime-based tool execution sandbox
+│   ├── hydragent-gateway/        # JSON-RPC gateway (server-side dispatcher)
+│   ├── hydragent-scheduler/      # Cron jobs + RSS polling
+│   └── hydragent-planner/        # DAG planner for multi-step task decomposition
 │
 ├── edge/                         # Optional Zig edge binary (RISC-V / ESP32-S3)
 │   ├── build.zig
@@ -123,8 +157,17 @@ hydragent/
 │
 ├── adapters/                     # Python channel adapters & tooling
 │   ├── pyproject.toml            # uv / Poetry project config
-│   ├── cli_adapter.py            # Phase 1 CLI: stdin → JSON-RPC → bus → stdout
+│   ├── .venv/                    # Local Python 3.14 venv (rich, httpx, python-dotenv)
+│   ├── cli_adapter.py            # CLI: stdin → JSON-RPC → bus → stdout
+│   ├── bus_client.py             # asyncio TCP client for the JSON-RPC bus
 │   ├── formatter.py              # Markdown → ANSI terminal renderer
+│   ├── webhook_adapter.py        # Generic inbound webhook (accepts page_id or session_id)
+│   ├── telegram_adapter.py       # Telegram bot with multi-page support
+│   ├── discord_adapter.py        # Discord bot scaffold
+│   ├── slack_adapter.py          # Slack adapter scaffold
+│   ├── email_adapter.py          # Email adapter scaffold
+│   ├── test_connection.py        # Bus smoke-test
+│   ├── generate_library_graph.py # Dep-graph generator
 │   └── requirements.txt
 │
 ├── config/
@@ -136,7 +179,7 @@ hydragent/
 │       └── file_read.yaml        # Tool config: allowed base path
 │
 ├── data/
-│   └── sessions/                 # SQLite .db files (one per session_id)
+│   └── hydragent.db              # SQLite database (unified page-centric storage)
 │
 ├── tests/
 │   ├── unit/                     # `cargo test` runs these automatically
@@ -224,9 +267,9 @@ Zig's strengths are exactly matched to the edge use case:
 
 ---
 
-### 3.5 Event Bus: JSON-RPC 2.0 over Unix Socket
+### 3.5 Event Bus: JSON-RPC 2.0 over TCP Socket
 
-Full gRPC with protobuf is deferred to Phase 2. In Phase 1, the event bus uses **JSON-RPC 2.0 over a Unix domain socket** — simple, debuggable, and sufficient for a single-process deployment. Key properties:
+Full gRPC with protobuf is deferred to Phase 2. In Phase 1, the event bus uses **JSON-RPC 2.0 over a TCP loopback socket** — simple, debuggable, cross-platform friendly (especially on Windows), and sufficient for a single-process deployment. Key properties:
 - Both the Rust core and Python adapters speak the same wire protocol
 - The Zig edge binary also implements the same protocol — zero special-casing
 - Interface contracts are stable; only the transport layer changes when upgrading to gRPC
@@ -279,9 +322,9 @@ Full gRPC with protobuf is deferred to Phase 2. In Phase 1, the event bus uses *
 |---|---|
 | Mon | Implement `hydragent-bus/src/message.rs`: JSON-RPC 2.0 serde structs (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) with full `serde_json` round-trip test. |
 | Tue | Implement `hydragent-bus/src/router.rs`: `tokio::sync::mpsc`-backed async routing table; method → `async fn handler` dispatch. |
-| Wed | Implement `hydragent-bus/src/lib.rs`: Tokio async Unix domain socket server (`tokio::net::UnixListener`) accepting connections from adapters. |
+| Wed | Implement `hydragent-bus/src/lib.rs`: Tokio async TCP socket server (`tokio::net::TcpListener`) accepting connections from adapters. |
 | Thu | Wire gateway → bus → orchestrator path; stub orchestrator echoes content back as `AgentResponse`. |
-| Fri | Implement Python bus client in `adapters/bus_client.py`: `asyncio` Unix socket client sending `IntentEvent` JSON-RPC, receiving streamed `AgentResponse`. |
+| Fri | Implement Python bus client in `adapters/bus_client.py`: `asyncio` TCP socket client sending `IntentEvent` JSON-RPC, receiving streamed `AgentResponse`. |
 | Sat | Write integration test: Python sends `IntentEvent` → Rust bus → stub orchestrator → Python receives `AgentResponse`. Measure latency target < 1 ms. |
 | Sun | Document bus wire protocol in `crates/hydragent-bus/PROTOCOL.md`. |
 
@@ -478,8 +521,8 @@ use std::collections::HashMap;
 /// Inbound user message, normalised from any channel adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentEvent {
-    /// UUID v4 — uniquely identifies the session
-    pub session_id: String,
+    /// UUID v4 — uniquely identifies the page
+    pub page_id: String,
     /// e.g. "cli:default", "telegram:123456789"
     pub channel_id: String,
     pub user_id: String,
@@ -509,7 +552,7 @@ pub struct Attachment {
 /// Agent response returned to the channel adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentResponse {
-    pub session_id: String,
+    pub page_id: String,
     pub content: String,
     pub format: ResponseFormat,
     #[serde(default)]
@@ -577,7 +620,7 @@ pub struct ConsentRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Message {
     pub id: i64,
-    pub session_id: String,
+    pub page_id: String,
     pub role: MessageRole,
     pub content: String,
     pub timestamp: i64,
@@ -602,9 +645,9 @@ pub struct ReActContext {
 
 ---
 
-### 5.3 Event Bus: JSON-RPC over Unix Socket
+### 5.3 Event Bus: JSON-RPC over TCP Socket
 
-In Phase 1, the event bus is implemented in Rust (`hydragent-bus`) using **JSON-RPC 2.0 over a Tokio Unix domain socket**. Both the Rust orchestrator and the Python adapters speak the same wire protocol.
+In Phase 1, the event bus is implemented in Rust (`hydragent-bus`) using **JSON-RPC 2.0 over a TCP socket**. Both the Rust orchestrator and the Python adapters speak the same wire protocol.
 
 ```rust
 // crates/hydragent-bus/src/message.rs
@@ -648,10 +691,11 @@ pub const ERR_CONSENT_DENIED:   i32 = -32003;
 **Python bus client** (`adapters/bus_client.py`):
 
 ```python
-import asyncio, json, uuid
-from pathlib import Path
+import asyncio, json, os, uuid
+from dotenv import load_dotenv
 
-SOCKET_PATH = Path("/tmp/hydragent.sock")
+load_dotenv()
+BUS_PORT = int(os.getenv("BUS_PORT", 5000))
 
 class BusClient:
     def __init__(self):
@@ -659,7 +703,7 @@ class BusClient:
         self.writer = None
 
     async def connect(self):
-        self.reader, self.writer = await asyncio.open_unix_connection(str(SOCKET_PATH))
+        self.reader, self.writer = await asyncio.open_connection("127.0.0.1", BUS_PORT)
 
     async def send_intent(self, event: dict) -> str:
         """Send an IntentEvent and get back the full AgentResponse content."""
@@ -675,11 +719,15 @@ class BusClient:
         # Collect streamed response tokens until response.complete
         tokens = []
         async for line in self.reader:
-            msg = json.loads(line)
+            msg = json.loads(line.decode().strip())
             if msg.get("method") == "response.token":
                 tokens.append(msg["params"]["token"])
             elif msg.get("method") == "response.complete":
-                break
+                # Wait for final response containing full result
+                pass
+            elif "result" in msg:
+                if isinstance(msg["result"], dict) and "content" in msg["result"]:
+                    return msg["result"]["content"]
         return "".join(tokens)
 ```
 
@@ -889,7 +937,7 @@ from rich.prompt import Prompt
 from bus_client import BusClient
 
 console = Console()
-SESSION_ID = str(uuid.uuid4())
+PAGE_ID    = str(uuid.uuid4())
 USER_ID    = "local-user"
 CHANNEL_ID = "cli:default"
 
@@ -899,7 +947,7 @@ async def main():
 
     console.print("[bold cyan]🐉 Hydragent[/bold cyan]  v0.1.0 — Local AI Agent")
     console.print(f"Model: [dim]claude-sonnet-4 via OpenRouter[/dim]")
-    console.print(f"Session: [dim]{SESSION_ID}[/dim]  (type [bold]exit[/bold] to quit)\n")
+    console.print(f"Page ID: [dim]{PAGE_ID}[/dim]  (type [bold]exit[/bold] to quit)\n")
 
     while True:
         try:
@@ -915,7 +963,7 @@ async def main():
             break
 
         event = {
-            "session_id": SESSION_ID,
+            "page_id":    PAGE_ID,
             "channel_id": CHANNEL_ID,
             "user_id":    USER_ID,
             "content":    user_input,
@@ -939,7 +987,7 @@ if __name__ == "__main__":
 ╭─────────────────────────────────────────────────────╮
 │  🐉 Hydragent  v0.1.0 — Local AI Agent              │
 │  Model: claude-sonnet-4 via OpenRouter               │
-│  Session: sess-f7a2b91c  (type 'exit' to quit)       │
+│  Page ID: 7f3a-9c81-2b4d  (type 'exit' to quit)       │
 ╰─────────────────────────────────────────────────────╯
 
 You › What is the capital of France?
@@ -1042,12 +1090,12 @@ impl ToolRegistry {
 
 ---
 
-### 5.8 Session State (SQLite via `sqlx`)
+### 5.8 Page and Message State (SQLite via `sqlx`)
 
 `sqlx` gives Rust **compile-time verified SQL queries** — any SQL typo is a compile error, not a runtime panic. Schema for Phase 1:
 
 ```sql
--- Initialized on first run at data/sessions/{session_id}.db
+-- Initialized on first run at data/hydragent.db
 
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous  = NORMAL;
@@ -1056,17 +1104,17 @@ PRAGMA foreign_keys = ON;
 -- Stores all conversation turns
 CREATE TABLE IF NOT EXISTS messages (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id   TEXT    NOT NULL,
+    page_id      TEXT    NOT NULL,
     role         TEXT    NOT NULL CHECK(role IN ('user','assistant','system','tool')),
     content      TEXT    NOT NULL,
     token_count  INTEGER,
     timestamp    INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000)
 );
 
--- Stores tool execution records for this session
+-- Stores tool execution records
 CREATE TABLE IF NOT EXISTS tool_calls (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id    TEXT    NOT NULL,
+    page_id       TEXT    NOT NULL,
     call_id       TEXT    NOT NULL UNIQUE,
     tool_id       TEXT    NOT NULL,
     params_hash   TEXT    NOT NULL,  -- SHA-256 of params (credentials never stored)
@@ -1075,34 +1123,34 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     timestamp     INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000)
 );
 
--- Stores session-level metadata
-CREATE TABLE IF NOT EXISTS session_meta (
-    session_id    TEXT    PRIMARY KEY,
+-- Stores page-level metadata
+CREATE TABLE IF NOT EXISTS page_meta (
+    page_id       TEXT    PRIMARY KEY,
     created_at    INTEGER NOT NULL,
     last_active   INTEGER NOT NULL,
     turn_count    INTEGER NOT NULL DEFAULT 0,
     model_used    TEXT
 );
 
--- Indexes for fast session history loading
-CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
-CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+-- Indexes for fast history loading
+CREATE INDEX IF NOT EXISTS idx_messages_page ON messages(page_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_page ON tool_calls(page_id);
 ```
 
-**Session loading** — on each new conversation turn, the orchestrator loads the last N messages (default: 20) from SQLite to reconstruct the context window for the LLM call:
+**History loading** — on each new conversation turn, the orchestrator loads the last N messages (default: 20) from SQLite to reconstruct the context window for the LLM call:
 
 ```zig
 pub fn loadRecentHistory(
-    session_id: []const u8,
+    page_id: []const u8,
     max_messages: u32,
 ) ![]Message {
     return db.query(
-        \\SELECT id, session_id, role, content, token_count, timestamp
+        \\SELECT id, page_id, role, content, token_count, timestamp
         \\FROM messages
-        \\WHERE session_id = ?
+        \\WHERE page_id = ?
         \\ORDER BY timestamp DESC
         \\LIMIT ?
-    , .{ session_id, max_messages });
+    , .{ page_id, max_messages });
 }
 ```
 
@@ -1168,9 +1216,9 @@ pub fn main() !void {
     const alloc = gpa.allocator();
     _ = alloc;
 
-    // Connect to Unix socket (same path as Rust bus)
-    const sock_path = "/tmp/hydragent.sock";
-    const stream = try std.net.connectUnixSocket(sock_path);
+    // Connect to TCP Event Bus
+    const addr = try std.net.Address.parseIp4("127.0.0.1", 5000);
+    const stream = try std.net.tcpConnectToAddress(addr);
     defer stream.close();
 
     // Minimal JSON-RPC 2.0 handler loop
@@ -1188,15 +1236,32 @@ pub fn main() !void {
 
 ---
 
-## 6. Built-in Tools (Phase 1 Subset)
+## 6. Built-in Tools
 
-Only 3 tools ship in Phase 1. More are added in Phase 3 and beyond.
+> **Canonical naming**: Every tool below is registered in `crates/hydragent-core/src/main.rs` and exposed through the same `Tool` trait described in §5.7. All tools use the canonical field `page_id` (not `session_id`) for any per-page scoping.
+
+The current build ships **12 built-in tools** (originally 3 in Phase 1; expanded through Phase 2–4). All tools are wired into the orchestrator and visible to the LLM via the system prompt.
+
+### `echo`
+
+```yaml
+name: echo
+description: "Returns its input unchanged. Used for testing the tool invocation pipeline and for low-dependency unit tests."
+tier: auto_approve
+params_schema:
+  type: object
+  required: [message]
+  properties:
+    message:
+      type: string
+      description: "Any string to echo back"
+```
 
 ### `web_search`
 
 ```yaml
 name: web_search
-description: "Search the web for current information. Returns top 5 results with titles, URLs, and snippets."
+description: "Search the web for current information. Returns top N results with titles, URLs, and snippets."
 tier: auto_approve
 params_schema:
   type: object
@@ -1210,30 +1275,11 @@ params_schema:
       default: 5
       minimum: 1
       maximum: 10
-
 implementation:
-  provider: "DuckDuckGo Instant Answer API (no key required)"
-  fallback: "SerpAPI (requires SERPAPI_KEY in .env)"
+  provider: "DuckDuckGo Instant Answer API (no key required); falls back to provider configured by BRAIN_KEY"
   endpoint: "https://api.duckduckgo.com/?q={query}&format=json&no_html=1"
   timeout_ms: 5000
 ```
-
-**Output format**:
-```json
-{
-  "results": [
-    {
-      "title": "Zig Programming Language",
-      "url": "https://ziglang.org",
-      "snippet": "A general-purpose programming language..."
-    }
-  ],
-  "query": "Zig programming language",
-  "result_count": 5
-}
-```
-
----
 
 ### `file_read`
 
@@ -1252,7 +1298,6 @@ params_schema:
       type: integer
       default: 200
       description: "Maximum number of lines to return"
-
 security:
   - Path traversal blocked: paths containing ".." are rejected
   - Absolute paths rejected
@@ -1260,33 +1305,205 @@ security:
   - Max file size: 512 KB
 ```
 
----
-
-### `echo`
+### `memory_store`
 
 ```yaml
-name: echo
-description: "Returns its input unchanged. Used for testing the tool invocation pipeline."
+name: memory_store
+description: "Persist a key-value memory document to long-term storage. Documents are embedded (MiniLM-L6-v2) and indexed for semantic recall."
 tier: auto_approve
 params_schema:
   type: object
-  required: [message]
+  required: [key, content]
   properties:
-    message:
+    key:
       type: string
-      description: "Any string to echo back"
+      description: "Stable identifier (e.g. 'user.favorite_color')"
+    content:
+      type: string
+      description: "Free-form content to store"
+    tags:
+      type: array
+      items: { type: string }
+      description: "Optional tags for filtering during search"
 ```
+
+### `memory_search`
+
+```yaml
+name: memory_search
+description: "Semantic search over stored memory documents using the embedded index (cosine similarity over MiniLM-L6-v2 vectors)."
+tier: auto_approve
+params_schema:
+  type: object
+  required: [query]
+  properties:
+    query:
+      type: string
+      description: "Natural language search query"
+    top_k:
+      type: integer
+      default: 5
+      minimum: 1
+      maximum: 25
+    min_similarity:
+      type: number
+      default: 0.35
+      description: "Cosine similarity floor (0..1)"
+```
+
+### `memory_forget`
+
+```yaml
+name: memory_forget
+description: "Delete one or more memory documents by key. Used when the user explicitly revokes a stored fact."
+tier: auto_approve
+params_schema:
+  type: object
+  required: [key]
+  properties:
+    key:
+      type: string
+      description: "The exact key previously passed to memory_store"
+```
+
+### `standing_orders`
+
+```yaml
+name: standing_orders
+description: "Read or append to the agent's persistent behavioral rules (Standing Orders). These are injected into every system prompt."
+tier: auto_approve
+params_schema:
+  type: object
+  required: [action]
+  properties:
+    action:
+      type: string
+      enum: [list, add, remove]
+    order:
+      type: string
+      description: "Required for action=add (the new rule text) or action=remove (substring match)"
+```
+
+### `user_profile`
+
+```yaml
+name: user_profile
+description: "Read or patch the persistent user profile (USER.md mirror). Used to remember long-term user preferences and identity facts."
+tier: auto_approve
+params_schema:
+  type: object
+  required: [action]
+  properties:
+    action:
+      type: string
+      enum: [get, set, append]
+    field:
+      type: string
+      description: "Profile field name (for action=set / append)"
+    value:
+      type: string
+      description: "Value to set or append"
+```
+
+### `send_message`
+
+```yaml
+name: send_message
+description: "Push a message to a specific page (channel + page_id) or list active pages. Used for proactive notifications and inter-agent routing."
+tier: prompt
+params_schema:
+  type: object
+  required: [action]
+  properties:
+    action:
+      type: string
+      enum: [list, push]
+    page_id:
+      type: string
+      description: "Target page_id (required for action=push)"
+    content:
+      type: string
+      description: "Message text (required for action=push)"
+    format:
+      type: string
+      enum: [markdown, plain, html]
+      default: markdown
+```
+
+### `schedule_task`
+
+```yaml
+name: schedule_task
+description: "Schedule a one-shot or recurring task (cron expression). Tasks fire through the scheduler and submit a synthetic intent back into the bus."
+tier: prompt
+params_schema:
+  type: object
+  required: [name, schedule]
+  properties:
+    name:
+      type: string
+      description: "Human-readable task name"
+    schedule:
+      type: string
+      description: "Cron expression (5-field) for recurring tasks"
+    page_id:
+      type: string
+      description: "Page to deliver the synthetic intent to when the task fires"
+    payload:
+      type: string
+      description: "Message text delivered as the synthetic intent content"
+```
+
+### `rss_subscribe`
+
+```yaml
+name: rss_subscribe
+description: "Subscribe to an RSS/Atom feed. The scheduler polls the feed and injects new items as intents on the configured page."
+tier: prompt
+params_schema:
+  type: object
+  required: [url, page_id]
+  properties:
+    url:
+      type: string
+      description: "Feed URL (http/https)"
+    page_id:
+      type: string
+      description: "Page to deliver new items to"
+    poll_minutes:
+      type: integer
+      default: 30
+      minimum: 5
+      maximum: 1440
+```
+
+> **Removed / deferred tools**: `memory_consolidate` (Phase 5) and `web_fetch` (Phase 6) are not in the current build. See `ROADMAP.md` for the deferred list.
 
 ---
 
 ## 7. Configuration & Environment
 
+> **Plan v4 (current):** The LLM provider is configured through a swappable `BRAIN_*` quartet. Any OpenAI-compatible endpoint works (TokenRouter, OpenRouter, OpenAI, Together, Groq, Ollama, LM Studio, etc.). The legacy `OPENROUTER_API_KEY` / `PRIMARY_MODEL` / `FALLBACK_MODELS` env vars are still accepted as a fallback for backward compatibility — see `crates/hydragent-core/src/config.rs` (the `Config::from_env` test suite covers the fallback paths).
+
 ### `.env` file
 
 ```ini
-# ── LLM Providers ─────────────────────────────────────────────────────────
-OPENROUTER_API_KEY=sk-or-v1-...
-# Optional: local Ollama instance (Phase 1 stub)
+# ── LLM Provider (Plan v4 swappable config) ───────────────────────────────
+# Point BRAIN_BASE at any OpenAI-compatible /v1/chat/completions endpoint.
+# BRAIN_KEY is sent as the Bearer token. BRAIN_MODEL is the primary model
+# (use the provider's exact model id). BRAIN_FALLBACKS is a comma-separated
+# list tried in order if the primary fails (HTTP 4xx/5xx or timeout).
+BRAIN_BASE=https://api.tokenrouter.com/v1
+BRAIN_KEY=sk-...
+BRAIN_MODEL=MiniMax-M3
+BRAIN_FALLBACKS=anthropic/claude-sonnet-4,openai/gpt-4o,mistralai/mistral-7b-instruct
+
+# ── Legacy / OpenRouter (still parsed for backward compat) ─────────────────
+# If BRAIN_KEY is empty, the loader falls back to these.
+# OPENROUTER_API_KEY=sk-or-v1-...
+# OPENROUTER_BASE=https://openrouter.ai/api/v1
+
+# ── Local / Ollama (optional) ──────────────────────────────────────────────
 OLLAMA_URL=http://localhost:11434
 
 # ── Tool Configuration ─────────────────────────────────────────────────────
@@ -1297,12 +1514,16 @@ SERPAPI_KEY=
 DATA_DIR=./data
 WORKSPACE_DIR=./data/workspace
 CONFIG_DIR=./config
+BUS_PORT=5000
+BUS_HOST=127.0.0.1
+
+# ── Channel: Telegram (optional) ───────────────────────────────────────────
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_ALLOWED_CHAT_IDS=
+MINIAPP_PORT=8080
+NGROK_AUTH_TOKEN=
 
 # ── Runtime Tuning ─────────────────────────────────────────────────────────
-# Primary model to use (OpenRouter model ID)
-PRIMARY_MODEL=anthropic/claude-sonnet-4
-# Fallback models (comma-separated, tried in order)
-FALLBACK_MODELS=openai/gpt-4o,mistralai/mistral-7b-instruct
 # Maximum ReAct loop steps before giving up
 MAX_REACT_STEPS=10
 # Number of recent messages to load into context each turn
@@ -1356,7 +1577,7 @@ Every module has a corresponding test file in `tests/unit/`. Tests use Zig's bui
 | `openrouter_test.zig` | SSE stream parsing with mock HTTP response; retry logic with injected errors |
 | `session_test.zig` | SQLite read/write; history loading; persistence across simulated restarts |
 | `types_test.zig` | JSON serialization/deserialization of all core types |
-| `event_bus_test.zig` | Message routing; JSON-RPC framing; Unix socket communication |
+| `event_bus_test.zig` | Message routing; JSON-RPC framing; TCP socket communication |
 | `web_search_test.zig` | Mock HTTP response parsing; result extraction |
 | `file_read_test.zig` | Path traversal blocking; file size limits; happy-path read |
 
@@ -1502,7 +1723,7 @@ cp .env.example .env
 # ── Build and run (Rust core + Python adapter) ─────────────────────────────
 RUSTFLAGS="-C link-arg=-fuse-ld=lld" cargo build --release
 cargo sqlx prepare --workspace   # generate sqlx-data.json for offline builds
-./target/release/hydragent &     # start Rust core (listens on Unix socket)
+./target/release/hydragent &     # start Rust core (listens on TCP port)
 python adapters/cli_adapter.py   # start Python CLI adapter
 
 # ── Run all tests ──────────────────────────────────────────────────────────
@@ -1524,7 +1745,7 @@ ls -lh zig-out/bin/hydragent-edge
 | **Python** for adapters | AnythingLLM, Khoj RAG stack | Rich ML/LLM libraries; fast prototyping for non-latency paths |
 | ReAct loop | Claude Code, SuperAGI, Devin | Industry-proven agent reasoning pattern |
 | Trait-based plugin interfaces | ZeroClaw multi-crate design | `Box<dyn Tool>` swappable at runtime without recompilation |
-| JSON-RPC over Unix socket | OpenClaw gateway pattern | Simple, debuggable, language-agnostic transport |
+| JSON-RPC over TCP socket | OpenClaw gateway pattern | Simple, debuggable, cross-platform loopback transport |
 | `sqlx` compile-time SQL | NullClaw / ZeroClaw (SQLite) | Zero runtime query bugs; WAL mode for concurrent access |
 | OpenRouter gateway | Perplexity Computer, AnythingLLM | Single key, 150+ models, OpenAI-compatible, no vendor lock-in |
 | SOUL.md + USER.md | OpenClaw, MimiClaw | Human-readable persona; LLM-native context injection |

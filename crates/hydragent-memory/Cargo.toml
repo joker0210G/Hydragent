@@ -15,4 +15,19 @@ hydragent-embed = { path = "../hydragent-embed" }
 bincode = "1.3"
 tiktoken-rs = "0.12"
 tracing = { workspace = true }
+# HNSW approximate-nearest-neighbor index. Replaces the prior O(N) linear
+# scan over `HashMap<String, Vec<f32>>` so semantic search scales
+# sub-linearly. Pinned to the 0.3 series — versioned hnsw_rs has had
+# several breaking releases; 0.3.x is the current stable line and the
+# one whose `Hnsw::<f32, DistCosine>` API we use here.
+hnsw_rs = "0.3"
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support", "html_reports"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
+uuid = { version = "1", features = ["v4"] }
+
+[[bench]]
+name = "retrieval_benchmark"
+harness = false
 
