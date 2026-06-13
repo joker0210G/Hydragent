@@ -192,6 +192,7 @@ mod tests {
             openrouter_api_keys: openrouter_api_keys.to_string(),
             enable_dreaming: false,
             dreaming_interval_sec: 60,
+            max_semantic_memories: 1_000_000,
         }
     }
 

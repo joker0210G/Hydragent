@@ -210,7 +210,17 @@ impl OpenRouterClient {
                                 if let Some(delta) = choices[0].get("delta") {
                                     if let Some(token) = delta.get("content").and_then(|t| t.as_str()) {
                                         full_content.push_str(token);
-                                        let _ = tx.send(token.to_string()).await;
+                                        // Wrap the token in a JSON-RPC notification
+                                        // so the line-framing protocol on the bus
+                                        // (newline-delimited) doesn't break when a
+                                        // token itself contains a raw newline (e.g.
+                                        // paragraph breaks in the model's output).
+                                        let notification = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "method": "response.token",
+                                            "params": { "token": token }
+                                        });
+                                        let _ = tx.send(serde_json::to_string(&notification).unwrap()).await;
                                     }
                                 }
                             }

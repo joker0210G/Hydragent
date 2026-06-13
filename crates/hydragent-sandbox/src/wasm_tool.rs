@@ -106,6 +106,63 @@ fn execute_wasm_sync(
     let mut linker: Linker<SandboxCtx> = Linker::new(engine);
     wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |s| &mut s.wasi)?;
 
+    // G1 invariant: deny WASM network access. wasmtime 22.x
+    // registers a `sock_*` subset in the preview1 linker. We
+    // shadow each one with a trap-only Func of the matching
+    // signature, derived from the *guest's* import list. This
+    // is robust against future wasmtime versions that might
+    // change the signature: we always match the actual import.
+    //
+    // Net effect: any WASM that imports a `sock_*` symbol still
+    // links successfully (type-compatible Func) but traps the
+    // moment the guest calls it, with a recognisable error
+    // message. The host network stack is never reachable.
+    linker.allow_shadowing(true);
+    for name in &[
+        "sock_accept",
+        "sock_recv",
+        "sock_send",
+        "sock_shutdown",
+    ] {
+        let trap_label = format!(
+            "sandbox: '{}' is disabled (no network access from WASM tools)",
+            name
+        );
+        // Look up the import's FuncType in the guest module so
+        // the shadowed Func exactly matches what the guest
+        // expects — that is the only way the linker will accept
+        // the override.
+        let mut found_ty: Option<wasmtime::FuncType> = None;
+        for imp in module.imports() {
+            if imp.name().to_string() == *name
+                && imp.module().to_string() == "wasi_snapshot_preview1"
+            {
+                if let wasmtime::ExternType::Func(f) = imp.ty() {
+                    found_ty = Some(f.clone());
+                    break;
+                }
+            }
+        }
+        if let Some(ty) = found_ty {
+            let func = Func::new(
+                &mut store,
+                ty,
+                move |_caller: Caller<'_, SandboxCtx>,
+                      _params: &[Val],
+                      _results: &mut [Val]|
+                      -> Result<(), wasmtime::Error> {
+                    Err(wasmtime::Error::msg(trap_label.clone()))
+                },
+            );
+            linker.define(
+                &mut store,
+                "wasi_snapshot_preview1",
+                name,
+                func,
+            )?;
+        }
+    }
+
     let instance = linker.instantiate(&mut store, module)?;
 
     let tool_execute: TypedFunc<(i32, i32), u64> =

@@ -11,24 +11,37 @@ pub struct DagNode {
     pub description: String,              // Detailed task for the sub-agent
     pub task_type: TaskType,              // For Model Council routing
     pub allowed_tools: Vec<String>,       // Tool whitelist for this node's sub-agent
+    #[serde(default)]
     pub model_hint: Option<String>,       // Override Model Council (e.g., "openai/gpt-4o")
+    #[serde(default)]
     pub token_budget: u32,                // Max tokens this node may consume
+    #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,                  // Wall-clock timeout
+    #[serde(default)]
     pub retry_count: u32,                 // Current retry attempt (starts at 0)
+    #[serde(default)]
     pub max_retries: u32,                 // Maximum allowed retries before escalation
+    #[serde(default)]
     pub status: NodeStatus,               // Lifecycle state
+    #[serde(default)]
     pub result: Option<NodeResult>,       // Populated on completion
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeStatus {
+    #[default]
     Pending,     // Waiting on dependencies
     Ready,       // All dependencies satisfied; awaiting dispatch
     Running,     // Sub-agent is active
     Completed,   // Successful result
     Failed,      // Terminal failure
     Skipped,     // Bypassed by re-planner
+}
+
+/// Reasonable default for `timeout_ms` when the LLM doesn't specify one.
+fn default_timeout_ms() -> u64 {
+    30_000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

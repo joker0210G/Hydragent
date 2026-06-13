@@ -1,0 +1,309 @@
+# Hydragent Model Council — Phase 5 / Track 5.2
+#
+# 20+ model profiles covering the 8 task types the planner emits.
+# Profiles are loaded by `hydragent_model::council::ModelCouncil::load_from_yaml`.
+#
+# Schema:
+#   model_id         — wire-level model id (e.g. for openrouter)
+#   provider         — openrouter | custom_openai | ollama
+#   context_window   — max context tokens
+#   cost_per_1k      — USD per 1k tokens (output-side; conservative)
+#   cost_tier        — free | cheap | standard | premium  (used by budget filter)
+#   task_tags        — list of task-type tags the profile is good at
+#   benchmark        — { task_tag: score 0..1 }  (used as tie-breaker)
+#   primary          — true = the council's first-choice fallback for any
+#                      unknown task type.  Exactly one profile MUST be primary.
+#
+# A profile with a primary=true flag is the safety-net fallback when no
+# task-tag match exists OR when the budget filter rejects every match.
+#
+# Task tags MUST match one of the 8 planner `TaskType` variants
+# (in snake_case) so the council can route directly from a `DagNode.task_type`.
+
+profiles:
+  # ── 1. DeepSeek Coder (cheap, excellent for code) ──────────────────────
+  - model_id: "deepseek/deepseek-coder"
+    provider: "openrouter"
+    context_window: 128_000
+    cost_per_1k: 0.00014
+    cost_tier: "cheap"
+    task_tags: ["code_generation", "review"]
+    benchmark:
+      code_generation: 0.92
+      review: 0.81
+      reasoning: 0.70
+    primary: false
+
+  # ── 2. Claude 3.5 Sonnet (premium creative + reasoning) ────────────────
+  - model_id: "anthropic/claude-3.5-sonnet"
+    provider: "openrouter"
+    context_window: 200_000
+    cost_per_1k: 0.003
+    cost_tier: "premium"
+    task_tags: ["creative_writing", "reasoning", "review", "planning"]
+    benchmark:
+      creative_writing: 0.95
+      reasoning: 0.93
+      review: 0.92
+      planning: 0.89
+      code_generation: 0.86
+    primary: false
+
+  # ── 3. Claude 3 Haiku (cheap + fast, decent at summaries) ─────────────
+  - model_id: "anthropic/claude-3-haiku"
+    provider: "openrouter"
+    context_window: 200_000
+    cost_per_1k: 0.00025
+    cost_tier: "cheap"
+    task_tags: ["summarization", "data_extraction"]
+    benchmark:
+      summarization: 0.84
+      data_extraction: 0.80
+      creative_writing: 0.71
+    primary: false
+
+  # ── 4. Perplexity Sonar (web-grounded research) ───────────────────────
+  - model_id: "perplexity/sonar"
+    provider: "openrouter"
+    context_window: 127_000
+    cost_per_1k: 0.001
+    cost_tier: "standard"
+    task_tags: ["research", "data_extraction"]
+    benchmark:
+      research: 0.94
+      data_extraction: 0.85
+      summarization: 0.79
+    primary: false
+
+  # ── 5. Llama 3.1 405B Instruct (open, free, generalist) ───────────────
+  - model_id: "meta-llama/llama-3.1-405b-instruct:free"
+    provider: "openrouter"
+    context_window: 131_000
+    cost_per_1k: 0.0
+    cost_tier: "free"
+    task_tags: ["general", "summarization", "creative_writing"]
+    benchmark:
+      general: 0.78
+      summarization: 0.75
+      creative_writing: 0.72
+    primary: true            # ← safety-net fallback for unknown tasks
+
+  # ── 6. GPT-4o Mini (cheap, fast, balanced) ────────────────────────────
+  - model_id: "openai/gpt-4o-mini"
+    provider: "openrouter"
+    context_window: 128_000
+    cost_per_1k: 0.00015
+    cost_tier: "cheap"
+    task_tags: ["general", "data_extraction", "review"]
+    benchmark:
+      general: 0.81
+      data_extraction: 0.83
+      review: 0.78
+      summarization: 0.77
+    primary: false
+
+  # ── 7. GPT-4o (premium, well-rounded) ─────────────────────────────────
+  - model_id: "openai/gpt-4o"
+    provider: "openrouter"
+    context_window: 128_000
+    cost_per_1k: 0.005
+    cost_tier: "premium"
+    task_tags: ["reasoning", "review", "planning"]
+    benchmark:
+      reasoning: 0.90
+      review: 0.88
+      planning: 0.85
+      creative_writing: 0.84
+    primary: false
+
+  # ── 8. Mistral Large 2 (strong at planning + reasoning) ───────────────
+  - model_id: "mistralai/mistral-large-2407"
+    provider: "openrouter"
+    context_window: 128_000
+    cost_per_1k: 0.002
+    cost_tier: "standard"
+    task_tags: ["planning", "reasoning", "review"]
+    benchmark:
+      planning: 0.87
+      reasoning: 0.85
+      review: 0.83
+    primary: false
+
+  # ── 9. Gemini 1.5 Pro (large context, research) ───────────────────────
+  - model_id: "google/gemini-pro-1.5"
+    provider: "openrouter"
+    context_window: 1_000_000
+    cost_per_1k: 0.00125
+    cost_tier: "standard"
+    task_tags: ["research", "data_extraction", "summarization"]
+    benchmark:
+      research: 0.89
+      data_extraction: 0.84
+      summarization: 0.81
+    primary: false
+
+  # ── 10. Qwen 2.5 72B (free, decent code) ──────────────────────────────
+  - model_id: "qwen/qwen-2.5-72b-instruct:free"
+    provider: "openrouter"
+    context_window: 32_000
+    cost_per_1k: 0.0
+    cost_tier: "free"
+    task_tags: ["code_generation", "general"]
+    benchmark:
+      code_generation: 0.79
+      general: 0.74
+    primary: false
+
+  # ── 11. Command R+ (strong at research + planning) ────────────────────
+  - model_id: "cohere/command-r-plus"
+    provider: "openrouter"
+    context_window: 128_000
+    cost_per_1k: 0.0025
+    cost_tier: "standard"
+    task_tags: ["research", "planning"]
+    benchmark:
+      research: 0.82
+      planning: 0.80
+    primary: false
+
+  # ── 12. Llama 3.3 70B (free, decent at code) ─────────────────────────
+  - model_id: "meta-llama/llama-3.3-70b-instruct:free"
+    provider: "openrouter"
+    context_window: 128_000
+    cost_per_1k: 0.0
+    cost_tier: "free"
+    task_tags: ["code_generation", "review", "general"]
+    benchmark:
+      code_generation: 0.83
+      review: 0.77
+      general: 0.78
+    primary: false
+
+  # ── 13. Hermes 3 405B (open reasoning) ────────────────────────────────
+  - model_id: "nousresearch/hermes-3-llama-3.1-405b:free"
+    provider: "openrouter"
+    context_window: 131_000
+    cost_per_1k: 0.0
+    cost_tier: "free"
+    task_tags: ["reasoning", "general"]
+    benchmark:
+      reasoning: 0.77
+      general: 0.76
+    primary: false
+
+  # ── 14. Phi-3 Medium (small + cheap, summaries) ──────────────────────
+  - model_id: "microsoft/phi-3-medium-128k-instruct:free"
+    provider: "openrouter"
+    context_window: 128_000
+    cost_per_1k: 0.0
+    cost_tier: "free"
+    task_tags: ["summarization", "data_extraction"]
+    benchmark:
+      summarization: 0.71
+      data_extraction: 0.70
+    primary: false
+
+  # ── 15. Yi Large (premium Chinese model, good creative) ───────────────
+  - model_id: "01-ai/yi-large"
+    provider: "openrouter"
+    context_window: 32_000
+    cost_per_1k: 0.003
+    cost_tier: "premium"
+    task_tags: ["creative_writing"]
+    benchmark:
+      creative_writing: 0.83
+    primary: false
+
+  # ── 16. DBRX Instruct (good reasoning + planning) ────────────────────
+  - model_id: "databricks/dbrx-instruct"
+    provider: "openrouter"
+    context_window: 32_000
+    cost_per_1k: 0.0015
+    cost_tier: "standard"
+    task_tags: ["reasoning", "planning"]
+    benchmark:
+      reasoning: 0.82
+      planning: 0.80
+    primary: false
+
+  # ── 17. Grok 2 (review + research) ────────────────────────────────────
+  - model_id: "x-ai/grok-2-1212"
+    provider: "openrouter"
+    context_window: 131_000
+    cost_per_1k: 0.005
+    cost_tier: "premium"
+    task_tags: ["review", "research"]
+    benchmark:
+      review: 0.84
+      research: 0.83
+    primary: false
+
+  # ── 18. Llama 3.1 8B (super-cheap local via ollama) ──────────────────
+  - model_id: "llama3.1:8b"
+    provider: "ollama"
+    context_window: 32_000
+    cost_per_1k: 0.0
+    cost_tier: "free"
+    task_tags: ["general"]
+    benchmark:
+      general: 0.65
+    primary: false
+
+  # ── 19. CodeLlama 70B (free local, code-specific) ─────────────────────
+  - model_id: "codellama:70b"
+    provider: "ollama"
+    context_window: 16_000
+    cost_per_1k: 0.0
+    cost_tier: "free"
+    task_tags: ["code_generation"]
+    benchmark:
+      code_generation: 0.72
+    primary: false
+
+  # ── 20. Qwen2.5-Coder 32B (free local, code specialist) ──────────────
+  - model_id: "qwen2.5-coder:32b"
+    provider: "ollama"
+    context_window: 32_000
+    cost_per_1k: 0.0
+    cost_tier: "free"
+    task_tags: ["code_generation", "review"]
+    benchmark:
+      code_generation: 0.86
+      review: 0.74
+    primary: false
+
+  # ── 21. Custom OpenAI self-hosted (for sensitive planning) ───────────
+  - model_id: "hydra-planner-v1"
+    provider: "custom_openai"
+    context_window: 32_000
+    cost_per_1k: 0.001
+    cost_tier: "standard"
+    task_tags: ["planning", "review"]
+    benchmark:
+      planning: 0.78
+      review: 0.76
+    primary: false
+
+  # ── 22. Custom OpenAI self-hosted (for sensitive research) ───────────
+  - model_id: "hydra-research-v1"
+    provider: "custom_openai"
+    context_window: 32_000
+    cost_per_1k: 0.001
+    cost_tier: "standard"
+    task_tags: ["research", "data_extraction"]
+    benchmark:
+      research: 0.80
+      data_extraction: 0.79
+    primary: false
+
+  # ── 23. Mixtral 8x22B (open, decent all-rounder) ──────────────────────
+  - model_id: "mistralai/mixtral-8x22b-instruct"
+    provider: "openrouter"
+    context_window: 65_000
+    cost_per_1k: 0.0009
+    cost_tier: "standard"
+    task_tags: ["general", "summarization"]
+    benchmark:
+      general: 0.80
+      summarization: 0.78
+    primary: false

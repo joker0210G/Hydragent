@@ -156,7 +156,7 @@ pub async fn run_react_loop(
         let messages_clone = messages.clone();
 
         let handle = tokio::spawn(async move {
-            model_router_clone.chat_stream(messages_clone, token_tx).await
+            model_router_clone.chat_stream(messages_clone, token_tx, None).await
         });
 
         // We can optionally stream the thinking tokens or read them

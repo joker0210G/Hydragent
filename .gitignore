@@ -48,3 +48,7 @@ Thumbs.db
 # Runtime logs and PID files (managed by tests/start_bus.py and start_websocket_adapter.py)
 logs/
 *.pid
+
+# Diagnostic stdout captures from manual `cargo build` / `cargo test` runs
+out*.txt
+out_*.txt

@@ -8,3 +8,9 @@ pyngrok>=7.1.0
 graphifyy
 discord.py>=2.3.0
 slack-sdk>=3.20.0
+# Local SearXNG-compatible shim backed by ddgs (searchxng.py).
+# Dux Distributed Global Search — successor to duckduckgo-search.
+# Used to provide a SearXNG-shaped /search?format=json endpoint
+# without depending on Docker or public SearXNG instances.
+ddgs>=9.0.0
+

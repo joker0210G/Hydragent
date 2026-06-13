@@ -3,7 +3,10 @@ use tokio::sync::mpsc;
 use serde_json::json;
 use hydragent_bus::router::MethodHandler;
 use hydragent_bus::message::{JsonRpcRequest, JsonRpcResponse};
-use hydragent_types::{IntentEvent, AgentResponse, ResponseFormat, MessageRole, ToolCallRecord};
+use hydragent_types::{
+    IntentEvent, AgentResponse, ResponseFormat, MessageRole, ToolCallRecord,
+    PendingClarification,
+};
 use hydragent_memory::SessionStore;
 use hydragent_model::router::ModelRouter;
 use hydragent_tools::registry::ToolRegistry;
@@ -13,6 +16,9 @@ use tracing::{info, error};
 use tokio::sync::oneshot;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
+
+use crate::strategy::{select_strategy, Strategy};
+use crate::swarm_runner::run_swarm;
 
 #[derive(Clone, Default)]
 pub struct ActivePermissions {
@@ -26,6 +32,9 @@ pub struct IntentSubmitHandler {
     pub max_react_steps: u8,
     pub active_permissions: ActivePermissions,
     pub gateway_router: Arc<hydragent_gateway::GatewayRouter>,
+    /// Pending clarification questions keyed by `page_id`. The orchestrator
+    /// pops one when a new `intent.submit` arrives on the same page.
+    pub pending_clarifications: Arc<Mutex<HashMap<String, PendingClarification>>>,
 }
 
 #[async_trait]
@@ -146,49 +155,149 @@ impl MethodHandler for IntentSubmitHandler {
         let user_profile = std::fs::read_to_string("./config/USER.md").ok();
         let soul_guidelines = std::fs::read_to_string("./config/SOUL.md").ok();
 
-        let model_router = self.model_router.clone();
-        let registry = self.registry.clone();
-        let max_react_steps = self.max_react_steps;
-        let page_id = intent.page_id.clone();
-        let channel_id = intent.channel_id.clone();
-        let user_id = intent.user_id.clone();
-        let user_query = intent.content.clone();
-        let response_tx_clone = response_tx.clone();
+        // ─── 1. Pop pending clarification (if any) and augment the user query ───
+        let mut user_query = intent.content.clone();
+        {
+            let mut map = self.pending_clarifications.lock().await;
+            if let Some(pending) = map.remove(&intent.page_id) {
+                let notice = json!({
+                    "jsonrpc": "2.0",
+                    "method": "response.status",
+                    "params": {
+                        "status": format!(
+                            "\n`[Pending clarification: \"{}\" — treating your new message as the answer]`\n",
+                            pending.question
+                        )
+                    }
+                });
+                let _ = response_tx.send(serde_json::to_string(&notice).unwrap()).await;
+                user_query = format!(
+                    "{}\n\n[Clarification Q: {}]\n[User's answer: {}]",
+                    intent.content, pending.question, intent.content
+                );
+            }
+        }
 
-        let active_permissions = self.active_permissions.clone();
-
-        // Spawn ReAct reasoning loop task
-        let handle = tokio::spawn(async move {
-            crate::react_loop::run_react_loop(
-                &page_id,
-                &channel_id,
-                &user_id,
-                &user_query,
-                history_messages,
-                retrieved_memories,
-                user_profile,
-                soul_guidelines,
-                model_router,
-                registry,
-                max_react_steps,
-                response_tx_clone,
-                active_permissions,
-            ).await
+        // ─── 2. Strategy selection (heuristic + LLM fallback) ───
+        let (strategy, source) = select_strategy(&user_query, self.model_router.clone()).await;
+        let strategy_label = match &strategy {
+            Strategy::ReactLoop => "ReactLoop (single agent with tools)".to_string(),
+            Strategy::DelegateToSwarm { .. } => "DelegateToSwarm (sub-agent DAG)".to_string(),
+            Strategy::AskUser { question } => format!("AskUser: {}", question),
+        };
+        info!("Strategy selected: {} (via {})", strategy_label, source);
+        let strategy_notice = json!({
+            "jsonrpc": "2.0",
+            "method": "response.status",
+            "params": {
+                "status": format!("\n`[Strategy: {} — via {}]`\n", strategy_label, source)
+            }
         });
+        let _ = response_tx.send(serde_json::to_string(&strategy_notice).unwrap()).await;
 
-        // Resolve ReAct reasoning loop completion output
-        let (reply_text, executed_tools) = match handle.await {
-            Ok(Ok((content, tools))) => {
-                info!("Successfully completed ReAct reasoning loop");
-                (content, tools)
+        // ─── 3. Branch on strategy ───
+        let (reply_text, executed_tools) = match strategy {
+            Strategy::ReactLoop => {
+                let model_router = self.model_router.clone();
+                let registry = self.registry.clone();
+                let max_react_steps = self.max_react_steps;
+                let page_id = intent.page_id.clone();
+                let channel_id = intent.channel_id.clone();
+                let user_id = intent.user_id.clone();
+                let user_query_for_loop = user_query.clone();
+                let response_tx_clone = response_tx.clone();
+                let active_permissions = self.active_permissions.clone();
+
+                let handle = tokio::spawn(async move {
+                    crate::react_loop::run_react_loop(
+                        &page_id,
+                        &channel_id,
+                        &user_id,
+                        &user_query_for_loop,
+                        history_messages,
+                        retrieved_memories,
+                        user_profile,
+                        soul_guidelines,
+                        model_router,
+                        registry,
+                        max_react_steps,
+                        response_tx_clone,
+                        active_permissions,
+                    ).await
+                });
+
+                match handle.await {
+                    Ok(Ok((content, tools))) => {
+                        info!("Successfully completed ReAct reasoning loop");
+                        (content, tools)
+                    }
+                    Ok(Err(e)) => {
+                        error!("ReAct loop error: {}", e);
+                        (format!("Error: Failed to process request in reasoning loop. Details: {}", e), vec![])
+                    }
+                    Err(e) => {
+                        error!("ReAct loop task panicked: {}", e);
+                        (format!("Error: Reasoning loop task panicked."), vec![])
+                    }
+                }
             }
-            Ok(Err(e)) => {
-                error!("ReAct loop error: {}", e);
-                (format!("Error: Failed to process request in reasoning loop. Details: {}", e), vec![])
+
+            Strategy::DelegateToSwarm { refined_task } => {
+                let task = refined_task.unwrap_or_else(|| user_query.clone());
+                let model_router = self.model_router.clone();
+                let tool_registry = self.registry.clone();
+                let response_tx_clone = response_tx.clone();
+                let page_id = intent.page_id.clone();
+                let handle = tokio::spawn(async move {
+                    run_swarm(&page_id, &task, model_router, tool_registry, response_tx_clone).await
+                });
+                match handle.await {
+                    Ok(Ok(text)) => {
+                        info!("Swarm completed successfully");
+                        (text, vec![])
+                    }
+                    Ok(Err(e)) => {
+                        error!("Swarm error: {}", e);
+                        (format!("Error: Swarm failed. Details: {}", e), vec![])
+                    }
+                    Err(e) => {
+                        error!("Swarm task panicked: {}", e);
+                        (format!("Error: Swarm task panicked."), vec![])
+                    }
+                }
             }
-            Err(e) => {
-                error!("ReAct loop task panicked: {}", e);
-                (format!("Error: Reasoning loop task panicked."), vec![])
+
+            Strategy::AskUser { question } => {
+                // Store the question so the next intent.submit on this page
+                // is treated as the answer.
+                {
+                    let mut map = self.pending_clarifications.lock().await;
+                    map.insert(
+                        intent.page_id.clone(),
+                        PendingClarification {
+                            page_id: intent.page_id.clone(),
+                            question: question.clone(),
+                            asked_at_ms: chrono::Utc::now().timestamp_millis(),
+                            source: source.clone(),
+                        },
+                    );
+                }
+                // Send the question to the user as a token.
+                let token = json!({
+                    "jsonrpc": "2.0",
+                    "method": "response.token",
+                    "params": { "token": format!("❓ {}\n", question) }
+                });
+                let _ = response_tx.send(serde_json::to_string(&token).unwrap()).await;
+                let notice = json!({
+                    "jsonrpc": "2.0",
+                    "method": "response.status",
+                    "params": {
+                        "status": "\n`[Awaiting your reply — please answer the question above and I'll continue.]`\n".to_string()
+                    }
+                });
+                let _ = response_tx.send(serde_json::to_string(&notice).unwrap()).await;
+                (format!("[Asked for clarification: {}]", question), vec![])
             }
         };
 
@@ -984,7 +1093,7 @@ pub async fn run_compaction(
         while let Some(_) = rx.recv().await {}
     });
     
-    let (summary, _) = model_router.chat_stream(vec![system_message], tx).await?;
+    let (summary, _) = model_router.chat_stream(vec![system_message], tx, None).await?;
     
     store.update_page_summary(page_id, &summary).await?;
     store.truncate_page_messages(page_id, 4).await?;

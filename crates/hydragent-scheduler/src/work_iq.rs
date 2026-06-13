@@ -246,7 +246,7 @@ impl WorkIqEngine {
             feed.name, entry_list
         );
 
-        let digest = self.model_router.generate_non_streaming(&prompt).await
+        let digest = self.model_router.generate_non_streaming(&prompt, None).await
             .unwrap_or_else(|e| format!("📰 **{} Work IQ Digest**\n\n(Error generating summary: {})", feed.name, e));
 
         let formatted_digest = format!("📰 **{} Work IQ Digest**\n\n{}", feed.name, digest);

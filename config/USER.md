@@ -430,3 +430,36 @@
 - The user uses uppercase words (e.g., 'DONE') to emphasize specific required response formats.
 - The user uses single quotes to delimit string values when passing parameters.
 - The user formats tool call instructions as a single inline command listing parameter names and values separated by commas.
+- The user writes in all lowercase without capitalizing the first letter of sentences.
+- The user uses abbreviations such as 'r&d' for 'research and development'.
+- The user uses periods to separate sequential steps or thoughts rather than other punctuation marks.
+- The user writes entirely in lowercase without capitalizing sentence starts.
+- The user writes in lowercase without capitalizing the first letter of sentences.
+- The user uses abbreviations such as 'r&d' instead of fully spelling out terms.
+- The user separates sequential steps with periods rather than using a numbered or bulleted list.
+- The agent produces highly structured, professional R&D reports with markdown tables, numbered sections, appendices, executive summaries, and classification banners.
+- The user writes in lowercase without capitalization.
+- The user structures multi-step requests with explicit sequencing words like 'First', 'then', and 'finally'.
+- The user prefers a terse, concise communication style.
+- The user uses lowercase, abbreviated phrasing in queries (e.g., 'r&d of fabla 5 of claude') without capitalization or punctuation.
+- The user structures complex requests as sequential, comma-separated task lists using transitional markers like 'then' and 'finally' (e.g., 'Research... then compare... and finally write...').
+- The user chains multiple sequential tasks within a single request, using transitional words like 'then' and 'finally' to structure the workflow.
+- The agent uses extensive Markdown tables with multiple columns to present structured comparisons.
+- The agent uses ✅ and ❌ emoji to indicate feature support or absence across frameworks.
+- The agent uses bold text to highlight key recommendations, terms, and verdict rows within tables.
+- The agent uses blockquote notes prefixed with '> Note' to flag input limitations or meta-context.
+- The agent ends with a 'Key Open Questions' section to flag unresolved decisions for downstream stages.
+- The agent appends a final italicized 'Swarm' attribution line identifying which node produced the final answer.
+- The agent uses horizontal rules (---) to separate major sections.
+- The agent uses a weighted scoring matrix pattern with weight multipliers to produce quantitative recommendations.
+- The agent uses parenthetical hedging phrases like '(off-topic but)' or '(... )' sparingly for asides.
+- The user writes in all lowercase without terminal punctuation such as periods or commas.
+- The user makes terse, direct requests without greetings or pleasantries.
+- The user references prior context or shared history without restating it, expecting the assistant to remember.
+- The user writes direct, imperative-style task requests with no emojis or decorative elements.
+- User writes concise, direct, and task-oriented requests with clearly enumerated deliverables.
+- The user asks clear, direct questions and includes the relevant year (2026) directly in the query for temporal context.
+- The user structures requests as a comma-separated sequence of related tasks (research, compare, recommend).
+- The user writes in a formal, direct, and task-oriented style without casual filler or emoji.
+- User asks brief, direct questions with minimal framing or pleasantries.
+- The user writes in concise, direct phrasing without greetings or pleasantries.

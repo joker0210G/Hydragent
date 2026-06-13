@@ -11,8 +11,30 @@ chrono = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+tokio = { workspace = true }
+thiserror = "1"
+clap = { workspace = true }
 
 petgraph = "0.6"
+tokio-util = "0.7"
 
 hydragent-types = { path = "../hydragent-types" }
 hydragent-model = { path = "../hydragent-model" }
+hydragent-swarm = { path = "../hydragent-swarm" }
+rand = { workspace = true }
+
+[dev-dependencies]
+hydragent-swarm = { path = "../hydragent-swarm" }
+hydragent-tools = { path = "../hydragent-tools" }
+
+[[test]]
+name = "dag_execution_test"
+path = "tests/dag_execution_test.rs"
+
+[[test]]
+name = "replan_test"
+path = "tests/replan_test.rs"
+
+[[bin]]
+name = "swarm_status"
+path = "src/bin/swarm_status.rs"

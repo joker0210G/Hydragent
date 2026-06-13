@@ -27,12 +27,45 @@ impl ModelRouter {
         self.provider.provider_name()
     }
 
+    /// Direct access to the underlying `ModelProvider`. Use this when
+    /// you need to bypass the router's primary+fallback chain and
+    /// call the provider with a fully-formed `LLMRequest` of your
+    /// own (e.g. the swarm supervisor's synthesis call).
+    pub fn provider(&self) -> Arc<dyn ModelProvider> {
+        self.provider.clone()
+    }
+
+    /// Stream a chat completion to `token_tx`, trying `primary` first
+    /// and falling back to each entry in `fallbacks` in order.
+    ///
+    /// If `override_model` is `Some(model_id)`, that model is tried
+    /// first **and** the fallbacks are skipped (we treat caller
+    /// override as an explicit, non-negotiable pick).  An override is
+    /// what the [`crate::council::ModelCouncil`] returns from
+    /// `route(...)` — the council has already done the matching work,
+    /// and silently swapping in a fallback would defeat the point.
+    ///
+    /// Returns `(content, model_used)`.
     pub async fn chat_stream(
         &self,
         messages: Vec<ChatMessage>,
         token_tx: mpsc::Sender<String>,
+        override_model: Option<&str>,
     ) -> Result<(String, String)> {
-        // Attempt primary model first
+        // Override path: try the caller-specified model, no fallback.
+        if let Some(model) = override_model {
+            info!("Routing to override model: {}", model);
+            let request = LLMRequest {
+                model: model.to_string(),
+                messages: messages.clone(),
+                stream: true,
+                max_tokens: None,
+            };
+            let content = self.provider.chat_stream(&request, token_tx).await?;
+            return Ok((content, model.to_string()));
+        }
+
+        // Primary + fallback path.
         info!("Attempting primary model: {}", self.primary);
         let mut request = LLMRequest {
             model: self.primary.clone(),
@@ -63,13 +96,19 @@ impl ModelRouter {
         anyhow::bail!("All models (primary and fallback) failed to execute completion.")
     }
 
-    pub async fn generate_non_streaming(&self, prompt: &str) -> Result<String> {
+    /// Non-streaming convenience wrapper.  See [`Self::chat_stream`]
+    /// for the `override_model` semantics.
+    pub async fn generate_non_streaming(
+        &self,
+        prompt: &str,
+        override_model: Option<&str>,
+    ) -> Result<String> {
         let (tx, _rx) = mpsc::channel(100);
         let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: prompt.to_string(),
         }];
-        let (content, _) = self.chat_stream(messages, tx).await?;
+        let (content, _) = self.chat_stream(messages, tx, override_model).await?;
         Ok(content)
     }
 }

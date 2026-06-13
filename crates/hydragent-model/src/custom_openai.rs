@@ -219,7 +219,15 @@ impl CustomOpenAIClient {
                                         delta.get("content").and_then(|t| t.as_str())
                                     {
                                         full_content.push_str(token);
-                                        let _ = tx.send(token.to_string()).await;
+                                        // Wrap in a JSON-RPC notification so
+                                        // the bus's newline-framed protocol
+                                        // survives raw newlines in the token.
+                                        let notification = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "method": "response.token",
+                                            "params": { "token": token }
+                                        });
+                                        let _ = tx.send(serde_json::to_string(&notification).unwrap()).await;
                                     }
                                 }
                                 // Some providers (OpenRouter compatible) also
@@ -231,7 +239,12 @@ impl CustomOpenAIClient {
                                     {
                                         if !token.is_empty() && full_content.is_empty() {
                                             full_content.push_str(token);
-                                            let _ = tx.send(token.to_string()).await;
+                                            let notification = serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "method": "response.token",
+                                                "params": { "token": token }
+                                            });
+                                            let _ = tx.send(serde_json::to_string(&notification).unwrap()).await;
                                         }
                                     }
                                 }

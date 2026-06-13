@@ -83,7 +83,7 @@ pub async fn decompose(
         original_task
     );
 
-    let raw_json = llm.generate_non_streaming(&prompt).await
+    let raw_json = llm.generate_non_streaming(&prompt, None).await
         .map_err(|e| anyhow::anyhow!("Decomposition LLM call failed: {}", e))?;
 
     let json_str = extract_json(&raw_json)?;

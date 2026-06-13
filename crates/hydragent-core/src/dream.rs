@@ -197,7 +197,7 @@ async fn process_page(
     let (tx, mut rx) = mpsc::channel(100);
     let drain = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
 
-    let (raw_json, _model_used) = match model_router.chat_stream(vec![system_message], tx).await {
+    let (raw_json, _model_used) = match model_router.chat_stream(vec![system_message], tx, None).await {
         Ok(res) => res,
         Err(e) => {
             error!(error = %e, page_id = %page_id, "Dream cycle: LLM call failed");

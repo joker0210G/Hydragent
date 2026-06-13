@@ -338,3 +338,27 @@
 - The agent should confirm that a task is successfully scheduled before producing the requested confirmation reply.
 - When the user gives an explicit expected reply format, the agent must follow it exactly (e.g., replying with the single word 'DONE' after completing the requested action).
 - After executing a tool call to send a message, the agent must reply with the single word 'DONE' as confirmation.
+- When the user requests report-style work, follow a three-step process: first research the topic, then draft a summary, and finally write the full report.
+- When producing a report, follow a three-stage workflow: first research the topic, then draft a summary, and finally write the full report.
+- When tasked with a report, the agent must first research the topic, then draft a summary, and finally write the report in that order.
+- Do not fabricate information or hallucinate details when research yields no verifiable results; document the research gap honestly instead.
+- Forego completeness in favor of integrity when sources cannot be verified, and explicitly recommend clarification with the requester before proceeding.
+- When asked to produce a final report on a topic with no findings, deliver a fully structured report that includes executive summary, methodology, findings, analysis, recommendations, and appendices rather than a brief refusal.
+- When the user requests a research task, the agent should follow a three-step workflow: first research the topic, then draft a summary, and finally write the report.
+- The agent should not fabricate technical details or histories for unverified subjects, and should transparently report negative findings rather than produce speculative content.
+- The agent should structure formal research reports with the sections: Introduction, Background, Technical Findings, Discussion, Conclusion, and References.
+- The agent should request user clarification when subject terms are ambiguous rather than guessing intent.
+- The user expects the agent to refuse to speculate on technical topics (such as symbol grounding) when it lacks verified information, rather than risk producing plausible-sounding hallucinations.
+- The user expects the agent to request specific context (e.g., relevant docs, target module, grounding frame) before attempting a rigorous technical analysis rather than answering from incomplete information.
+- When given a multi-step research request, follow the requested sequence (research first, then comparison, then recommendation) in that order.
+- When asked to research and recommend, first survey the current state, then compare exactly three of the most popular options, and conclude with a recommendation tailored to the user's specified use case.
+- When upstream research tools return empty results, explicitly state the limitation in a note before presenting conclusions.
+- For framework or tool comparisons, produce both a qualitative matrix and a quantitative weighted score table.
+- End comparison reports with a prioritized recommendation list and a list of open questions for the next stage.
+- Highlight practical operational tips (e.g., bridging mechanism choice) as a distinct numbered recommendation.
+- State the architectural recommendation explicitly rather than leaving it implicit in the scoring.
+- Cite the agent or swarm node that produced the final answer in an italicized footer.
+- When the user asks about a previously discussed topic, use an ask-question tool to gather or clarify the information rather than directly answering.
+- When the user asks to research and recommend, the agent should provide a concrete recommendation with justification, not just a neutral comparison.
+- Reply concisely with only the essential answer for simple factual or computational queries.
+- Ask for clarification when the user references prior discussions or context that is not available in the current conversation.

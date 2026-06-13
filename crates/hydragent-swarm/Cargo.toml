@@ -1,0 +1,55 @@
+[package]
+name    = "hydragent-swarm"
+version = "0.1.0"
+edition = "2021"
+# Don't auto-discover every `tests/**` file as a test target — we share
+# helpers via `tests/common/mod.rs` which is included by the actual
+# test files via `mod common;` and must not be compiled as a standalone
+# test binary.
+autotests = false
+
+[lib]
+name = "hydragent_swarm"
+path = "src/lib.rs"
+
+[dependencies]
+hydragent-types = { path = "../hydragent-types" }
+hydragent-tools = { path = "../hydragent-tools" }
+hydragent-model = { path = "../hydragent-model" }
+tokio      = { workspace = true }
+async-trait = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+anyhow     = { workspace = true }
+tracing    = { workspace = true }
+uuid       = { workspace = true }
+chrono     = { workspace = true }
+thiserror  = "1"
+
+[dev-dependencies]
+hydragent-tools = { path = "../hydragent-tools" }
+tokio           = { workspace = true }
+tempfile        = "3"
+
+# Disable auto-discovery of the `tests/common/` helper directory as a
+# standalone test target. We share the helpers across the integration
+# test files via `mod common;`.
+[[test]]
+name = "agent_test"
+path = "tests/agent_test.rs"
+
+[[test]]
+name = "coordinator_test"
+path = "tests/coordinator_test.rs"
+
+[[test]]
+name = "load_test"
+path = "tests/load_test.rs"
+
+[[test]]
+name = "council_spawn_test"
+path = "tests/council_spawn_test.rs"
+
+[[test]]
+name = "mailbox_test"
+path = "tests/mailbox_test.rs"

@@ -5,6 +5,8 @@ pub mod session;
 pub mod logger;
 pub mod config;
 pub mod dream;
+pub mod strategy;
+pub mod swarm_runner;
 
 use clap::Parser;
 use std::sync::Arc;
@@ -437,7 +439,7 @@ async fn main() {
         });
 
         let started = std::time::Instant::now();
-        match model_router.chat_stream(messages, tx).await {
+        match model_router.chat_stream(messages, tx, None).await {
             Ok((content, used_model)) => {
                 let _ = printer.await;
                 let elapsed = started.elapsed();
@@ -829,6 +831,11 @@ async fn main() {
     // Initialize ActivePermissions
     let active_permissions = orchestrator::ActivePermissions::default();
 
+    // Initialize pending-clarification map (one pending question per page).
+    let pending_clarifications = std::sync::Arc::new(tokio::sync::Mutex::new(
+        std::collections::HashMap::<String, hydragent_types::PendingClarification>::new(),
+    ));
+
     // Initialize Event Bus Router and register handlers
     let mut router = hydragent_bus::router::Router::new();
     router.register("intent.submit", orchestrator::IntentSubmitHandler {
@@ -838,6 +845,7 @@ async fn main() {
         max_react_steps: app_config.max_react_steps,
         active_permissions: active_permissions.clone(),
         gateway_router: gateway_router.clone(),
+        pending_clarifications: pending_clarifications.clone(),
     });
     router.register("permission.respond", orchestrator::PermissionRespondHandler {
         active_permissions,

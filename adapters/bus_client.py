@@ -34,8 +34,21 @@ class BusClient:
             line = await self.reader.readline()
             if not line:
                 break
-            msg = json.loads(line.decode().strip())
-            
+            raw = line.decode().strip()
+            # Defensive: the gateway may emit a bare LLM token that contains
+            # a leading newline (so the line is empty after `.strip()`) or
+            # an SSE keep-alive frame that isn't valid JSON. Skip those —
+            # they're never the JSON-RPC response we care about.
+            if not raw:
+                continue
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                # Unknown / unparseable frame — ignore and keep listening
+                # for the next one. The real JsonRpcResponse will arrive
+                # when the orchestrator finishes.
+                continue
+
             # Handle streamed token/status/permission notifications
             if msg.get("method") == "response.token":
                 token = msg["params"]["token"]
@@ -75,5 +88,5 @@ class BusClient:
                     return msg["result"]["content"]
             elif "error" in msg:
                 raise Exception(f"Bus error: {msg['error']['message']}")
-                
+
         return "".join(tokens)

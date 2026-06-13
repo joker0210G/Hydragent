@@ -30,7 +30,7 @@ fn make_node(id: &str, name: &str, desc: &str, task_type: TaskType) -> DagNode {
     }
 }
 
-fn run_interactive_simulation(mut spec: DagSpec) {
+fn run_interactive_simulation(spec: DagSpec) {
     println!("\n=============================================");
     println!("Step 1: Saving planning graph to disk...");
     save_dag(&spec).unwrap();
@@ -86,27 +86,85 @@ fn run_interactive_simulation(mut spec: DagSpec) {
 
         println!("\nOptions: ");
         println!("  - Type a number (e.g. 1) to complete that sub-agent's task.");
+        println!("  - Or type a node ID (e.g. B) — same thing, by id instead of number.");
         println!("  - Type 'exit' to stop the simulation.");
 
-        let choice = get_input("\nYour choice › ");
-        if choice.to_lowercase() == "exit" {
+        let choice_raw = get_input("\nYour choice › ");
+        let choice = choice_raw.trim();
+
+        if choice.eq_ignore_ascii_case("exit") {
             println!("Exiting simulation. Goodbye!");
             break;
         }
 
+        if choice.is_empty() {
+            println!("(no input — type a number, a node ID, or 'exit')");
+            continue;
+        }
+
+        // Path 1: numeric 1..=N.
         if let Ok(idx) = choice.parse::<usize>() {
-            if idx > 0 && idx <= ready_ids.len() {
+            if idx >= 1 && idx <= ready_ids.len() {
                 let completed_id = &ready_ids[idx - 1];
                 println!("\nExecuting task: {}...", completed_id);
-                // Mark node completed
                 let mut queue = ReadyQueue::new(&mut spec);
                 queue.update_status(completed_id, NodeStatus::Completed);
                 println!("✓ Task {} marked COMPLETED!", completed_id);
                 continue;
             }
+            println!(
+                "❌ '{}' is out of range — please choose 1-{} (or a node ID, or 'exit').",
+                idx, ready_ids.len()
+            );
+            continue;
         }
 
-        println!("❌ Invalid option. Please try again.");
+        // Path 2: node id (case-insensitive). Must be in the ready queue;
+        // if it isn't, explain *why* it isn't (already done? still waiting?).
+        let upper = choice.to_ascii_uppercase();
+        if let Some(pos) = ready_ids.iter().position(|id| id.eq_ignore_ascii_case(&upper)) {
+            let completed_id = &ready_ids[pos];
+            println!("\nExecuting task: {}...", completed_id);
+            let mut queue = ReadyQueue::new(&mut spec);
+            queue.update_status(completed_id, NodeStatus::Completed);
+            println!("✓ Task {} marked COMPLETED!", completed_id);
+            continue;
+        }
+
+        // The input wasn't numeric and wasn't a ready node id. If it
+        // *looks* like a node id (single letter), tell the user why
+        // that node isn't actionable. Otherwise give a generic hint.
+        if choice.len() == 1 && choice.chars().next().unwrap().is_ascii_alphabetic() {
+            let known = spec.nodes.iter().find(|n| n.id.eq_ignore_ascii_case(&upper));
+            match known {
+                Some(n) if n.status == NodeStatus::Completed => {
+                    println!("❌ Node {} is already completed.", upper)
+                }
+                Some(n) if n.status == NodeStatus::Skipped => {
+                    println!("❌ Node {} was skipped.", upper)
+                }
+                Some(n) if n.status == NodeStatus::Failed => {
+                    println!("❌ Node {} is in a Failed state.", upper)
+                }
+                Some(_) => println!(
+                    "❌ Node {} is not yet ready — it's waiting on its parent tasks.",
+                    upper
+                ),
+                None => println!("❌ '{}' is not a known node id in this graph.", upper),
+            }
+            continue;
+        }
+
+        println!("❌ I didn't understand '{}'.", choice);
+        println!(
+            "   Type a number (1-{}), a node ID ({}), or 'exit'.",
+            ready_ids.len(),
+            ready_ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join("/")
+        );
     }
 
     // Cleanup files

@@ -13,6 +13,7 @@ members = [
     "crates/hydragent-gateway",
     "crates/hydragent-scheduler",
     "crates/hydragent-planner",
+    "crates/hydragent-swarm",
 ]
 
 [workspace.dependencies]
@@ -48,3 +49,7 @@ anyhow         = "1"
 uuid           = { version = "1", features = ["v4"] }
 chrono         = { version = "0.4", features = ["serde"] }
 sha2           = "0.10"   # For params_hash in ToolCallRecord
+petgraph       = "0.6"    # DAG top-sort for swarm runner
+
+# Stochastic selection (Track 5.4 — SelfHealingReplanner)
+rand           = "0.8"
