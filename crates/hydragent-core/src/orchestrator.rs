@@ -5,7 +5,7 @@ use hydragent_bus::router::MethodHandler;
 use hydragent_bus::message::{JsonRpcRequest, JsonRpcResponse};
 use hydragent_types::{
     IntentEvent, AgentResponse, ResponseFormat, MessageRole, ToolCallRecord,
-    PendingClarification,
+    PendingClarification, AuditEvent, AuditEventType,
 };
 use hydragent_memory::SessionStore;
 use hydragent_model::router::ModelRouter;
@@ -32,6 +32,7 @@ pub struct IntentSubmitHandler {
     pub max_react_steps: u8,
     pub active_permissions: ActivePermissions,
     pub gateway_router: Arc<hydragent_gateway::GatewayRouter>,
+    pub audit_chain: Arc<hydragent_security::MerkleAuditChain>,
     /// Pending clarification questions keyed by `page_id`. The orchestrator
     /// pops one when a new `intent.submit` arrives on the same page.
     pub pending_clarifications: Arc<Mutex<HashMap<String, PendingClarification>>>,
@@ -58,7 +59,7 @@ impl MethodHandler for IntentSubmitHandler {
         };
 
         // Check duplicate and rate limit via GatewayRouter
-        if !self.gateway_router.inbound_check(&intent) {
+        if !self.gateway_router.inbound_check(&request.id, &intent) {
             return JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: None,
@@ -77,6 +78,23 @@ impl MethodHandler for IntentSubmitHandler {
         }
         if let Err(e) = self.store.append_message(&intent.page_id, MessageRole::User, &intent.content).await {
             error!("Failed to append user query: {}", e);
+        }
+
+        // Append an audit event for inbound user activity.
+        if let Err(e) = self.audit_chain.append(
+            AuditEvent::now(
+                AuditEventType::Inbound,
+                format!("channel:{}:user:{}", intent.channel_id.clone(), intent.user_id.clone()),
+            )
+            .with_page(&intent.page_id)
+            .with_detail(json!({
+                "request_id": request.id.clone(),
+                "content": intent.content.clone(),
+                "channel_id": intent.channel_id.clone(),
+                "user_id": intent.user_id.clone(),
+            })),
+        ).await {
+            error!("Failed to append inbound audit event: {}", e);
         }
 
         // Try to load context history
@@ -155,26 +173,59 @@ impl MethodHandler for IntentSubmitHandler {
         let user_profile = std::fs::read_to_string("./config/USER.md").ok();
         let soul_guidelines = std::fs::read_to_string("./config/SOUL.md").ok();
 
-        // ─── 1. Pop pending clarification (if any) and augment the user query ───
+        // ─── 1. Pop pending clarification (if any) and decide what to do ───
+        //
+        // The previous design blindly wrapped every new user message
+        // with the pending question (`[Clarification Q: X] / [User's
+        // answer: <new message>]`), which had a nasty side effect: if
+        // the user had moved on to a new topic, the new request was
+        // routed through the strategy LLM as if it were answering the
+        // old question (e.g. "vault status" got processed as
+        // "[user is answering the DAN prompt with 'vault status']").
+        //
+        // New policy: only treat the new message as a direct answer
+        // when it looks like one (short, no action verbs, no question
+        // marks). Otherwise discard the pending clarification and
+        // start fresh, with a status notice so the user can see we
+        // noticed the move-on.
         let mut user_query = intent.content.clone();
         {
             let mut map = self.pending_clarifications.lock().await;
             if let Some(pending) = map.remove(&intent.page_id) {
-                let notice = json!({
-                    "jsonrpc": "2.0",
-                    "method": "response.status",
-                    "params": {
-                        "status": format!(
-                            "\n`[Pending clarification: \"{}\" — treating your new message as the answer]`\n",
-                            pending.question
-                        )
-                    }
-                });
-                let _ = response_tx.send(serde_json::to_string(&notice).unwrap()).await;
-                user_query = format!(
-                    "{}\n\n[Clarification Q: {}]\n[User's answer: {}]",
-                    intent.content, pending.question, intent.content
-                );
+                let looks_like_answer = looks_like_clarification_answer(&intent.content);
+                if looks_like_answer {
+                    let notice = json!({
+                        "jsonrpc": "2.0",
+                        "method": "response.status",
+                        "params": {
+                            "status": format!(
+                                "\n`[Pending clarification: \"{}\" — treating your message as the answer]`\n",
+                                pending.question
+                            )
+                        }
+                    });
+                    let _ = response_tx.send(serde_json::to_string(&notice).unwrap()).await;
+                    user_query = format!(
+                        "{}\n\n[Clarification Q: {}]\n[User's answer: {}]",
+                        intent.content, pending.question, intent.content
+                    );
+                } else {
+                    // New request — drop the pending clarification and
+                    // surface a one-line note. The conversation history
+                    // (loaded below) already contains the old exchange
+                    // so the LLM has full context if it needs it.
+                    let notice = json!({
+                        "jsonrpc": "2.0",
+                        "method": "response.status",
+                        "params": {
+                            "status": format!(
+                                "\n`[Discarded pending clarification: \"{}\" — your new message looks like a fresh request, not an answer]`\n",
+                                pending.question
+                            )
+                        }
+                    });
+                    let _ = response_tx.send(serde_json::to_string(&notice).unwrap()).await;
+                }
             }
         }
 
@@ -810,7 +861,7 @@ pub struct DreamRunHandler {
 #[async_trait]
 impl MethodHandler for DreamRunHandler {
     async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
-        match crate::dream::run_dream_cycle(self.store.clone(), self.model_router.clone()).await {
+        match crate::dream::run_dream_cycle(self.store.clone(), self.model_router.clone(), None).await {
             Ok(stats) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: Some(serde_json::json!({
@@ -1307,6 +1358,108 @@ impl MethodHandler for ConfigWriteHandler {
                 id: request.id,
             }
         }
+    }
+}
+
+// =====================================================================
+// Pending-clarification heuristic
+// =====================================================================
+
+/// Heuristic: does this user message look like a direct answer to a
+/// pending clarification, or is it a fresh request that just happens
+/// to arrive while a clarification is pending?
+///
+/// Conservative defaults — when in doubt, treat as a fresh request
+/// (the more common case in interactive testing and the safer choice
+/// for the strategy router, which was previously being fooled by the
+/// auto-injection). Returns `true` only when the new message is:
+///   * short (< 200 chars — long replies to short questions are rare
+///     and usually meant as new content),
+///   * free of question marks (no new question being asked),
+///   * free of strong action verbs or command-like starters
+///     (show, list, fetch, get, run, do, make, find, search, what,
+///     how, why, when, where, who — anything that looks like a
+///     fresh request).
+///
+/// This is a best-effort signal. A genuinely-confused user can still
+/// type 'no, the one in section 2' and have it treated as an answer;
+/// we err on the side of being permissive about short replies.
+fn looks_like_clarification_answer(msg: &str) -> bool {
+    let trimmed = msg.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.chars().count() > 200 {
+        return false;
+    }
+    if trimmed.contains('?') {
+        return false;
+    }
+    // Lowercase first word for prefix matching.
+    let lower = trimmed.to_ascii_lowercase();
+    let first_word = lower.split_whitespace().next().unwrap_or("");
+    const ACTION_VERBS: &[&str] = &[
+        "show", "list", "fetch", "get", "run", "do", "make",
+        "find", "search", "what", "how", "why", "when", "where", "who",
+        "give", "tell", "describe", "explain", "check", "verify",
+        "audit", "scan", "rotate", "init", "create", "delete",
+        "remember", "forget", "save", "load",
+        // Project-specific commands — these are almost always fresh
+        // requests even if short. The strategy router knows how to
+        // dispatch them; the clarification handler doesn't.
+        "vault", "taint", "sanitizer", "phase", "encrypt", "decrypt",
+        "open", "close", "quit", "exit", "help", "status",
+    ];
+    if ACTION_VERBS.contains(&first_word) {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod clarification_heuristic_tests {
+    use super::looks_like_clarification_answer;
+
+    #[test]
+    fn short_yes_no_answers_pass() {
+        assert!(looks_like_clarification_answer("yes"));
+        assert!(looks_like_clarification_answer("no"));
+        assert!(looks_like_clarification_answer("option 2"));
+        assert!(looks_like_clarification_answer("red, definitely red"));
+        assert!(looks_like_clarification_answer("I want the second one"));
+    }
+
+    #[test]
+    fn fresh_commands_are_rejected() {
+        // These are fresh requests, not answers to a pending question.
+        assert!(!looks_like_clarification_answer("show me the active taint policy"));
+        assert!(!looks_like_clarification_answer("vault status"));
+        assert!(!looks_like_clarification_answer("what is the audit chain head?"));
+        assert!(!looks_like_clarification_answer("fetch https://example.com"));
+        assert!(!looks_like_clarification_answer("list all memories"));
+        assert!(!looks_like_clarification_answer("run the sanitizer scan"));
+    }
+
+    #[test]
+    fn long_replies_are_rejected() {
+        let long = "I think the second option is better because it aligns with the \
+                    architecture described in PHASE_6.md and is consistent with how \
+                    we handle taint across other sinks, plus it gives forward secrecy \
+                    for column-level encryption which is what Track 6.4 actually \
+                    requires per the spec.";
+        assert!(!looks_like_clarification_answer(long));
+    }
+
+    #[test]
+    fn questions_are_rejected() {
+        assert!(!looks_like_clarification_answer("which one?"));
+        assert!(!looks_like_clarification_answer("really?"));
+    }
+
+    #[test]
+    fn empty_message_is_rejected() {
+        assert!(!looks_like_clarification_answer(""));
+        assert!(!looks_like_clarification_answer("   "));
     }
 }
 

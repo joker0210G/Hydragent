@@ -1,0 +1,53 @@
+# Phase 6 / Track 6.3 — SGNL continuous-authorization policy
+#
+# This file declares the risk thresholds the SGNL engine uses to
+# escalate a tool call from auto-approve → prompt → deny, plus any
+# per-tool overrides (always-deny tools, low-risk prompts, etc.).
+#
+# Ship this file as `config/security/policy.yaml` (not the
+# `.example`) to override the hardcoded `PolicyConfig::default()`
+# fallback. If the file is missing or fails to parse, the fallback
+# is used and a warning is logged.
+#
+# The schema is versioned. Bump `version` when adding or removing
+# fields in a backward-incompatible way; the loader rejects versions
+# higher than `PolicyConfig::SUPPORTED_VERSION` (currently 1).
+#
+# Risk formula (see sgnl.rs::recompute_risk):
+#     risk = min(1.0, injection_attempts * 0.2 + taint_violations * 0.3)
+#
+#   risk > deny_threshold     →  any tier becomes Deny
+#   risk > prompt_threshold   →  AutoApprove becomes Prompt
+#   else                      →  base tier preserved
+
+version: 1
+
+# Conservative defaults — risk score lives in [0.0, 1.0].
+prompt_threshold: 0.3
+deny_threshold:  0.7
+
+# Per-tool overrides.  Keys are tool ids; values are objects with
+# any of:
+#   always:           auto_approve | prompt | deny   (highest priority)
+#   deny_above_risk:  float in [0.0, 1.0]
+#   prompt_above_risk: float in [0.0, 1.0]
+tool_overrides:
+  # Never run, period.
+  shell_exec:
+    always: deny
+
+  # Force a confirmation prompt as soon as the session's risk
+  # score crosses 0.05 — i.e. after the first injection attempt.
+  send_email:
+    prompt_above_risk: 0.05
+
+  # Web fetches are deceptively dangerous (indirect prompt
+  # injection), so we always at least prompt.
+  web_fetch:
+    always: prompt
+
+  # Vault reads stay auto-approved even with elevated risk —
+  # the vault is *inside* the trust boundary, and the read is
+  # what the taint tracker is designed to police.
+  vault_read:
+    always: auto_approve

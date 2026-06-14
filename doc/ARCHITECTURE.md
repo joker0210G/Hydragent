@@ -112,18 +112,18 @@ Zig edge footprint:
 │  │  • Model Council selector       • Consent gate enforcer            │   │
 │  └─────────┬─────────────────┬─────────────────┬─────────────────────┘   │
 │             │                 │                 │                          │
-│  ┌──────────▼──────┐  ┌───────▼──────┐  ┌──────▼──────────────────────┐  │
-│  │  LAYER 4:       │  │  LAYER 5:    │  │  LAYER 5b: SKILL ENGINE      │  │
-│  │  MEMORY LAYER   │  │  MODEL       │  │  • Skill library (Markdown)  │  │
-│  │                 │  │  ROUTER      │  │  • 7-day Curator cycle       │  │
-│  │  • Episodic     │  │              │  │  • Gene Evolution Protocol   │  │
-│  │    (SQLite)     │  │  • OpenRouter│  │  • Ed25519 skill signing     │  │
-│  │  • Semantic     │  │  • Ollama    │  └─────────────────────────────┘  │
-│  │    (ChromaDB)   │  │  • 20+ model │                                    │
-│  │  • Procedural   │  │    pool      │                                    │
-│  │    (Skills)     │  │  • Cost +    │                                    │
-│  │  • Emotional    │  │    latency   │                                    │
-│  │    (SQLite)     │  │    routing   │                                    │
+│  ┌──────────▼──────┐  ┌───────▼──────┐  ┌──────▼──────────────────────┐ ┌──────────────────────┐  │
+│  │  LAYER 4:       │  │  LAYER 5:    │  │  LAYER 5b: SKILL ENGINE      │ │  LAYER 5c: BENCHMARK   │  │
+│  │  MEMORY LAYER   │  │  MODEL       │  │  • Skill library (SQLite+    │ │  • SKILL-BENCH 80 tasks │  │
+│  │                 │  │  ROUTER      │  │    FTS5)                     │ │  • Golden Set 30 pairs  │  │
+│  │  • Episodic     │  │              │  │  • 7-day Curator cycle       │ │  • R@k / MRR / F1       │  │
+│  │    (SQLite)     │  │  • OpenRouter│  │  • Hermes-style induction    │ │  • JSON BenchReport     │  │
+│  │  • Semantic     │  │  • Ollama    │  │  • Skill Executor + Composer │ │  • 5 integration tests  │  │
+│  │  • Procedural   │  │  • 20+ model │  │  • 5 LLM-callable tools      │ │  • CLI: bin/bench       │  │
+│  │    (Skills)     │  │    pool      │  └─────────────────────────────┘ └────────────────────────┘  │
+│  │  • Emotional    │  │  • Cost +    │                                    │                              │
+│  │    (SQLite)     │  │    latency   │                                    │                              │
+│  │                 │  │    routing   │                                    │                              │
 │  └──────────┬──────┘  └──────────────┘                                    │
 │             │                                                              │
 │  ┌──────────▼──────────────────────────────────────────────────────────┐  │
@@ -246,6 +246,109 @@ MemoryResult {
 6. Select top-scored model; if unavailable → next in fallback chain
 7. Execute call with retry (3 attempts, exponential backoff)
 ```
+
+### Layer 5b: Skill Engine
+
+**Responsibility**: Persist, induce, execute, and curate reusable skills. A "skill" is a named
+prompt template with typed parameters, an optional tool allowlist, and a `{{param}}`-style
+Mustache body that the orchestrator can replay deterministically.
+
+**Crate**: `hydragent-skills` ([`crates/hydragent-skills/`](crates/hydragent-skills)).
+
+**Storage** — `SkillLibrary` (SQLite + FTS5, see [`migrations/005_skill_library.sql`](migrations/005_skill_library.sql)):
+
+| Table              | Purpose                                                    |
+|--------------------|------------------------------------------------------------|
+| `skills`           | Current head of each skill (`id`, `tier`, `tier_updated`)  |
+| `skill_versions`   | Append-only history; every `update_skill` writes a row     |
+| `skill_tags`       | Normalised tag table, JOIN'd into FTS5 for `search_by_tag` |
+| `skill_executions` | `SkillExecutionRecord` rows for the 7-day curator          |
+| `skills_fts`       | FTS5 virtual table on `name ‖ description`, 4 sync triggers |
+
+**Components** ([`crates/hydragent-skills/src/`](crates/hydragent-skills/src)):
+
+- `skill.rs` — `Skill`, `SkillSpec`, `SkillParam`, `render_template`
+- `library.rs` — `SkillLibrary::open`, `insert_skill`, `get_skill`, `list_skills`, `search_by_tag`, FTS5
+- `extractor.rs` — Hermes-style `SkillExtractor` (deterministic, no LLM in MVP) + Jaccard dedup
+- `executor.rs` — `SkillExecutor::execute` with required-param validation + tool-allowlist
+- `curator.rs` — `SevenDayCurator` (`0 3 * * 0` cron, 7-day rolling window, tier transitions)
+- `composer.rs` — `SkillComposer` merges ≥ 2 compatible skills and resolves `{{param}}` conflicts
+- `tools.rs` — 5 LLM-callable tools (`skill_list`, `skill_search`, `skill_execute`, `skill_curator_run`, `skill_induce`)
+
+**Dreaming integration** ([`crates/hydragent-core/src/skill_induction.rs`](crates/hydragent-core/src/skill_induction.rs)):
+
+```
+run_dream_cycle:
+  1. consolidate recent messages
+  2. filter to successful ReAct trajectories
+  3. extract SkillCandidate via SkillExtractor (Hermes)
+  4. dedup by Jaccard over capability_tags
+  5. insert at SkillTier::Candidate
+  → next Sunday's curator will either promote or archive
+```
+
+**Tests** (52 total in `hydragent-skills`):
+- 11 unit tests in `library.rs` (CRUD, FTS5, tag search)
+- 17 unit tests in `skill.rs` (YAML round-trip, `render_template` with 0/1/N params)
+- 6 unit tests in `extractor.rs` (Hermes dedup edge cases)
+- 4 unit tests in `executor.rs` (missing-param, allowlist, success record)
+- 4 unit tests in `curator.rs` (boundary success_rate, total thresholds)
+- 4 unit tests in `composer.rs` (merge two-skill, conflict resolution)
+- 4 integration tests (`tests/builtin_loading_test.rs`)
+- + 4 in `hydragent-core/src/skill_induction.rs`
+
+**Built-in skills** ([`skills/builtin/`](skills/builtin)):
+- `convert-csv-to-json.yaml` (tier: active, tags: data,csv,json,transform)
+- `summarize-github-issue.yaml` (tier: active, tags: github,text,summary)
+- `debug-rust-error.yaml` (tier: active, tags: rust,error,debug)
+
+**Benchmark**: `hydragent-bench` crate (see [§Layer 5c: Benchmarking](#layer-5c-benchmarking) below)
+
+### Layer 5c: Benchmarking
+
+**Responsibility**: Track retrieval and agent capability over time. Phase 7 introduces two
+retrieval-oriented benchmarks: **SKILL-BENCH** (80 paraphrased queries × known-relevant
+skill ids) and the **Golden Set** (30 hand-verified multi-relevance pairs). Future
+phases will add full agent runs (ReAct + tool-use) and human-judge pairs.
+
+**Crate**: `hydragent-bench` ([`crates/hydragent-bench/`](crates/hydragent-bench)).
+
+**Modules** ([`crates/hydragent-bench/src/`](crates/hydragent-bench/src)):
+
+- `dataset.rs` — `SkillBenchTask`, `GoldenSetItem` JSONL loaders
+- `metrics.rs` — `recall_at_k`, `reciprocal_rank`, `Prf` (precision/recall/F1)
+- `runner.rs` — `SkillBenchRunner` + `GoldenSetRunner` with pluggable `Retriever = Box<dyn Fn(&str) -> Vec<String> + Send + Sync>`
+- `report.rs` — `BenchReport` JSON serialiser + ASCII summary
+
+**Data** ([`tests/bench/`](tests/bench)):
+
+| File | Lines | Purpose |
+|------|------:|---------|
+| `skill_bench_v1.jsonl` | 80 | 10 skills × 8 paraphrases; each row = `{query, relevant_skill_id}` |
+| `golden_set_v1.jsonl` | 30 | 10 single / 15 dual / 5 triple relevance; multi-relevant pairs test precision vs recall |
+
+**CLI** ([`crates/hydragent-bench/bin/bench.rs`](crates/hydragent-bench/bin/bench.rs)):
+
+```bash
+cargo run -p hydragent-bench --bin bench -- \
+    --skill-bench tests/bench/skill_bench_v1.jsonl \
+    --golden-set  tests/bench/golden_set_v1.jsonl \
+    --output      reports/bench-v0.7.0.json
+```
+
+Output: a `BenchReport` JSON with `version`, `generated_at`, `skill_bench` (R@1/3/5, MRR),
+and `golden_set` (precision, recall, F1).
+
+**Tests** (30 total):
+- 25 unit tests across all 4 modules
+- 5 integration tests using the real `SkillLibrary` + real bench data (the `Retriever`
+  closure calls `lib.search_by_keyword`)
+
+**LoRA fine-tuning** ([`tools/finetune/`](tools/finetune)):
+- `generate_dataset.py` — extracts successful ReAct turns → JSONL training data
+- `train_lora.py` — 4-bit `peft` + `bitsandbytes` LoRA trainer (Gemma 2 2B default)
+- `evaluate_model.py` — runs the fine-tuned model against SKILL-BENCH + Golden Set
+- Taint-checked: zero `Secret`-classified data leaks into training sets
 
 ### Layer 6: Tool Dispatcher & Security Vault
 

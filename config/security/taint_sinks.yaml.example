@@ -1,0 +1,64 @@
+# Phase 6 / Track 6.2 — Taint sink policy
+#
+# This file declares which taint categories are *forbidden* at each
+# outbound sink, and which must be *redacted* before delivery.
+#
+# Ship this file as `config/security/taint_sinks.yaml` (not the
+# `.example`) to override the hardcoded `SinkPolicy::default_policy()`
+# fallback. If the file is missing or fails to parse, the fallback is
+# used and a warning is logged.
+#
+# The schema is versioned. Bump `version` when adding or removing
+# fields in a backward-incompatible way; the loader rejects versions
+# higher than `SinkPolicy::SUPPORTED_VERSION` (currently 1).
+#
+# Taint categories (from hydragent_types::TaintCategory):
+#   - secret            Vault credential, API key, token, password
+#   - pii               Personally identifiable information
+#   - tool_output       Output produced by a tool
+#   - user_input        Raw user input
+#   - llm_output        Output produced by the LLM
+#   - system_internal   System-authored metadata
+#
+# Sinks (from hydragent_security::TaintSink):
+#   - llm_request_messages  Outbound messages sent to the LLM
+#   - outbound_network      Any network egress (HTTP, websocket, …)
+#   - log                   Log lines
+#   - vault_write           Writes into the encrypted vault
+#   - disk_write            Writes to the local filesystem
+
+version: 1
+sinks:
+  # Secrets and PII must never be sent verbatim to the LLM; PII is
+  # also required to be redacted (e.g. emails → [REDACTED:email]).
+  llm_request_messages:
+    forbid: [secret, pii]
+    redact: [pii]
+
+  # Outbound network is the most restrictive sink. Secrets, PII,
+  # system metadata, and LLM output all leave the host, so they're
+  # all blocked.
+  outbound_network:
+    forbid: [secret, pii, system_internal, llm_output]
+    redact: []
+
+  # Secrets must never be logged (they'd be captured by log
+  # aggregators and persisted forever). PII is allowed if redacted.
+  log:
+    forbid: [secret]
+    redact: [pii]
+
+  # Disk writes block secrets (no plaintext credentials on disk) and
+  # system internal data (timestamps, IDs, etc.) that should only
+  # flow through the audit chain.
+  disk_write:
+    forbid: [secret, system_internal]
+    redact: []
+
+  # Vault writes block secrets in a slightly different way: we *want*
+  # the agent to be able to STORE secrets, but not to write data
+  # that is *itself* tagged as a secret (which would be a leak of
+  # the previous secret in plaintext).
+  vault_write:
+    forbid: [secret]
+    redact: []

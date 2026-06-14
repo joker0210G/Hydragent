@@ -6,8 +6,19 @@
 > *intent*; this file describes what is **in the repository today**.
 >
 > When you change the code, update this file. When you finish a phase, update the
-> matching entry in [§1 Implementation Status](#1-implementation-status).
-
+> matching entry in [§1 Implementation Status](#1-implementation-status).>
+> **Patch release 0.6.1 (2026-06-14)**: 4 user-perspective bug fixes from
+> `hydragent chat` CLI testing are now in. AskUser over-triggering is fixed
+> via the rewritten strategy-router prompt; pending-clarification state bleed
+> is fixed via the new `looks_like_clarification_answer` heuristic; the LLM
+> can now call `sanitizer_list_patterns` to inspect the pattern library; the
+> `security vault-init` subcommand exists and is idempotent. See
+> `CHANGELOG.md` [0.6.1] for the full list.
+>
+> **Phase 7 COMPLETE 2026-06-14**: see `PHASE_7_COMPLETION_SUMMARY.md` for the 4-week plan
+> (Weeks 27-30 → v0.7.0). `hydragent-skills` and `hydragent-bench` crates shipped;
+> 86 net-new tests pass (52 skills + 30 bench + 4 skill-induction in core). See
+> `RELEASE_NOTES_v0.7.0.md` for the full feature list and `CHANGELOG.md` [0.7.0].
 ---
 
 ## 0. How to read this document
@@ -25,12 +36,12 @@
 | Phase | Theme | Status | Notes |
 |---|---|---|---|
 | 1 | Core Runtime & Zig Bootstrap | **Implemented (Rust path)** | ReAct loop, CLI adapter, 3 primitive tools live. Zig edge binary stubbed but not the primary runtime. |
-| 2 | Hierarchical Memory & BM25 Engine | **Implemented — Phase 2 tests GREEN (21/21)** | SQLite-backed memory, vector index (`vectors.bin`, linear scan — **not HNSW**), hybrid retrieval, Dreaming scaffolding. **Bus RPC `memory.search` is now wired** (added 2026-06-12, see `TODO_PHASE2.md` Bug 1). FTS5 triggers (`fts_insert` / `fts_update` / `fts_delete`) ARE present and working. ChromaDB mentioned in docs but **not used** in code. Stress-test report: `TODO_PHASE2.md`. |
+| 2 | Hierarchical Memory & BM25 Engine | **Implemented — Phase 2 tests GREEN (21/21)** | SQLite-backed memory, vector index (`vectors.bin`, linear scan — **not HNSW**), hybrid retrieval, Dreaming scaffolding. **Bus RPC `memory.search` is now wired** (added 2026-06-12, see `doc/archive/phases/PHASE_2_FINAL_REPORT.md` Bug 1). FTS5 triggers (`fts_insert` / `fts_update` / `fts_delete`) ARE present and working. ChromaDB mentioned in docs but **not used** in code. Stress-test report: `doc/archive/phases/PHASE_2_FINAL_REPORT.md`. |
 | 3 | Sandboxed Execution & 3-Tier Permissions | **Partially Implemented** | `PermissionTier` enum and `ToolStatus` are live; `hydragent-vault` (XChaCha20-Poly1305 + Argon2id + KeyInjector) is live; `hydragent-sandbox` is wired to Wasmtime with fuel metering. **Docker execution sandbox is NOT implemented** and has been moved to a later phase. Audit log and taint-tracking subsystems are stubs. |
 | 4 | Multi-Channel Gateway & Proactive Agent | **Mostly Implemented (Weeks 15–18 complete)** | 6 messaging adapters + miniapp + bus client. Cron engine + scheduler live with SQLite persistence. Work IQ engine (`WorkIqEngine`) live with RSS polling + keyword alerts. WhatsApp, IMAP/SMTP, voice, WebSockets not yet wired. |
 | 5 | Subagent Swarm & Model Council | **Weeks 19–20 done; Weeks 21–22 not started** | `hydragent-planner` (Week 19) is real and working: `dag.rs` (cycle detection, topo sort), `decomposer.rs` (LLM-driven complexity classification + decomposition), `scheduler.rs` (`ReadyQueue`), `serializer.rs` (save/load), and `bin/planner_demo.rs` interactive demo. 5 unit tests in `tests/planner_tests.rs`. **Track 5.1 (Week 20 Mon–Wed)**: `hydragent-swarm` crate shipped with `SubAgent`, `SubAgentSpawner`, `SwarmCoordinator` — 35 tests (9 unit + 10 agent + 10 coordinator + 6 load). G6 confirmed: 20 concurrent sub-agents < 2s. **Track 5.2 (Week 20 Wed–Sat)**: Model Council shipped — 23 profiles in `config/model_council.yaml`, `ModelProfile` + `ModelCouncil` in `hydragent-model`, `SubAgentSpawner::spawn_with_council` routes by `SubAgentRole`, `SubAgentStatus.model_used` reports the routed model id. 30 new unit tests in `hydragent-model` + 9 new integration tests in `hydragent-swarm/tests/council_spawn_test.rs`. G4 satisfied. **Track 5.3 (Week 21)**: not started — needs `DagExecutionEngine` + `AgentMailbox`. **Track 5.4 (Week 22)**: not started — needs supervisor + self-healing replanner. |
-| 6 | 16-Layer Security & Audit Hardening | **Not Implemented** | No `hydragent-security` crate. No Merkle chain, no Ed25519 signer, no SQLCipher, no taint tracker. `hydragent-vault` provides XChaCha20-Poly1305 + Argon2id only. |
-| 7 | Self-Improving Skill Engine & Curator | **Not Implemented** | No `hydragent-skills` crate, no `hydragent-bench`, no LoRA trainer. |
+| 6 | 16-Layer Security & Audit Hardening | **Tracks 6.1–6.4 shipped; v0.6.1 user-perspective fixes landed; Track 6.5 deferred post-MVP** | `hydragent-vault` Phase 3 + Track 6.4 (mlock, SecureBuffer, ColumnCipher, Rotator) is live and 79 tests pass. `hydragent-security` crate (Tracks 6.1 Merkle chain, 6.2 taint tracker, 6.3 injection guard) is **on disk and cross-crate integrated** as of 0.6.1 — 5 new LLM tools (`audit_query`, `taint_check`, `sanitizer_scan`, `sanitizer_list_patterns`, `vault_rotate`) are registered in `hydragent-core` and reachable from the strategy router. The new `security vault-init` subcommand wraps the existing `Vault::init` with an idempotent path. **Track 6.5 (SQLCipher at-rest for SQLite) deferred to post-MVP** per 2026-06-14 decision. |
+| 7 | Self-Improving Skill Engine & Curator | **✅ COMPLETE 2026-06-14 (v0.7.0)** | `hydragent-skills` shipped (SkillLibrary + Hermes extractor + Executor + 7-Day Curator + Composer; 48 unit + 4 integration tests). `hydragent-bench` shipped (SKILL-BENCH 80 tasks + Golden Set 30 pairs; 25 unit + 5 integration tests). Python LoRA fine-tuning pipeline shipped in `tools/finetune/`. Dreaming integration in `hydragent-core/src/skill_induction.rs` (4 tests). 3 builtin skills in `skills/builtin/`. See `RELEASE_NOTES_v0.7.0.md`. |
 | 8 | Edge Hardware & Local Inference | **Stubbed** | `edge/` Zig workspace present (`build.zig`, `build.zig.zon`, `src/`) but not yet compiling or running a model. |
 | 9 | Enterprise Features & Public Release | **Not Started** | — |
 
@@ -47,15 +58,15 @@ From `Cargo.toml` (`resolver = "2"`, members list):
 | `hydragent-tools` | Tool registry + 12 built-in tools | 1, 2, 4 |
 | `hydragent-memory` | Session store, semantic store, vector index, retrieval, context injector | 2 |
 | `hydragent-embed` | Embedding provider | 2 |
-| `hydragent-vault` | Encrypted secret storage (XChaCha20-Poly1305 + Argon2id) | 3 |
+| `hydragent-vault` | Encrypted secret storage (XChaCha20-Poly1305 + Argon2id, mlock-pinned SecureBuffer, AES-256-GCM column cipher, key rotation) | 3, 6.4 |
 | `hydragent-sandbox` | Sandboxed execution surface (Wasmtime / container) | 3 |
 | `hydragent-gateway` | Multi-channel adapter hosting process | 4 |
 | `hydragent-scheduler` | Cron scheduler + heartbeat engine | 4 |
 | `hydragent-planner` | DAG / planning (Week 19 of Phase 5 — working) | 5 |
 | `hydragent-swarm` | Subagent spawner + coordinator + Model Council routing (Week 20 of Phase 5 — working) | 5 |
-| `hydragent-skills` | **Not present** | 7 |
-| `hydragent-security` | **Not present** | 6 |
-| `hydragent-bench` | **Not present** | 7 |
+| `hydragent-skills` | Skill library, Hermes-style extractor, executor, 7-day curator, composer | 7 |
+| `hydragent-security` | On disk (untracked) — Tracks 6.1, 6.2, 6.3 in code, builds clean; cross-crate tests not yet run; **Track 6.5 SQLCipher deferred post-MVP** | 6 |
+| `hydragent-bench` | SKILL-BENCH (80 retrieval tasks) + Golden Set (30 multi-relevance pairs) benchmark harness + CLI | 7 |
 
 ### 1.2 Channel adapters actually shipped
 
@@ -270,15 +281,15 @@ Items below appear in the phase docs as if they exist. They don't. Treat them
 as forward-looking.
 
 ### 3.1 Phase 6 (Security)
-* `hydragent-security` crate
-* Merkle-chained audit (`MerkleAuditChain`)
-* Taint tracker + 6 taint categories
-* Ed25519 action signing
-* SGNL-style continuous authorization
-* Prompt-injection scanner
-* SQLCipher-encrypted SQLite
-* `mlock`-pinned `SecureBuffer`
-* Credential rotation commands
+* `hydragent-security` crate — **on disk** (untracked, builds clean); 6 source modules + 4 integration test files. Not yet wired into `hydragent-core` end-to-end.
+* Merkle-chained audit (`MerkleAuditChain`) — **on disk** (`crates/hydragent-security/src/merkle.rs`); no cross-crate integration test yet.
+* Taint tracker + 6 taint categories — **on disk** (`crates/hydragent-types/src/lib.rs` Phase-6 section + `crates/hydragent-security/src/taint.rs`); not yet exercised by the core ReAct loop.
+* Ed25519 action signing — **on disk** (`crates/hydragent-security/src/signer.rs`); signer is not invoked by any tool handler yet.
+* SGNL-style continuous authorization — **on disk** (`crates/hydragent-security/src/sgnl.rs`); the `Authorize` step is not in the request path yet.
+* Prompt-injection scanner — **on disk** (`crates/hydragent-security/src/sanitizer.rs` + `crates/hydragent-security/src/anomaly.rs`); the scanner is not invoked by any channel adapter yet.
+* ~~SQLCipher-encrypted SQLite~~ — **deferred to post-MVP** per 2026-06-14 decision (column-AES in the vault already covers secrets; SQLite databases at `data/memory/`, `data/audit/`, `data/sessions/` remain plaintext on disk).
+* `mlock`-pinned `SecureBuffer` — ✅ **done** (Track 6.4: `crates/hydragent-vault/src/{mlock,secure_buffer}.rs`, 12 unit tests + 6 integration tests).
+* Credential rotation commands — ✅ **done** (Track 6.4: `crates/hydragent-vault/src/{column_cipher,rotator}.rs`, 21 unit tests + 16 integration tests).
 
 ### 3.2 Phase 7 (Skills)
 * `hydragent-skills` crate

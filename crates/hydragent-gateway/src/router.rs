@@ -35,8 +35,13 @@ impl GatewayRouter {
     }
 
     /// Check if inbound event is allowed (i.e. not duplicate & within rate limit)
-    pub fn inbound_check(&self, event: &IntentEvent) -> bool {
-        if self.dedup.is_duplicate(&event.channel_id, &event.user_id, &event.content) {
+    pub fn inbound_check(&self, request_id: &str, event: &IntentEvent) -> bool {
+        if self.dedup.is_duplicate(
+            &event.channel_id,
+            &event.user_id,
+            &event.content,
+            request_id,
+        ) {
             tracing::debug!(channel_id = %event.channel_id, "Dropped duplicate message");
             return false;
         }

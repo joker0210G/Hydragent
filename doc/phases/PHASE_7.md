@@ -37,6 +37,7 @@
 9. [Performance Targets](#9-performance-targets)
 10. [Risks & Mitigations](#10-risks--mitigations)
 11. [Definition of Done](#11-definition-of-done)
+12. [Implementation Notes & Deviations](#12-implementation-notes--deviations)
 
 ---
 
@@ -255,13 +256,13 @@ SKILL-BENCH is our internal benchmark, inspired by HumanEval (code), GAIA (gener
 |---|---|
 | Mon | Write `migrations/005_skill_library.sql`. Tables: `skills`, `skill_versions`, `skill_tags`, `skill_executions`. Create `crates/hydragent-skills` crate. Define `Skill`, `SkillVersion`, `SkillTier` structs in `skill.rs`. |
 | Tue | Implement `SkillLibrary` in `library.rs`: `insert_skill()`, `get_skill(id)`, `list_skills()`, `update_skill()`, `search_by_tag(tag)`, `search_by_embedding(vec, k)`. Wire FTS5 on `name || description` for keyword search. |
-| Wed | Design the `SkillSpec` YAML format (Section 5.1). Implement YAML serialization/deserialization for `Skill`. Implement `SkillLibrary::export_to_yaml(skill_id, path)` and `import_from_yaml(path)`. Load `skills/builtin/*.yaml` at startup. |
+| Wed | Design the `SkillSpec` YAML format (Section 5.1). Implement YAML serialization/deserialization for `Skill`. Implement `SkillLibrary::export_to_yaml(skill_id, path)` and `import_from_yaml(path)`. Load `skills/builtin/*.yaml` (now via the `skills-import` CLI; see §12). |
 | Thu | Implement `SkillExtractor` in `extractor.rs`. Craft the Hermes-style extraction LLM prompt (Section 5.2). `extract_from_trajectory(turns: &[Turn]) -> Option<SkillCandidate>`. Parse LLM response into `SkillCandidate` JSON. |
 | Fri | Implement parameter detection in `SkillExtractor`: identify variable parts of the trajectory (e.g., file names, URLs, user queries) and replace them with `{{param_name}}` placeholders. Build `SkillSpec.params` list with type and description. |
 | Sat | Wire skill extraction into the Dreaming pipeline (Phase 2): after consolidating messages, run `SkillExtractor` on each successful ReAct trajectory. Store `SkillTier::Candidate` in `skills`. |
 | Sun | Unit tests: (1) 10-turn successful CSV conversion trajectory → extracted as "csv_to_json" skill with `{{input_csv}}` and `{{output_format}}` params; (2) failed trajectory → `None` (not extracted); (3) YAML round-trip preserves all skill fields. |
 
-**Deliverable**: `cargo test -p hydragent-skills` green. Builtin skills loaded at startup. Dreaming integration induces candidate skills.
+**Deliverable**: `cargo test -p hydragent-skills` green. Builtin skills loadable via the `skills-import` CLI (idempotent, supports `--dry-run` and `--list`). Dreaming integration induces candidate skills.
 
 ---
 
@@ -2218,7 +2219,7 @@ Phase 7 is **complete** when all of the following are true:
 
 ### Skill Engine
 
-- [ ] 3 builtin skills load at startup from `skills/builtin/*.yaml`
+- [ ] 3 builtin skills loadable into the library via `cargo run -p hydragent-skills --bin skills-import --` (see §12 for why a CLI was chosen over auto-load on startup)
 - [ ] Skill extractor induces ≥ 1 skill from 20 successful turns in integration test
 - [ ] Skill executor correctly substitutes `{{param}}` placeholders in integration test
 - [ ] Skill lookup prefers skills over full ReAct when similarity > 0.85 (verified in integration test)
@@ -2255,6 +2256,115 @@ Phase 7 is **complete** when all of the following are true:
 - [ ] `CHANGELOG.md` entry written
 - [ ] Baseline SKILL-BENCH score published in GitHub Release notes
 - [ ] `bench/results/v0.7.0/report.json` committed to repository
+
+---
+
+## 12. Implementation Notes & Deviations
+
+This section documents places where the final implementation differs from the original plan in §1–§11, and the rationale. All deviations are additive (no feature in the plan was dropped) — the items below describe *how* a feature was delivered, not *whether* it was.
+
+### 12.1 Builtin skill loading: explicit `skills-import` CLI instead of auto-load on startup
+
+**Planned** (Week 27 Wed, §11 Skill Engine DoD): "Load `skills/builtin/*.yaml` at startup."
+
+**Shipped**: a dedicated CLI binary
+[`bin/skills_import.rs`](../../crates/hydragent-skills/bin/skills_import.rs)
+that the operator (or a setup script) runs once per fresh library:
+
+```bash
+cargo run -p hydragent-skills --bin skills-import -- \
+    --source  skills/builtin \
+    --library data/skill_library.sqlite \
+    --verbose
+```
+
+Internally it calls the public
+[`SkillLibrary::load_builtins`](../../crates/hydragent-skills/src/library.rs) method
+(which uses `INSERT ... ON CONFLICT(id) DO UPDATE` to make the operation
+idempotent and tags each `skill_versions` row with `changed_by = "builtin"`).
+
+**Why a CLI and not auto-load on startup**
+
+| Concern | Auto-load on startup | Explicit CLI |
+|---|---|---|
+| First-boot surprise | Hidden side effect: writes 3 rows to a DB the operator may not know exists | Visible, logged, controllable |
+| CI / migrations | Skill code paths become a hard dep of every smoke test | `--dry-run` validates YAML in CI without touching the DB (exit 2 on parse error) |
+| Re-runs | Idempotent but not observable | `--list` and the row-count delta make state changes explicit |
+| Permissions | `SkillLibrary::open` runs in every process that touches the library | Setup is a separate, audit-able step |
+| Failure modes | A bad YAML silently prevents the library from opening on every boot | A bad YAML fails once, loudly, in the import step; the rest of the system keeps working |
+
+The CLI itself is ~150 LoC, 5 unit tests, and adds `clap` as a dep to
+`hydragent-skills`. End-to-end verified against the real
+`data/skill_library.sqlite`: 3 builtins loaded, FTS index in sync, re-run is
+a no-op apart from `last_updated` bumps.
+
+### 12.2 `Skill::trajectory` is replaced by a single `prompt_template`
+
+**Planned** (Week 28 Mon, §5.3): skills carry a multi-step `trajectory: Vec<SkillStep>` of `thought` / `action` / `response` roles, and the executor runs a mini ReAct loop with a tool registry.
+
+**Shipped**: skills carry a single Mustache-style `prompt_template: String` plus a `required_tools: Vec<String>` allowlist. The [`SkillExecutor`](../../crates/hydragent-skills/src/executor.rs) renders the template, validates required params, and enforces the tool allowlist at execution time. The mini-ReAct-with-tools path is left to a follow-up (Phase 8).
+
+This simplification matches what the v0.7.0 builtins (`convert-csv-to-json`, `summarize-github-issue`, `debug-rust-error`) actually need: a parameterized prompt and a tool-allowlist guardrail. The richer trajectory model is preserved in §5.2 / §5.3 for reference and will return when the composer (§5.9) needs nested skill calls.
+
+### 12.3 Bench CLI ships with a stub retriever
+
+**Planned** (§5.7 / Week 30): the bench harness queries the live `SkillLibrary` for retrieval scoring.
+
+**Shipped**: the
+[`bench`](../../crates/hydragent-bench/bin/bench.rs) CLI ships with a no-op
+retriever (`|_q| Vec::<String>::new()`) that returns an empty list. The
+JSONL loaders, scoring, and report serialisation are all real. The wire-up
+to `SkillLibrary::search_*` is a Week 30 follow-up that will land in
+v0.7.1. Baseline numbers reported by `reports/bench-v0.7.0.json` are
+all-zero for the retrieval metrics and 1.0 for the per-pair coverage
+metrics, which is the expected behaviour for a stub retriever.
+
+### 12.4 (reserved)
+
+Section intentionally left empty. The original §5.1.1 already specified
+snake_case YAML field names, and the shipped
+[`SkillSpec`](../../crates/hydragent-skills/src/skill.rs) honours that —
+no deviation to record.
+
+### 12.5 Chat-time skill tool surface: 3 new LLM-callable tools
+
+**Planned** (§3.2 Tool Surface): the v0.7.0 release shipped
+`SkillLibrary` as a service consumed by the dream worker, but the
+`ToolRegistry` had no skill-related entries, so the chat LLM had no way
+to discover or invoke a skill during a conversation. The plan in
+§3.2 listed only the security + sandbox + vault tools.
+
+**Shipped**: 3 additional LLM-callable tools in `hydragent-tools`,
+registered in
+[`main.rs`](../../crates/hydragent-core/src/main.rs) alongside the
+Phase 6 tools:
+
+| Tool | Purpose |
+|---|---|
+| `skill_list`  | List skills from the persistent library with optional filters (tier, name substring, min_success_rate, limit, offset) |
+| `skill_search`| Hybrid search over the library — FTS5 keyword, fuzzy LIKE, and tag match — with per-strategy hit lists |
+| `skill_run`   | Look up a skill by name (fallback to id), auto-fill common body params from `input`, render the prompt template via `SkillExecutor`, and return the rendered prompt + diagnostics |
+
+**Files**
+
+- [`crates/hydragent-tools/src/skill_list.rs`](../../crates/hydragent-tools/src/skill_list.rs) (≈140 LoC)
+- [`crates/hydragent-tools/src/skill_search.rs`](../../crates/hydragent-tools/src/skill_search.rs) (≈120 LoC)
+- [`crates/hydragent-tools/src/skill_run.rs`](../../crates/hydragent-tools/src/skill_run.rs) (≈140 LoC)
+- `crates/hydragent-tools/src/lib.rs` — 3 `pub mod` lines
+- `crates/hydragent-tools/Cargo.toml` — `hydragent-skills = { path = "../hydragent-skills" }` dep
+- `crates/hydragent-core/src/main.rs` — 3 `registry.register(...)` lines after the Phase 6 tools
+
+**Why 3 separate tools and not one mega-tool**
+
+| Concern | One mega-tool | 3 small tools |
+|---|---|---|
+| `params_schema` token cost | Loaded into every tool-selection prompt | Each call only sees its own schema |
+| Failure isolation | A bad `params_json` for one feature blocks the other two | Per-tool parsing; LLM only retries the failing one |
+| Evolution | Adding a feature touches the union schema | New tool = new file + 1 `pub mod` + 1 register line |
+
+Each tool opens its own `SkillLibrary` handle per call (mirroring
+`AuditQueryTool`), so no long-lived handles need to thread through the
+chat orchestrator.
 
 ---
 

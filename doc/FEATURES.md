@@ -85,7 +85,7 @@ Vec<f32>>`, **not ChromaDB / HNSW**) fused via Reciprocal Rank Fusion
 > - The "deep reasoning mode" escalation to a frontier model is not
 >   implemented; the orchestrator always calls the configured `BRAIN_MODEL`.
 > - The "88.78% HaluMem QA" number is the QwenPaw ReMe baseline; it has
->   **not been measured on this codebase**. See [`TODO_PHASE2.md`](../TODO_PHASE2.md).
+>   **not been measured on this codebase**. See [`PHASE_2_FINAL_REPORT.md`](../archive/phases/PHASE_2_FINAL_REPORT.md).
 > - Verified: G1 hybrid search returns ranked results across BM25 + vector
 >   + RRF; E1 cross-session recall PASS.
 

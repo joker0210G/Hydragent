@@ -1,6 +1,6 @@
 //! Phase 5 / Track 5.1 baseline load test.
 //!
-//! Hard goal (per `TODO_PHASE5.md` Track 5.1 → G6 baseline):
+//! Hard goal (per `doc/archive/phases/PHASE_5_FINAL_REPORT.md` Track 5.1 → G6 baseline):
 //!   "20 concurrent sub-agents complete in under 2 seconds"
 //!
 //! This test runs **fully in-process**: the `MockModelProvider` returns

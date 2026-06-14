@@ -6,6 +6,7 @@ use sqlx::SqlitePool;
 use hydragent_memory::SessionStore;
 use hydragent_model::router::ModelRouter;
 use hydragent_model::openrouter::ChatMessage;
+use hydragent_skills::library::SkillLibrary;
 use tracing::{info, error, warn, debug};
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +75,7 @@ const DEDUP_WORD_OVERLAP: f64 = 0.6;
 pub async fn run_dream_cycle(
     store: Arc<SessionStore>,
     model_router: Arc<ModelRouter>,
+    skill_library: Option<Arc<SkillLibrary>>,
 ) -> anyhow::Result<DreamStats> {
     let mut stats = DreamStats::default();
     let pool = store.pool();
@@ -114,8 +116,9 @@ pub async fn run_dream_cycle(
         let store = store.clone();
         let model_router = model_router.clone();
         let page_pool = pool.clone();
+        let skill_lib = skill_library.clone();
         tasks.push(tokio::spawn(async move {
-            process_page(page_id, store, model_router, page_pool).await
+            process_page(page_id, store, model_router, page_pool, skill_lib).await
         }));
     }
 
@@ -150,6 +153,7 @@ async fn process_page(
     store: Arc<SessionStore>,
     model_router: Arc<ModelRouter>,
     pool: SqlitePool,
+    skill_library: Option<Arc<SkillLibrary>>,
 ) -> anyhow::Result<DreamStats> {
     use sqlx::Row;
     let mut stats = DreamStats::default();
@@ -286,6 +290,29 @@ async fn process_page(
 
     // Mark source messages as consolidated
     mark_consolidated(&pool, &row_ids).await?;
+
+    // Phase 7 / Week 27 / Day 6 - skill induction. Now that we've
+    // successfully consolidated this page's messages, hand the same
+    // trajectory to the SkillExtractor. Failures are logged at WARN
+    // and never propagated: a single bad page must not break the
+    // dream cycle.
+    if let Some(lib) = skill_library {
+        let stats_ind = crate::skill_induction::induce_skill_from_page_with_library(
+            lib,
+            &pool,
+            &page_id,
+        )
+        .await;
+        if stats_ind.skills_inserted > 0 {
+            info!(
+                page_id = %page_id,
+                inserted = stats_ind.skills_inserted,
+                duplicates = stats_ind.duplicates_skipped,
+                rejected = stats_ind.rejected,
+                "📚 Dream cycle: skill induction"
+            );
+        }
+    }
     Ok(stats)
 }
 

@@ -25,7 +25,7 @@
 ---
 
 > **Doc vs Code Reality (as of 2026-06-12):** Stress-test sweep is GREEN
-> (21/21, see [`TODO_PHASE2.md`](../../TODO_PHASE2.md)). Several
+> (21/21, see [`PHASE_2_FINAL_REPORT.md`](../archive/phases/PHASE_2_FINAL_REPORT.md)). Several
 > components in this file are **aspirational** rather than the current
 > implementation. Specifically:
 >
@@ -49,7 +49,7 @@
 > - **§10 (Risks)** — FTS5 is **not** using trigram in code; trigram
 >   would have ~3× storage overhead which we don't actually pay.
 >
-> The full divergence table lives in [`TODO_PHASE2.md`](../../TODO_PHASE2.md)
+> The full divergence table lives in [`PHASE_2_FINAL_REPORT.md`](../archive/phases/PHASE_2_FINAL_REPORT.md)
 > §"Doc-vs-code divergences still present".
 
 ## 📋 Table of Contents
@@ -623,7 +623,7 @@ pub fn l2_normalize(tensor: Tensor) -> Result<Tensor> {
 > ⚠️ **Doc vs Code Reality**: The original spec called for `hnsw_rs` with
 > `DistCosine`. The actual implementation is a simple linear scan over
 > a `HashMap<String, Vec<f32>>`. Real HNSW integration is deferred to a
-> later phase (see `TODO_PHASE2.md` divergence table). The 100k-fact /
+> later phase (see `doc/archive/phases/PHASE_2_FINAL_REPORT.md` divergence table). The 100k-fact /
 > 10ms latency target is **not** met by the current code.
 
 ```rust

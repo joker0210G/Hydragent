@@ -1,11 +1,20 @@
+pub mod column_cipher;
 pub mod crypto;
+pub mod injector;
+pub mod mlock;
+pub mod rotator;
+pub mod secure_buffer;
 pub mod taint;
 pub mod vault;
-pub mod injector;
 
-pub use taint::{TaintedString, TaintCategory};
-pub use vault::Vault;
+pub use column_cipher::{ColumnCipher, ColumnCipherError};
+pub use crypto::{decrypt, derive_key, encrypt};
 pub use injector::{inject_str, inject_value, KeyInjector};
+pub use mlock::{is_mlock_available, mlock, munlock, MlockError};
+pub use rotator::{Rotator, RotationError, RotationReport};
+pub use secure_buffer::{SecureBuffer, SecureBufferError};
+pub use taint::{TaintCategory, TaintedString};
+pub use vault::Vault;
 
 #[cfg(test)]
 mod tests {

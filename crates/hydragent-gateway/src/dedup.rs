@@ -15,11 +15,16 @@ impl Deduplicator {
         }
     }
 
-    pub fn is_duplicate(&self, channel_id: &str, user_id: &str, content: &str) -> bool {
+    pub fn is_duplicate(&self, channel_id: &str, user_id: &str, content: &str, request_id: &str) -> bool {
         let mut hasher = Sha256::new();
         hasher.update(channel_id.as_bytes());
         hasher.update(user_id.as_bytes());
         hasher.update(content.as_bytes());
+        // Include the per-request UUID so two distinct requests with
+        // identical (channel, user, content) are NOT treated as replays
+        // of each other. Only a true *replay* of the *same* JSON-RPC
+        // request id within the window will be deduped.
+        hasher.update(request_id.as_bytes());
         let hash: [u8; 32] = hasher.finalize().into();
 
         let mut cache = self.cache.lock().unwrap();
@@ -43,18 +48,26 @@ mod tests {
     #[test]
     fn test_deduplicator() {
         let dedup = Deduplicator::new(2);
-        
+
         // First message should not be a duplicate
-        assert!(!dedup.is_duplicate("chan1", "user1", "hello"));
-        
-        // Immediate second message with same content should be a duplicate
-        assert!(dedup.is_duplicate("chan1", "user1", "hello"));
-        
+        assert!(!dedup.is_duplicate("chan1", "user1", "hello", "req-1"));
+
+        // Same (channel, user, content) AND same request_id within the
+        // 30s window = a true replay = duplicate.
+        assert!(dedup.is_duplicate("chan1", "user1", "hello", "req-1"));
+
         // Different user same content should not be duplicate
-        assert!(!dedup.is_duplicate("chan1", "user2", "hello"));
-        
+        assert!(!dedup.is_duplicate("chan1", "user2", "hello", "req-2"));
+
         // Different content same user should not be duplicate
-        assert!(!dedup.is_duplicate("chan1", "user1", "world"));
+        assert!(!dedup.is_duplicate("chan1", "user1", "world", "req-3"));
+
+        // Regression: identical text but a *different* request id must
+        // NOT be dropped. (The previous version dropped this and
+        // caused the bus client to replay the previous Hydra response
+        // when the user sent a second turn with new text — because the
+        // dedup was the only place that could silently drop a frame.)
+        assert!(!dedup.is_duplicate("chan1", "user1", "hello", "req-4"));
     }
 }
 

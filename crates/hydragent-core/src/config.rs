@@ -95,7 +95,16 @@ impl AppConfig {
             .add_source(Environment::default())
             .build()?;
 
-        builder.try_deserialize()
+        let mut config: AppConfig = builder.try_deserialize()?;
+        let data_dir_path = std::path::PathBuf::from(&config.data_dir);
+        if data_dir_path.is_relative() {
+            config.data_dir = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join(data_dir_path)
+                .to_string_lossy()
+                .to_string();
+        }
+        Ok(config)
     }
 
     /// Effective base URL of the live brain. Applies the OpenRouter

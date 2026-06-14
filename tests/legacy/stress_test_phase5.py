@@ -44,7 +44,7 @@ Usage
     #
     # Optional flags:
     #   --skip-build    Don't re-run cargo build (use cached binaries)
-    #   --keep-artifacts Keep the sample spec/report JSONs in ./scratch/
+    #   --keep-artifacts Keep the sample spec/report JSONs in target/stress_test_artifacts/
 
 Exit code: 0 on full success, 1 on any failure.
 """
@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import List, Optional
 
 REPO = Path(__file__).resolve().parent.parent
-SCRATCH = REPO / "scratch"
+SCRATCH = REPO / "target" / "stress_test_artifacts"
 TARGET_DEBUG = REPO / "target" / "debug"
 SWARM_STATUS = TARGET_DEBUG / "swarm_status.exe"
 
@@ -300,7 +300,7 @@ SAMPLE_REPORT = {
 
 
 def write_sample_artifacts(keep: bool) -> tuple[Path, Path]:
-    """Write the sample spec and report JSONs to scratch/."""
+    """Write the sample spec and report JSONs to target/stress_test_artifacts/."""
     SCRATCH.mkdir(exist_ok=True)
     spec_path = SCRATCH / "phase5_sample_dag.json"
     report_path = SCRATCH / "phase5_sample_report.json"
@@ -322,7 +322,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--skip-build", action="store_true",
                         help="Don't re-run cargo build (use cached binaries)")
     parser.add_argument("--keep-artifacts", action="store_true",
-                        help="Keep the sample spec/report JSONs in ./scratch/")
+                        help="Keep the sample spec/report JSONs in target/stress_test_artifacts/")
     parser.add_argument("--no-color", action="store_true",
                         help="Disable ANSI colors in output")
     args = parser.parse_args(argv)
@@ -470,7 +470,7 @@ if __name__ == "__main__":
         rc = main()
     finally:
         # Best-effort cleanup of the sample artifacts unless the user
-        # asked to keep them. The script writes to scratch/ which is
+        # asked to keep them. The script writes to target/stress_test_artifacts/ which is
         # already in .gitignore.
         if "--keep-artifacts" not in sys.argv:
             for p in (SCRATCH / "phase5_sample_dag.json",

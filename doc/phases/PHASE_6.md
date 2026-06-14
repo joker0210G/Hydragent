@@ -13,6 +13,10 @@
 > - Files referenced by this doc that are not in the tree: `crates/hydragent-security/`, `data/audit/chain.db`, `config/security/policy.yaml`, `config/security/injection_patterns.yaml`.
 > - **Schedule note:** Phase 3 Week 14 (Docker sandbox + audit log) was deferred. The Merkle audit chain that the original Week 14 stub promised is also deferred and is now a Phase 6 deliverable.
 
+> ## 📌 Post-MVP Decision — 2026-06-14
+>
+> **Track 6.5 (SQLCipher at-rest encryption) is deferred to post-MVP** for the MVP release. Column-AES inside `hydragent-vault` (Track 6.4) already protects the secrets; the remaining SQLite databases (`data/memory/`, `data/audit/`, `data/sessions/`) will remain plaintext on disk until a post-MVP hardening pass. G6 (SQLCipher at-rest) is dropped from the MVP goal set; G1–G5 and G7–G9 are unchanged. The intent in §3.5 (SQLCipher vs. application-level AES) and Week 26 (Mon) of the schedule below remain as the design record for the post-MVP implementation.
+
 ---
 
 ## 📋 Table of Contents

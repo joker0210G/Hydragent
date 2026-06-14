@@ -1,0 +1,27 @@
+[package]
+name = "hydragent-security"
+version = "0.1.0"
+edition = "2021"
+description = "Phase 6: 16-layer security pipeline — Merkle audit chain, Ed25519 signing, taint tracking, prompt injection guard, SGNL continuous authorization."
+
+[dependencies]
+hydragent-types = { path = "../hydragent-types" }
+
+tokio       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sqlx        = { workspace = true }
+sha2        = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex         = { workspace = true }
+zeroize     = { workspace = true }
+rand        = { workspace = true }
+anyhow      = { workspace = true }
+thiserror   = "1"
+tracing     = { workspace = true }
+uuid        = { workspace = true }
+chrono      = { workspace = true }
+async-trait = { workspace = true }
+serde_yaml  = { workspace = true }
+regex       = { workspace = true }
+dashmap     = { workspace = true }

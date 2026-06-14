@@ -15,4 +15,7 @@ anyhow = { workspace = true }
 hydragent-types = { path = "../hydragent-types" }
 hydragent-memory = { path = "../hydragent-memory" }
 uuid = { workspace = true }
+hydragent-security = { path = "../hydragent-security" }
+hydragent-vault = { path = "../hydragent-vault" }
+hydragent-skills = { path = "../hydragent-skills" }
 

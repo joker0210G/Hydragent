@@ -1,0 +1,9 @@
+datasets>=2.14
+transformers>=4.36
+peft>=0.7
+accelerate>=0.24
+torch>=2.1
+wandb>=0.16
+tqdm>=4.66
+pyyaml>=6.0
+typer>=0.9

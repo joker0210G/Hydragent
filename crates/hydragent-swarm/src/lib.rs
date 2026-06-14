@@ -16,7 +16,7 @@
 //! The goal of Track 5.1 is to prove the runtime path. The LLM call itself
 //! is a one-shot `chat_stream`/non-streaming call followed by a single
 //! tool-loop; a full ReAct loop per sub-agent is reserved for Track 5.3
-//! (DAG Execution Engine). See `TODO_PHASE5.md` for context.
+//! (DAG Execution Engine). See `doc/archive/phases/PHASE_5_FINAL_REPORT.md` for context.
 
 // Module-level doc lints disabled at the crate level; per-module docs
 // live at the top of each file and are linked from the `pub use` list.

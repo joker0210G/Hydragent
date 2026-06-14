@@ -1,0 +1,53 @@
+# Builtin skill 2 of 3
+# Tier: active
+# Tags: github,summary,text
+# Required tools: echo, web_fetch (optional, for live issues)
+
+id: "skill-builtin-gh-issue-summary"
+name: "summarize-github-issue"
+version: 1
+description: "Summarize a GitHub issue into a one-paragraph TL;DR, a bullet list of acceptance criteria, and an estimated effort. Designed for triage workflows."
+tier: "active"
+capability_tags:
+  - github
+  - summary
+  - text
+  - triage
+params:
+  - name: "title"
+    type: "string"
+    description: "The issue title."
+    required: true
+  - name: "body"
+    type: "string"
+    description: "The issue body in markdown. May be empty."
+    required: false
+  - name: "labels"
+    type: "string"
+    description: "Comma-separated list of issue labels."
+    required: false
+prompt_template: |
+  You are triaging a GitHub issue. Produce a structured summary.
+
+  Issue title: {{title}}
+  Labels: {{labels}}
+
+  Issue body:
+  ```
+  {{body}}
+  ```
+
+  Output the following sections in this order:
+  1. **TL;DR** (1-2 sentences)
+  2. **Acceptance criteria** (bullets, derived from the body)
+  3. **Estimated effort** (XS / S / M / L / XL with a 1-sentence rationale)
+  4. **Risks** (bullets)
+required_tools:
+  - echo
+success_examples:
+  - "Title: 'Login fails on Safari' -> TL;DR mentions session cookie scope and Safari ITP."
+author: "builtin"
+created_at: 1700000000000
+last_updated: 1700000000000
+success_rate: 0.0
+execution_count: 0

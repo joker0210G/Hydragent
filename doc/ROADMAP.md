@@ -82,7 +82,7 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 **Theme**: Build the memU-style memory file-system and QwenPaw ReMe compaction pipeline.
 
 > **Code status for Phase 2** (updated 2026-06-12, after stress-test sweep):
-> Stress test is **GREEN 21/21** — see [`TODO_PHASE2.md`](TODO_PHASE2.md) for the full
+> Stress test is **GREEN 21/21** — see [`PHASE_2_FINAL_REPORT.md`](archive/phases/PHASE_2_FINAL_REPORT.md) for the full
 > report. Several original doc claims do not match the code; see the
 > divergence note below and the per-section banners in
 > [`doc/phases/PHASE_2.md`](phases/PHASE_2.md).
@@ -122,7 +122,7 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 | Dreaming pipeline | ⚠️ Scaffolded; gated by `enable_dreaming=true` (default); consolidation logic minimal |
 | ReMe context split | ❌ Not implemented |
 | Memory CLI | ✅ `hydragent memory list` + `clear` (subcommand at `main.rs:805-815`) |
-| `memory_store` / `memory_search` / `memory_forget` tools | ✅ Live; bus RPC `memory.search` added 2026-06-12 (see `TODO_PHASE2.md` Bug 1) |
+| `memory_store` / `memory_search` / `memory_forget` tools | ✅ Live; bus RPC `memory.search` added 2026-06-12 (see `doc/archive/phases/PHASE_2_FINAL_REPORT.md` Bug 1) |
 | LRU eviction | ❌ Documented SQL in §5.10 but not wired into runtime |
 | `benches/retrieval_benchmark.rs` | ❌ Not present |
 

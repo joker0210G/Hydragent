@@ -20,6 +20,8 @@ hydragent-gateway = { path = "../hydragent-gateway" }
 hydragent-scheduler = { path = "../hydragent-scheduler" }
 hydragent-planner = { path = "../hydragent-planner" }
 hydragent-swarm  = { path = "../hydragent-swarm" }
+hydragent-security = { path = "../hydragent-security" }
+hydragent-skills  = { path = "../hydragent-skills" }
 tokio            = { workspace = true }
 clap             = { workspace = true }
 tracing          = { workspace = true }
@@ -35,6 +37,10 @@ uuid             = { workspace = true }
 sqlx             = { workspace = true }
 petgraph         = { workspace = true }
 rpassword        = "7.3"
+
+[dev-dependencies]
+tempfile         = "3"
+tokio            = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 
 

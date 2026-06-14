@@ -1,0 +1,30 @@
+{"id": "GS0001", "query": "how do I turn rows into nested json", "relevant": ["convert-csv-to-json"]}
+{"id": "GS0002", "query": "make my json pretty with tabs", "relevant": ["format-json"]}
+{"id": "GS0003", "query": "rust E0502 cannot borrow as mutable", "relevant": ["debug-rust-error"]}
+{"id": "GS0004", "query": "split this huge rust function into smaller ones", "relevant": ["refactor-rust-function"]}
+{"id": "GS0005", "query": "summarize the bug report I pasted", "relevant": ["summarize-github-issue"]}
+{"id": "GS0006", "query": "tldr this api reference doc", "relevant": ["summarize-doc"]}
+{"id": "GS0007", "query": "find users who have not logged in for 30 days sql", "relevant": ["write-sql-query"]}
+{"id": "GS0008", "query": "give me unit tests for my python function", "relevant": ["generate-test-cases"]}
+{"id": "GS0009", "query": "pull every email from this text", "relevant": ["extract-emails"]}
+{"id": "GS0010", "query": "translate the english ui into french", "relevant": ["translate-text"]}
+{"id": "GS0011", "query": "convert and pretty print the json output of this csv", "relevant": ["convert-csv-to-json", "format-json"]}
+{"id": "GS0012", "query": "extract emails from this csv and reformat as json", "relevant": ["extract-emails", "convert-csv-to-json"]}
+{"id": "GS0013", "query": "tldr this github issue and the related design doc", "relevant": ["summarize-github-issue", "summarize-doc"]}
+{"id": "GS0014", "query": "refactor this rust function and write tests for it", "relevant": ["refactor-rust-function", "generate-test-cases"]}
+{"id": "GS0015", "query": "debug this rust compile error and refactor the function", "relevant": ["debug-rust-error", "refactor-rust-function"]}
+{"id": "GS0016", "query": "sql query that pulls all emails from users table", "relevant": ["write-sql-query", "extract-emails"]}
+{"id": "GS0017", "query": "translate this doc and summarize it", "relevant": ["translate-text", "summarize-doc"]}
+{"id": "GS0018", "query": "convert csv to json and run unit tests", "relevant": ["convert-csv-to-json", "generate-test-cases"]}
+{"id": "GS0019", "query": "translate and extract emails from this foreign text", "relevant": ["translate-text", "extract-emails"]}
+{"id": "GS0020", "query": "csv to json and from there to sql insert", "relevant": ["convert-csv-to-json", "write-sql-query"]}
+{"id": "GS0021", "query": "format this json and then summarize its contents", "relevant": ["format-json", "summarize-doc"]}
+{"id": "GS0022", "query": "translate the doc and extract entities", "relevant": ["translate-text", "extract-emails"]}
+{"id": "GS0023", "query": "format json output of csv before saving", "relevant": ["format-json", "convert-csv-to-json"]}
+{"id": "GS0024", "query": "summarize the github issue and write tests", "relevant": ["summarize-github-issue", "generate-test-cases"]}
+{"id": "GS0025", "query": "translate and format the json response", "relevant": ["translate-text", "format-json"]}
+{"id": "GS0026", "query": "refactor rust code, debug, then add unit tests", "relevant": ["refactor-rust-function", "debug-rust-error", "generate-test-cases"]}
+{"id": "GS0027", "query": "translate, summarize, and extract entities from this page", "relevant": ["translate-text", "summarize-doc", "extract-emails"]}
+{"id": "GS0028", "query": "please fix this for me", "relevant": ["debug-rust-error", "refactor-rust-function", "generate-test-cases"]}
+{"id": "GS0029", "query": "can you clean this up", "relevant": ["refactor-rust-function", "format-json", "generate-test-cases"]}
+{"id": "GS0030", "query": "help me figure this out", "relevant": ["debug-rust-error", "summarize-doc", "refactor-rust-function"]}

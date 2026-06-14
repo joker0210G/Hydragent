@@ -463,3 +463,50 @@
 - The user writes in a formal, direct, and task-oriented style without casual filler or emoji.
 - User asks brief, direct questions with minimal framing or pleasantries.
 - The user writes in concise, direct phrasing without greetings or pleasantries.
+- The user writes entirely in lowercase.
+- The user communicates using short, direct imperative commands without unnecessary detail or pleasantries.
+- The user communicates in concise, direct, lowercase messages without unnecessary punctuation.
+- The user writes in lowercase, short, and direct messages with no greetings or pleasantries.
+- The user embeds the exact text under inspection directly inline within their query using quotation marks.
+- The user writes entirely in lowercase without capitalizing the first letter of sentences.
+- The user uses the prefix 'remember:' to issue explicit memory storage instructions to the assistant.
+- The user phrases requests in a polite, formal manner, typically beginning with 'Please'.
+- The user specifies the exact query or action type they want the agent to perform, indicating a preference for precise, task-oriented instructions.
+- The user uses the keyword prefix 'remember:' to introduce facts they want stored for later reference.
+- The user writes in lowercase with a casual, conversational tone.
+- The user sends short, direct messages without filler or greeting.
+- The user uses imperative phrasing for requests, such as 'Please check...and tell me...'.
+- The user prefers concise, brief responses over verbose explanations.
+
+
+# User Operational Preferences (tool routing)
+- The user prefers that the agent reach for the most specific tool for a known source: use `agent_reach.jina_fetch` for a URL, `agent_reach.youtube` for a YouTube URL, `agent_reach.bilibili` for a Bilibili URL, `agent_reach.github` for a GitHub path, `agent_reach.rss` for feeds, and `agent_reach.doctor` to verify availability.
+- The user does not want a generic web search → curl loop on a known URL; that pattern has hung the agent on DuckDuckGo in the past.
+- If a chosen tool returns a network/timeout error, the user is fine with one retry on a different channel, but not with a long generic-web-search fallback unless explicitly requested.
+- The user communicates using direct imperative commands with explicit constraints.
+- The user writes in lowercase and uses British spelling, such as 'colour' instead of 'color'.
+- User issues terse, imperative-style task requests without additional context or pleasantries.
+- The user writes in lowercase with no terminal punctuation on interrogative sentences.
+- The user writes in lowercase without capitalizing sentence starts.
+- The user uses double quotes to delimit example or probe text inputs.
+- The user communicates in short, direct requests without pleasantries.
+- The user writes in all lowercase without terminal punctuation.
+- The user asks brief, direct questions.
+- The user communicates in a terse, command-line style with lowercase text and no punctuation, resembling a tool invocation syntax.
+- The user issues terse, imperative commands without punctuation or pleasantries.
+- The agent uses a ⚠️ emoji as a visible alert prefix when flagging prompt injection attempts.
+- The agent structures security-flag responses with a warning header, a 'why' section using bold bullet points, and a 'What I'm happy to do instead' redirect section.
+- The agent uses ### markdown subheaders and horizontal rules (---) to organize longer security responses.
+- The agent ends flagged-response replies with an open redirect question such as 'What's the real task?'.
+- The user communicates in short, direct requests without extraneous context or pleasantries.
+- The user uses structured task framing (e.g., 'Summarize a GitHub issue:', 'Help me debug:') to specify the expected action.
+- User communicates using very terse, command-like keywords (e.g., 'list_skills') without surrounding context or explanation.
+- The user asks brief, direct questions without additional context or elaboration.
+- The user communicates using short, direct imperative commands without pleasantries.
+- The user uses concise, imperative-style requests without additional context or pleasantries.
+- The user communicates using short, direct imperative commands without pleasantries, filler words, or extra context.
+- The user writes in lowercase with brief, direct phrasing and ends with a single question mark, avoiding unnecessary capitalization or politeness markers.
+- User wraps argument values in double quotes when invoking skills or commands.
+- User writes skill/command invocations entirely in lowercase (e.g., 'run debug-rust-error on "..."').
+- The user communicates in very terse, command-line-style messages, often phrasing requests as 'use [tool] on: [input]'.
+- The user communicates in a terse, minimalist style with very short prompts, and the assistant mirrors this by responding with brief, direct requests.

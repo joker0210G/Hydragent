@@ -67,9 +67,16 @@ impl Vault {
         let plaintext = decrypt(ciphertext, &key, &nonce)
             .context("Failed to decrypt vault. Incorrect passphrase?")?;
 
-        let secrets: HashMap<String, TaintedString> = bincode::deserialize(&plaintext)
+        // On-disk format is `HashMap<String, String>` (the raw, encrypted
+        // secrets). We re-wrap each value in `TaintedString::credential`
+        // on load because anything that came off our own disk is by
+        // definition a secret.
+        let raw: HashMap<String, String> = bincode::deserialize(&plaintext)
             .context("Failed to deserialize secrets map")?;
-
+        let secrets: HashMap<String, TaintedString> = raw
+            .into_iter()
+            .map(|(k, v)| (k, TaintedString::credential(v)))
+            .collect();
         Ok(secrets)
     }
 
@@ -83,7 +90,15 @@ impl Vault {
         rand::thread_rng().fill_bytes(&mut salt);
         rand::thread_rng().fill_bytes(&mut nonce);
 
-        let plaintext = bincode::serialize(secrets).context("Failed to serialize secrets")?;
+        // Convert `TaintedString` -> raw `String` for storage. The
+        // taint system blocks general `Serialize` of Credential-tainted
+        // values, but the vault is the *intended* storage path for
+        // credentials, so it authoritatively reads the inner value.
+        let raw: HashMap<String, String> = secrets
+            .iter()
+            .map(|(k, v)| (k.clone(), v.expose_secret().to_string()))
+            .collect();
+        let plaintext = bincode::serialize(&raw).context("Failed to serialize secrets")?;
         let key = derive_key(passphrase, &salt)?;
         let ciphertext = encrypt(&plaintext, &key, &nonce)?;
 

@@ -14,6 +14,9 @@ members = [
     "crates/hydragent-scheduler",
     "crates/hydragent-planner",
     "crates/hydragent-swarm",
+    "crates/hydragent-security",
+    "crates/hydragent-skills",
+    "crates/hydragent-bench",
 ]
 
 [workspace.dependencies]
@@ -53,3 +56,19 @@ petgraph       = "0.6"    # DAG top-sort for swarm runner
 
 # Stochastic selection (Track 5.4 — SelfHealingReplanner)
 rand           = "0.8"
+
+# Phase 6: Security pipeline (Track 6.1 — Merkle + Ed25519)
+ed25519-dalek  = { version = "2", features = ["std", "zeroize", "rand_core"] }
+hex            = "0.4"
+zeroize        = { version = "1.7", features = ["derive"] }
+
+# Phase 6 / Track 6.2: Taint sink policy loader
+serde_yaml     = "0.9"
+
+# Phase 6 / Track 6.3: Prompt injection guard + SGNL auth
+regex          = "1"
+dashmap        = "6"
+
+# Phase 6 / Track 6.4: Column-AES (AES-256-GCM) + HKDF
+aes-gcm        = "0.10"
+hkdf           = "0.12"

@@ -52,3 +52,32 @@ logs/
 # Diagnostic stdout captures from manual `cargo build` / `cargo test` runs
 out*.txt
 out_*.txt
+
+# Diagnostic dumps accidentally written into target/ during build/test
+# sessions (kept here for reference, even though target/ is already
+# fully gitignored — prevents re-tracking if target/ is ever un-ignored).
+target/build-*.log
+target/build-*.err
+target/build-*.out
+target/build-*.txt
+target/test-*.err
+target/test-*.out
+target/test-*.log
+target/check-*.err
+target/check-*.out
+target/sec-*.txt
+target/sec-*.err
+target/skills_*.txt
+target/agent_reach_*.log
+target/agent_reach_*.bin
+target/runner_doctor_*.bin
+target/debug_smoke.txt
+target/ss*.txt
+target/ss*.err*
+target/tc*.txt
+target/tc*.err*
+target/*.bat
+target/*.ps1
+target/test_data/
+target/tmp/
+target/agent_reach_source/

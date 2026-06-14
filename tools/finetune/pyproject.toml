@@ -1,0 +1,27 @@
+[project]
+name = "hydra-finetune"
+version = "0.1.0"
+description = "LoRA fine-tuning pipeline for the Hydra agent (skill retriever / trajectory formatter)."
+requires-python = ">=3.10"
+dependencies = [
+    "datasets>=2.14",
+    "transformers>=4.36",
+    "peft>=0.7",
+    "accelerate>=0.24",
+    "torch>=2.1",
+    "wandb>=0.16",
+    "tqdm>=4.66",
+    "pyyaml>=6.0",
+    "typer>=0.9",
+]
+
+[project.scripts]
+hydra-generate-dataset = "generate_dataset:main"
+hydra-train-lora = "train_lora:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["generate_dataset", "train_lora"]

@@ -1,0 +1,153 @@
+# Phase 6 / Track 6.3 — Prompt-injection pattern library
+#
+# This file is the *source of truth* for the patterns the input
+# sanitizer matches against. Each entry has:
+#
+#   id          Stable identifier (e.g. "IP001"). Used in audit events
+#               and the SGNL engine's risk counters; never localised.
+#   description One-line human description of the attack class.
+#   regex       The matching regex. Use (?i) for case-insensitive,
+#               and (?x) for verbose mode (whitespace ignored, # comments).
+#   severity    low | medium | high | critical
+#
+# The schema is versioned. Bump `version` when adding or removing
+# fields in a backward-incompatible way; the loader rejects versions
+# higher than `InputSanitizer::SUPPORTED_VERSION` (currently implicit 1).
+#
+# Ship this file as `config/security/injection_patterns.yaml` (not the
+# `.example`) to override the hardcoded patterns used in tests. If
+# the file is missing or fails to parse, the embedded test fixture
+# (see sanitizer.rs) is used and a warning is logged.
+#
+# At least 20 patterns are shipped — the test suite asserts that
+# every loaded pattern is non-empty and compiles.
+
+version: 1
+
+patterns:
+  # ---- Direct instruction override (5 patterns) ----
+  - id: "IP001"
+    description: "ignore previous instructions"
+    regex: '(?i)\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions?|prompts?|rules?)\b'
+    severity: critical
+
+  - id: "IP002"
+    description: "DAN / jailbreak persona"
+    regex: '(?i)\byou\s+are\s+now\s+(?:DAN|do\s+anything\s+now|jailbroken|unfiltered)\b'
+    severity: critical
+
+  - id: "IP003"
+    description: "system prompt extraction"
+    regex: '(?i)\b(?:repeat|reveal|show|print|leak)\s+(?:your|the)\s+system\s+prompt\b'
+    severity: high
+
+  - id: "IP004"
+    description: "delimiter escape (ChatML / Llama-2 / Anthropic / system tokens)"
+    regex: '</s>|\[/INST\]|###\s*(?:END|STOP|HUMAN|SYSTEM|USER|ASSISTANT)\b|<\|endoftext\|>|\[SYSTEM\]'
+    severity: high
+
+  - id: "IP005"
+    description: "credential exfiltration"
+    regex: '(?i)\b(?:send|email|upload|post|exfiltrate|leak)\s+[^\n]{0,40}\b(?:api[_\s-]?keys?|tokens?|passwords?|secrets?|credentials?)\b'
+    severity: critical
+
+  # ---- Encoding / obfuscation (3 patterns) ----
+  - id: "IP006"
+    description: "base64-encoded override attempt"
+    regex: '(?i)\bbase64[_\s-]?decode\s*[:=]?\s*[A-Za-z0-9+/]{32,}={0,2}'
+    severity: high
+
+  - id: "IP007"
+    description: "nested prompt injection (markdown fake system block)"
+    regex: '(?is)#{1,3}\s*system\s*:.*\b(?:you\s+must|ignore|override|forget)\b'
+    severity: high
+
+  - id: "IP008"
+    description: "token-stuffing filler (100+ spaces, 50+ dots/dashes/equals)"
+    regex: ' {100,}|\.{50,}|={50,}|-{50,}'
+    severity: medium
+
+  # ---- Roleplay / authority hijack (3 patterns) ----
+  - id: "IP009"
+    description: "JAILBREAK keyword"
+    regex: '(?i)\bJAILBREAK\b'
+    severity: high
+
+  - id: "IP010"
+    description: "developer / god / debug mode claim"
+    regex: '(?i)\b(?:developer|debug|admin|god|sudo|root)\s+mode\s+(?:enabled|activated|on)\b'
+    severity: critical
+
+  - id: "IP011"
+    description: "forget everything directive"
+    regex: '(?i)\bforget\s+(?:everything|all)\s+(?:you\s+)?(?:know|learned|were\s+told)\b'
+    severity: critical
+
+  # ---- Indirect / tool-output injection (3 patterns) ----
+  - id: "IP012"
+    description: "fake tool output instruction"
+    regex: '(?is)\{\s*"role"\s*:\s*"system"\s*,\s*"content"\s*:.*"ignore[^"]*"'
+    severity: high
+
+  - id: "IP013"
+    description: "web content 'IMPORTANT INSTRUCTIONS' injection"
+    regex: '(?is)IMPORTANT\s+INSTRUCTIONS?\s*:.*\bignore\s+(?:all\s+)?(?:previous|prior)\b'
+    severity: high
+
+  - id: "IP014"
+    description: "markdown image with prompt in alt text (tracking pixel exfil)"
+    regex: '!\[[^\]]*\]\(https?://[^\s)]*(?:\?|&)[A-Za-z0-9_]+=(?:[A-Za-z0-9+/]{20,}|%[0-9A-Fa-f]{2})'
+    severity: medium
+
+  # ---- Tool / function-call abuse (3 patterns) ----
+  - id: "IP015"
+    description: "tool-call instruction in user content"
+    regex: '(?is)\btool_call\s*[:=]\s*\{.*"name"\s*:\s*"(?:shell_exec|rm|curl|wget)"'
+    severity: critical
+
+  - id: "IP016"
+    description: "pretend previous tool result contained creds"
+    regex: '(?is)the\s+previous\s+tool\s+(?:output|result)\s+contained\s+(?:a\s+)?(?:password|key|token)'
+    severity: high
+
+  - id: "IP017"
+    description: "json-injection attack on function schema"
+    regex: '"type"\s*:\s*"object"\s*,\s*"properties"\s*:\s*\{\s*"[^"]*"\s*:\s*\{\s*"enum"\s*:\s*\[\s*"(?:ignore|delete|format|rm)[^"]*"'
+    severity: high
+
+  # ---- Compliance / safety-bypass pretexts (3 patterns) ----
+  - id: "IP018"
+    description: "policy override pretext (academic / research / test)"
+    regex: '(?i)\bfor\s+(?:academic|research|educational|test|red[_\s-]?team)\s+purposes?\s+only[^\n]{0,80}(?:ignore|bypass|disable|override)\b'
+    severity: high
+
+  - id: "IP019"
+    description: "fake 'end of conversation' to reset context"
+    regex: '(?i)\bend\s+of\s+(?:conversation|chat|context|input)\b.{0,40}\bstart\s+new\s+(?:conversation|chat|context)\b'
+    severity: medium
+
+  - id: "IP020"
+    description: "ascii-art delimiter fence trying to break out"
+    regex: '(?m)^\s*[+\-|=]{40,}\s*$'
+    severity: low
+
+  # ---- Additional hardening (4 patterns to reach 24) ----
+  - id: "IP021"
+    description: "translation as exfiltration pretext"
+    regex: '(?i)\btranslate\s+(?:the\s+following|this)\s+(?:into|to)\s+[a-z]+\s*:.*\b(?:api[_\s-]?key|password|token)\b'
+    severity: high
+
+  - id: "IP022"
+    description: "role override via 'act as'"
+    regex: '(?i)\bact\s+as\s+(?:a\s+)?(?:system\s+)?(?:admin|root|developer|hacker|attacker)\b'
+    severity: high
+
+  - id: "IP023"
+    description: "zero-width / homoglyph flood (common invisible chars)"
+    regex: '[\u{200B}\u{200C}\u{200D}\u{FEFF}]{20,}'
+    severity: medium
+
+  - id: "IP024"
+    description: "explicit 'do not tell the user' directive"
+    regex: '(?i)\b(?:do\s+not|don[''\u2019]t)\s+(?:mention|tell|inform|alert|notify)\s+the\s+user\b'
+    severity: high
