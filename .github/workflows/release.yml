@@ -1,0 +1,195 @@
+name: release
+
+# =============================================================================
+# Hydragent release pipeline
+# -----------------------------------------------------------------------------
+# Triggered by pushing a tag that starts with "v" (e.g. v0.7.3).
+#
+# For every supported target triple, this workflow:
+#   1. Builds release binaries for the hydragent-core crate.
+#   2. Packages them as a zip (Windows) or tar.gz (Unix).
+#   3. Attaches them to the GitHub Release that triggered the run.
+#
+# The naming convention is fixed and must match what install.ps1 / install.sh
+# look for at runtime:
+#
+#     hydragent-<version>-<triple>.zip          (Windows)
+#     hydragent-<version>-<triple>.tar.gz       (Linux / macOS)
+#
+# Where <version> is the tag with the leading "v" stripped (so v0.7.3 -> 0.7.3)
+# and <triple> is a Rust target triple (e.g. x86_64-pc-windows-msvc).
+#
+# To create a release:
+#
+#     git tag v0.7.3
+#     git push origin v0.7.3
+#
+# The first run creates the release, subsequent runs (if you re-push the same
+# tag with --force) replace the assets.
+# =============================================================================
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # required to create the release + upload assets
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows MSVC (native, runs on windows-latest)
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+            binary: hydragent.exe
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+            binary: hydragent.exe
+            rust_target_args: --target aarch64-pc-windows-msvc
+          # Linux glibc (native, runs on ubuntu-latest)
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            binary: hydragent
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            binary: hydragent
+            rust_target_args: --target aarch64-unknown-linux-gnu
+          # Linux musl (cross-compile from ubuntu via rustup target)
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            binary: hydragent
+            rust_target_args: --target x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            binary: hydragent
+            rust_target_args: --target aarch64-unknown-linux-musl
+          # macOS (GitHub provides intel + arm64 native runners)
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+            binary: hydragent
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+            binary: hydragent
+            rust_target_args: --target aarch64-apple-darwin
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target_args }}
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hydragent-core -> target
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p hydragent-core ${{ matrix.rust_target_args }}
+
+      - name: Locate built binary
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          TRIPLE="${{ matrix.target }}"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            BIN="target/release/${{ matrix.binary }}"
+            [ -f "$BIN" ] || BIN="target/$TRIPLE/release/${{ matrix.binary }}"
+          else
+            BIN="target/release/${{ matrix.binary }}"
+            [ -f "$BIN" ] || BIN="target/$TRIPLE/release/${{ matrix.binary }}"
+          fi
+          [ -f "$BIN" ] || { echo "::error::Binary not found at $BIN"; exit 1; }
+          echo "bin=$BIN" >> "$GITHUB_OUTPUT"
+
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"        # strip leading "v"
+          TRIPLE="${{ matrix.target }}"
+          ARCHIVE="${{ matrix.archive }}"
+          BINARY="${{ steps.locate.outputs.bin }}"
+          OUT="hydragent-${VERSION}-${TRIPLE}.${ARCHIVE}"
+
+          mkdir -p staging
+          cp "$BINARY" staging/hydragent$([ "${{ matrix.os }}" = "windows-latest" ] && echo .exe || true)
+          # Include a one-line README so the archive isn't a mystery
+          cat > staging/README.txt <<EOF
+          Hydragent $VERSION for $TRIPLE
+          -----------------------------
+          Run:    ./hydragent serve
+          Help:   ./hydragent --help
+          Status: ./hydragent status
+          EOF
+
+          if [ "$ARCHIVE" = "zip" ]; then
+            (cd staging && 7z a "../$OUT" . >/dev/null) || \
+            (cd staging && zip -r "../$OUT" . >/dev/null)
+          else
+            tar -C staging -czf "$OUT" .
+          fi
+
+          echo "asset=$OUT" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Built asset::$(pwd)/$OUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hydragent-${{ matrix.target }}
+          path: hydragent-*-${{ matrix.target }}.*
+
+      - name: Download all build artifacts (for combined release)
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: hydragent-*
+          merge-multiple: true
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: hydragent-*
+          merge-multiple: true
+
+      - name: Show downloaded assets
+        run: ls -la dist
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hydragent — install in one command</title>
+<meta name="description" content="Privacy-first AI agent runtime. One-command install. No telemetry, no cloud account required.">
+<style>
+  :root {
+    --bg: #0d1117;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-2: #79c0ff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --border: #30363d;
+    --code-bg: #161b22;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "Helvetica Neue", Arial, sans-serif;
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 48px 24px 96px;
+  }
+  h1 { font-size: 2.4rem; line-height: 1.15; margin: 0 0 8px; }
+  h2 { font-size: 1.4rem; margin: 48px 0 12px; padding-top: 8px;
+       border-top: 1px solid var(--border); }
+  p  { margin: 0 0 16px; }
+  .tagline { color: var(--muted); font-size: 1.1rem; margin: 0 0 32px; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font: 14px/1.5 ui-monospace, SFMono-Regular, "Cascadia Mono",
+          Menlo, Consolas, monospace;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, "Cascadia Mono",
+                  Menlo, Consolas, monospace; }
+  pre code { color: var(--accent-2); }
+  p code, li code { background: var(--code-bg); padding: 2px 6px;
+                   border-radius: 4px; color: var(--accent-2);
+                   font-size: 0.92em; }
+  .install {
+    background: linear-gradient(180deg, #0d1117 0%, #161b22 100%);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin: 24px 0;
+  }
+  .install h2 { margin: 0 0 16px; padding: 0; border: none; font-size: 1.1rem;
+                color: var(--muted); text-transform: uppercase;
+                letter-spacing: 0.08em; }
+  .install .row { margin: 12px 0; }
+  .install .label { display: block; font-size: 0.85rem; color: var(--muted);
+                    margin-bottom: 6px; }
+  .install pre { margin: 0; padding: 12px 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul { padding-left: 24px; }
+  li { margin: 4px 0; }
+  .badges { margin: 8px 0 32px; }
+  .badges a { margin-right: 8px; }
+  footer { margin-top: 64px; color: var(--muted); font-size: 0.9rem; }
+  .copy-hint { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #ffffff; --fg: #1f2328; --muted: #59636e;
+            --accent: #0969da; --accent-2: #0550ae; --border: #d1d9e0;
+            --code-bg: #f6f8fa; }
+    .install { background: linear-gradient(180deg, #f6f8fa 0%, #ffffff 100%); }
+  }
+</style>
+</head>
+<body>
+
+<h1>Hydragent</h1>
+<p class="tagline">
+  Privacy-first AI agent runtime. Runs on your machine, your data stays on your machine.
+  No telemetry, no cloud account required.
+</p>
+
+<div class="install">
+  <h2>Install in one command</h2>
+
+  <div class="row">
+    <span class="label">Windows (PowerShell 5.1+ / 7+)</span>
+    <pre><code>irm https://hydragent.dev/install.ps1 | iex</code></pre>
+    <p class="copy-hint">
+      Or: open PowerShell, paste the line above, press Enter. That's it.
+    </p>
+  </div>
+
+  <div class="row">
+    <span class="label">macOS / Linux (bash / zsh)</span>
+    <pre><code>curl -fsSL https://hydragent.dev/install.sh | sh</code></pre>
+  </div>
+
+  <p style="color: var(--muted); font-size: 0.92em; margin-top: 16px;">
+    The installer downloads a prebuilt binary, drops a <code>hydragent</code>
+    command on your PATH, and launches the first-run onboarding wizard.
+    Re-run the same command any time to update.
+  </p>
+</div>
+
+<h2>What you get</h2>
+<ul>
+  <li><code>hydragent serve</code> &mdash; start the agent runtime</li>
+  <li><code>hydragent chat</code> &mdash; interactive REPL</li>
+  <li><code>hydragent status</code> / <code>hydragent ps</code> &mdash; inspect state</li>
+  <li><code>hydragent stop [pid]</code> &mdash; shut down gracefully</li>
+  <li><code>hydragent onboard</code> &mdash; re-run the first-run wizard</li>
+</ul>
+
+<h2>Privacy by default</h2>
+<ul>
+  <li>All state, memory, and logs are stored locally in
+      <code>~/.hydragent/</code>.</li>
+  <li>No outbound telemetry, no phone-home, no auto-update beacon.</li>
+  <li>You choose which model provider to talk to &mdash; local Ollama,
+      OpenRouter, OpenAI, Anthropic, or a custom endpoint.</li>
+</ul>
+
+<h2>Links</h2>
+<ul>
+  <li><a href="https://github.com/your-org/hydragent">Source on GitHub</a></li>
+  <li><a href="https://github.com/your-org/hydragent/blob/main/INSTALL.md">Full install guide (flags, offline, troubleshooting, uninstall)</a></li>
+  <li><a href="https://github.com/your-org/hydragent/blob/main/doc/ARCHITECTURE.md">Architecture</a></li>
+  <li><a href="https://github.com/your-org/hydragent/releases">Releases</a></li>
+</ul>
+
+<footer>
+  Hydragent &mdash; built by humans, run by you.
+</footer>
+
+</body>
+</html>

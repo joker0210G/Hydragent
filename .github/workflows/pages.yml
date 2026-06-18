@@ -1,0 +1,81 @@
+name: pages
+
+# =============================================================================
+# Hydragent GitHub Pages deployment
+# -----------------------------------------------------------------------------
+# Publishes the one-command installer scripts and a tiny landing page to the
+# repo's GitHub Pages site on every push to main. This is what serves:
+#
+#     https://<org>.github.io/hydragent/install.ps1
+#     https://<org>.github.io/hydragent/install.sh
+#     https://<org>.github.io/hydragent/
+#
+# Those URLs are the "no custom domain needed" install path. If you later
+# point hydragent.dev (or any other domain) at the GitHub Pages site via a
+# CNAME, the same URLs also work as https://hydragent.dev/install.ps1.
+#
+# Workflow:
+#   1. Build a `site/` directory containing the canonical install scripts
+#      from the repo root plus a minimal index.html.
+#   2. Add a CNAME file if a custom domain is configured (see site/CNAME).
+#   3. Deploy site/ to the gh-pages branch using peaceiris/actions-gh-pages.
+# =============================================================================
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'install.ps1'
+      - 'install.sh'
+      - 'docs/index.html'
+      - 'docs/CNAME'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: deploy GitHub Pages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stage install scripts
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          cp install.ps1 site/install.ps1
+          cp install.sh  site/install.sh
+          chmod +x site/install.sh
+
+      - name: Stage landing page
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          cp docs/index.html site/index.html
+          if [ -f docs/CNAME ]; then
+            cp docs/CNAME site/CNAME
+            echo "::notice title=Custom domain::$(cat docs/CNAME)"
+          fi
+
+      - name: Show staged files
+        run: ls -la site
+
+      - name: Deploy to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          publish_branch: gh-pages
+          keep_files: false
+          force_orphan: true
+          user_name: github-actions[bot]
+          user_email: github-actions[bot]@users.noreply.github.com
+          commit_message: 'docs(pages): publish installer scripts and landing page'
