@@ -42,7 +42,7 @@ doc/archive/
     └── RELEASE_NOTES_v0.6.0.md          # Locked Memory
 ```
 
-The current release notes ([`RELEASE_NOTES_v0.7.0.md`](RELEASE_NOTES_v0.7.0.md)) and the
+The current release notes ([`RELEASE_NOTES_v0.7.0.md`](../releases/RELEASE_NOTES_v0.7.0.md)) and the
 most-recent phase retrospective ([`PHASE_7_COMPLETION_SUMMARY.md`](PHASE_7_COMPLETION_SUMMARY.md))
 stay at the root for visibility.
 

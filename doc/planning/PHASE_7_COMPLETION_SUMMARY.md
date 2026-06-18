@@ -82,7 +82,7 @@ Pre-existing baseline (post 0.6.1): 542 passing
 - `tests/bench/golden_set_v1.jsonl`
 - `tools/finetune/{pyproject.toml,requirements.txt,generate_dataset.py,train_lora.py,evaluate_model.py,README.md}`
 - `reports/bench-v0.7.0.json`
-- `RELEASE_NOTES_v0.7.0.md`
+- `../releases/RELEASE_NOTES_v0.7.0.md`
 - `PHASE_7_COMPLETION_SUMMARY.md` (this file)
 
 **Modified:**

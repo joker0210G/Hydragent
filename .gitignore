@@ -49,6 +49,9 @@ Thumbs.db
 logs/
 *.pid
 
+# Scratch & transient dev artifacts (installer-test sandbox, one-off helpers)
+scratch/
+
 # Diagnostic stdout captures from manual `cargo build` / `cargo test` runs
 out*.txt
 out_*.txt
