@@ -87,12 +87,12 @@ OpenClaw. Paste, run, done.
 
 **Windows (PowerShell 5.1+ / 7+):**
 ```powershell
-irm https://hydragent.dev/install.ps1 | iex
+irm https://joker0210G.github.io/Hydragent/install.ps1 | iex
 ```
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://hydragent.dev/install.sh | sh
+curl -fsSL https://joker0210G.github.io/Hydragent/install.sh | sh
 ```
 
 What you get:
@@ -121,7 +121,7 @@ hydragent chat            # interactive REPL
 ### 🛠 For contributors (build from source)
 
 ```bash
-git clone https://github.com/your-org/hydragent.git
+git clone https://github.com/joker0210G/Hydragent.git
 cd hydragent
 cargo build --release -p hydragent-core
 ./target/release/hydragent onboard       # 🐣 guided setup wizard
@@ -309,7 +309,7 @@ For the full technical specification, interface contracts, and API schemas → *
 ### TL;DR (Windows, 4 commands)
 
 ```powershell
-git clone https://github.com/your-org/hydragent.git
+git clone https://github.com/joker0210G/Hydragent.git
 cd hydragent
 .\Hydragent.cmd install      # one-time: Rust + MinGW + build
 .\Hydragent.cmd onboard      # guided .env wizard

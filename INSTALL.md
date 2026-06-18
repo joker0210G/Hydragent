@@ -5,10 +5,10 @@ OpenClaw experience. Paste one line, get a working `hydragent` install.
 
 > **Maintainers / Forks:** all URLs in the install scripts are derived from
 > a single `-Repo` parameter / `HYDRAGENT_REPO` env var (default:
-> `your-org/hydragent`). To repoint the installer at your own GitHub
-> organisation, do a single find-and-replace of `your-org` to your real
-> org. See the [Repointing the installer]((#repointing-the-installer))
-> section below for details.
+> `joker0210G/Hydragent`). To repoint the installer at your own GitHub
+> organisation, pass `-Repo your-org/your-repo` (PowerShell) or set
+> `HYDRAGENT_REPO=your-org/your-repo` (bash). See the
+> [Repointing the installer]((#repointing-the-installer)) section below.
 
 ---
 
@@ -17,18 +17,18 @@ OpenClaw experience. Paste one line, get a working `hydragent` install.
 ### Windows (PowerShell 5.1 or PowerShell 7+)
 
 ```powershell
-irm https://hydragent.dev/install.ps1 | iex
+irm https://joker0210G.github.io/Hydragent/install.ps1 | iex
 ```
 
 > PowerShell alias mapping:
 > `irm` = `Invoke-RestMethod` · `iex` = `Invoke-Expression`
 > On Windows PowerShell 5.1 you can also use:
-> `iwr -useb https://hydragent.dev/install.ps1 | iex`
+> `iwr -useb https://joker0210G.github.io/Hydragent/install.ps1 | iex`
 
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://hydragent.dev/install.sh | sh
+curl -fsSL https://joker0210G.github.io/Hydragent/install.sh | sh
 ```
 
 That's the entire install. The script:
@@ -67,7 +67,7 @@ hydragent serve         # starts the gateway in the foreground
 PowerShell session. You can inspect it first:
 
 ```powershell
-irm https://hydragent.dev/install.ps1 | Out-File install.ps1
+irm https://joker0210G.github.io/Hydragent/install.ps1 | Out-File install.ps1
 Get-Content install.ps1       # read it
 .\install.ps1                 # run it
 ```
@@ -88,7 +88,7 @@ Both forms behave identically. Same for `curl ... | sh` — use `curl -fsSL
 | `-Force`        | _off_              | Overwrite an existing installation.                                 |
 | `-Version`      | `latest`           | Pin a release tag (e.g. `v0.7.2`).                                  |
 | `-InstallRoot`  | `%USERPROFILE%\.hydragent` | Override the install directory.                            |
-| `-Repo`         | `your-org/hydragent` | GitHub `owner/repo` for source fallback / forks.                  |
+| `-Repo`         | `joker0210G/Hydragent` | GitHub `owner/repo` for source fallback / forks.                  |
 | `-Quiet`        | _off_              | Suppress the colored banner (useful for CI logs).                   |
 
 ### `install.sh` environment variables
@@ -97,7 +97,7 @@ Both forms behave identically. Same for `curl ... | sh` — use `curl -fsSL
 | ------------------------ | ------------------ | ------------------------------------------------------ |
 | `HYDRAGENT_VERSION`      | `latest`           | Pin a release tag (e.g. `v0.7.2`).                     |
 | `HYDRAGENT_INSTALL_ROOT` | `$HOME/.hydragent` | Override the install directory.                        |
-| `HYDRAGENT_REPO`         | `your-org/hydragent` | GitHub `owner/repo` for source fallback / forks.     |
+| `HYDRAGENT_REPO`         | `joker0210G/Hydragent` | GitHub `owner/repo` for source fallback / forks.     |
 | `HYDRAGENT_SOURCE=1`     | _off_              | Force a from-source build.                             |
 | `HYDRAGENT_FORCE=1`      | _off_              | Overwrite an existing installation.                    |
 | `HYDRAGENT_SKIP_ONBOARD=1` | _off_            | Don't run `hydragent onboard` at the end.              |
@@ -163,11 +163,11 @@ The installer is idempotent. Re-running it updates an existing install in
 place (unless you pass `-Force` / `HYDRAGENT_FORCE=1`):
 
 ```powershell
-irm https://hydragent.dev/install.ps1 | iex
+irm https://joker0210G.github.io/Hydragent/install.ps1 | iex
 ```
 
 ```bash
-curl -fsSL https://hydragent.dev/install.sh | sh
+curl -fsSL https://joker0210G.github.io/Hydragent/install.sh | sh
 ```
 
 This is the recommended upgrade path — it picks up the latest binary and
@@ -183,8 +183,8 @@ If the host has no internet access, you have two options:
 
 ```bash
 # On a connected machine
-git clone https://github.com/your-org/hydragent.git
-cd hydragent
+git clone https://github.com/joker0210G/Hydragent.git
+cd Hydragent
 cargo build --release -p hydragent-core
 # Copy target/release/hydragent.exe (or `hydragent`) to the offline host.
 ```
@@ -225,7 +225,7 @@ execution policy:
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
-Then re-run `irm https://hydragent.dev/install.ps1 | iex`.
+Then re-run `irm https://joker0210G.github.io/Hydragent/install.ps1 | iex`.
 
 ### "cargo: command not found" after install
 
@@ -278,7 +278,7 @@ tree, so a single `rm -rf` is a complete uninstall.
 ## How the install chain works end-to-end
 
 For a brand-new user to actually be able to run
-`irm https://hydragent.dev/install.ps1 | iex` and end up with a working
+`irm https://joker0210G.github.io/Hydragent/install.ps1 | iex` and end up with a working
 `hydragent`, four pieces have to be in place. Two are in this repo, two
 are in your GitHub repo / domain:
 
@@ -311,14 +311,15 @@ publishes `install.ps1`, `install.sh`, and `docs/index.html` to the
 `gh-pages` branch on every push to `main`. Once GitHub Pages is enabled
 in the repo settings, those files are reachable at:
 
-- `https://<org>.github.io/hydragent/install.ps1`
-- `https://<org>.github.io/hydragent/install.sh`
-- `https://<org>.github.io/hydragent/` (landing page)
+- `https://joker0210G.github.io/Hydragent/install.ps1`
+- `https://joker0210G.github.io/Hydragent/install.sh`
+- `https://joker0210G.github.io/Hydragent/` (landing page)
 
 That gives you a **working `*|iex` one-liner with no custom domain**.
-If you then point `hydragent.dev` at `<org>.github.io` via a CNAME and
-add `docs/CNAME` containing `hydragent.dev`, the **exact same URLs also
-work at `https://hydragent.dev/install.ps1`**.
+If you later point a custom domain (e.g. `hydragent.dev`) at
+`joker0210G.github.io` via a CNAME and add `docs/CNAME` containing the
+bare domain, the **exact same URLs also work at the custom domain**
+(e.g. `https://hydragent.dev/install.ps1`).
 
 ### To cut a release
 
@@ -328,7 +329,7 @@ git push origin v0.7.3
 ```
 
 GitHub Actions does the rest. Within ~10 minutes the release appears at
-`https://github.com/<org>/hydragent/releases/tag/v0.7.3` with all 8
+`https://github.com/joker0210G/Hydragent/releases/tag/v0.7.3` with all 8
 archives attached.
 
 ### To enable GitHub Pages
@@ -338,10 +339,10 @@ Deploy from a branch → Branch: `gh-pages` / `/ (root)`**. The pages
 workflow takes care of populating the `gh-pages` branch — you just have
 to switch Pages on once.
 
-### To set up a custom domain (optional)
+### To set up a custom domain (optional, future)
 
-1. Buy `hydragent.dev` (or whatever you want).
-2. Add a CNAME record: `hydragent.dev -> <org>.github.io.`
+1. Buy a domain (e.g. `hydragent.dev`) from any registrar.
+2. Add a CNAME record: `<your-domain> -> joker0210G.github.io.`
 3. Create `docs/CNAME` in this repo containing the bare domain
    (e.g. `hydragent.dev`). The pages workflow will publish it.
 4. In GitHub Pages settings, enter the custom domain and enable HTTPS
@@ -352,17 +353,17 @@ to switch Pages on once.
 ## Repointing the installer (for forks / private mirrors)
 
 All URLs in the install scripts are derived from a single `-Repo`
-parameter / `HYDRAGENT_REPO` env var. Default: `your-org/hydragent`.
+parameter / `HYDRAGENT_REPO` env var. Default: `joker0210G/Hydragent`.
 
 To repoint for your fork:
 
 ```powershell
-irm https://hydragent.dev/install.ps1 | iex -Repo myorg/my-hydragent
+irm https://joker0210G.github.io/Hydragent/install.ps1 | iex -Repo myorg/my-hydragent
 ```
 
 ```bash
 HYDRAGENT_REPO=myorg/my-hydragent \
-    curl -fsSL https://hydragent.dev/install.sh | sh
+    curl -fsSL https://joker0210G.github.io/Hydragent/install.sh | sh
 ```
 
 This single parameter drives:
@@ -373,7 +374,7 @@ This single parameter drives:
 
 If you're hosting a permanent fork and want the URL in the scripts
 themselves to point at your org, do a single find-and-replace of the
-literal `your-org` in:
+literal `joker0210G` (the GitHub org) in:
 
 - `install.ps1`   (1 occurrence — the `-Repo` default)
 - `install.sh`    (1 occurrence — the `REPO=` default)

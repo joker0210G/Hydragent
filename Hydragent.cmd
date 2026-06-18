@@ -86,10 +86,10 @@ REM these identifiers live; flip them in one place to repoint.
 if not exist "%HYDRAGENT_INSTALLER%" (
     echo [Hydragent] install.ps1 not present locally. Downloading...
     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        "try { Invoke-WebRequest -UseBasicParsing -Uri 'https://your-org.github.io/hydragent/install.ps1' -OutFile '%HYDRAGENT_INSTALLER%' } catch { try { Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/your-org/hydragent/main/install.ps1' -OutFile '%HYDRAGENT_INSTALLER%' } catch { exit 1 } }"
+        "try { Invoke-WebRequest -UseBasicParsing -Uri 'https://joker0210G.github.io/Hydragent/install.ps1' -OutFile '%HYDRAGENT_INSTALLER%' } catch { try { Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/joker0210G/Hydragent/main/install.ps1' -OutFile '%HYDRAGENT_INSTALLER%' } catch { exit 1 } }"
     if errorlevel 1 (
         echo [Hydragent] ERROR: Could not download install.ps1.
-        echo [Hydragent] Please clone the repo and run: git clone https://github.com/your-org/hydragent ^&^& cd hydragent ^&^& Hydragent.cmd install
+        echo [Hydragent] Please clone the repo and run: git clone https://github.com/joker0210G/Hydragent ^&^& cd Hydragent ^&^& Hydragent.cmd install
         exit /b 1
     )
 )

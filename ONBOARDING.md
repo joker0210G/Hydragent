@@ -62,8 +62,8 @@ PATH requirements (after install): `C:\Users\<you>\.cargo\bin` and
 ### Step 1 — Clone, build, install (one shot)
 
 ```powershell
-git clone https://github.com/your-org/hydragent.git
-cd hydragent
+git clone https://github.com/joker0210G/Hydragent.git
+cd Hydragent
 .\Hydragent.cmd install
 ```
 

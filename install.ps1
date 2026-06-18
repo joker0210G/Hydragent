@@ -15,7 +15,7 @@
 
     Mirrors the Ollama / OpenClaw one-liner pattern:
 
-        irm https://hydragent.dev/install.ps1 | iex
+        irm https://joker0210G.github.io/Hydragent/install.ps1 | iex
 
     The script is self-contained: it uses only built-in PowerShell
     cmdlets (no external modules, no admin elevation).
@@ -46,28 +46,28 @@
 
 .PARAMETER Repo
     GitHub "owner/repo" used to locate the install script, releases, and
-    (optionally) the source tree. Default: "your-org/hydragent".
+    (optionally) the source tree. Default: "joker0210G/Hydragent".
     Override for forks / private mirrors.
 
     From this single parameter, the installer derives:
-      - The install script URL  : https://<org>.github.io/<repo>/install.ps1
-      - The release downloads   : https://github.com/<org>/<repo>/releases/...
-      - The source clone        : https://github.com/<org>/<repo>.git
+      - The install script URL  : https://joker0210G.github.io/Hydragent/install.ps1
+      - The release downloads   : https://github.com/joker0210G/Hydragent/releases/...
+      - The source clone        : https://github.com/joker0210G/Hydragent.git
 
-    This means swapping "your-org" to your real GitHub org in *one* place
+    This means swapping the default org/repo to your own in *one* place
     is enough to make the one-liner work for your users.
 
 .PARAMETER Quiet
     Suppress the colored banner. Useful for CI logs.
 
 .EXAMPLE
-    irm https://hydragent.dev/install.ps1 | iex
+    irm https://joker0210G.github.io/Hydragent/install.ps1 | iex
 
 .EXAMPLE
-    irm https://hydragent.dev/install.ps1 | iex -SkipOnboard
+    irm https://joker0210G.github.io/Hydragent/install.ps1 | iex -SkipOnboard
 
 .EXAMPLE
-    iwr -useb https://hydragent.dev/install.ps1 | Out-File install.ps1; .\install.ps1 -Source -Force
+    iwr -useb https://joker0210G.github.io/Hydragent/install.ps1 | Out-File install.ps1; .\install.ps1 -Source -Force
 
 .NOTES
     Hydragent installer v1.0.0
@@ -79,7 +79,7 @@ param(
     [switch]$Force,
     [string]$Version = 'latest',
     [string]$InstallRoot = "$env:USERPROFILE\.hydragent",
-    [string]$Repo = 'your-org/hydragent',
+    [string]$Repo = 'joker0210G/Hydragent',
     [switch]$Quiet
 )
 
@@ -97,12 +97,13 @@ $SourceDir    = Join-Path $InstallRoot 'src'
 $LauncherPath = Join-Path $BinDir $LauncherName
 
 # Split $Repo into Org + Name so we can derive all the URLs from it.
-# "your-org/hydragent" -> Org="your-org", Name="hydragent"
+# "joker0210G/Hydragent" -> Org="joker0210G", Name="Hydragent"
 $Org  = ($Repo -split '/')[0]
 $Name = ($Repo -split '/')[1]
 
 # Where the hosted install scripts live (GitHub Pages).
-# hydragent.dev CNAMEs to <Org>.github.io once a custom domain is configured.
+# When a custom domain is configured (docs/CNAME) the same URL works
+# at e.g. https://hydragent.dev/install.ps1.
 $PagesBase    = "https://$Org.github.io/$Name"
 $InstallerUrl = "$PagesBase/install.ps1"
 

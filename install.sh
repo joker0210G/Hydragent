@@ -4,7 +4,7 @@
 #
 # One-command installer mirroring the Ollama / OpenClaw one-liner pattern:
 #
-#     curl -fsSL https://hydragent.dev/install.sh | sh
+#     curl -fsSL https://joker0210G.github.io/Hydragent/install.sh | sh
 #
 # Behaviour:
 #   1. Resolve the latest GitHub release for the detected OS / arch.
@@ -23,7 +23,7 @@ set -euo pipefail
 # ----------------------------------------------------------------------------
 # Config
 # ----------------------------------------------------------------------------
-REPO="${HYDRAGENT_REPO:-your-org/hydragent}"
+REPO="${HYDRAGENT_REPO:-joker0210G/Hydragent}"
 VERSION="${HYDRAGENT_VERSION:-latest}"
 INSTALL_ROOT="${HYDRAGENT_INSTALL_ROOT:-$HOME/.hydragent}"
 BIN_NAME="hydragent"
@@ -37,7 +37,8 @@ ORG="${REPO%%/*}"
 NAME="${REPO##*/}"
 
 # Where the hosted install script lives (GitHub Pages).
-# hydragent.dev CNAMEs to <Org>.github.io once a custom domain is configured.
+# When a custom domain is configured (docs/CNAME) the same URL works
+# at e.g. https://hydragent.dev/install.sh.
 PAGES_BASE="https://$ORG.github.io/$NAME"
 INSTALLER_URL="$PAGES_BASE/install.sh"
 

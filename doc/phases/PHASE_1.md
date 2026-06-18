@@ -865,7 +865,7 @@ impl OpenRouterClient {
         let resp = self.client
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
-            .header("HTTP-Referer", "https://github.com/your-org/hydragent")
+            .header("HTTP-Referer", "https://github.com/joker0210G/Hydragent")
             .header("X-Title", "Hydragent")
             .json(request)
             .send()
@@ -1715,8 +1715,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 cd adapters && uv sync
 
 # ── Clone and configure ────────────────────────────────────────────────────
-git clone https://github.com/your-org/hydragent.git
-cd hydragent
+git clone https://github.com/joker0210G/Hydragent.git
+cd Hydragent
 cp .env.example .env
 # Edit .env: add OPENROUTER_API_KEY
 
