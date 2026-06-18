@@ -1,0 +1,8 @@
+# Marker file for PEP 561.
+# See https://peps.python.org/pep-0561/ for details. With this file
+# in place, type checkers (mypy, pyright) will look at the inline
+# type annotations in the `hydragent_py` package and treat the
+# package as typed. This is what enables:
+#
+#     from hydragent_py import HydraClient
+#     reveal_type(HydraClient)  # mypy knows the full signature

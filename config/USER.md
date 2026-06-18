@@ -510,3 +510,185 @@
 - User writes skill/command invocations entirely in lowercase (e.g., 'run debug-rust-error on "..."').
 - The user communicates in very terse, command-line-style messages, often phrasing requests as 'use [tool] on: [input]'.
 - The user communicates in a terse, minimalist style with very short prompts, and the assistant mirrors this by responding with brief, direct requests.
+- The user occasionally sends extremely terse, single-character or single-word messages with no additional context or punctuation.
+- The user prefers extremely concise and direct requests, often specifying exact output constraints like word counts.
+- The user communicates with terse, imperative instructions that demand strict adherence to formatting constraints.
+- The user communicates with highly precise, exact instructions, specifying exact wording and constraints in a single sentence.
+- The user issues terse, precise output-format directives when they want an exact response, such as demanding a single word with no additional commentary.
+- The user writes terse, command-style instructions with explicit constraints to limit the response.
+- The user gives highly precise, literal instructions specifying exact expected output wording and explicitly forbidding additions or deviations.
+- The user communicates using short, direct imperative instructions with no extraneous text or formatting.
+- The user communicates in short, terse, imperative sentences.
+- The user gives extremely terse, precise commands and expects literal, exact compliance with specified output.
+- The user writes in lowercase without terminal punctuation, such as in the message 'what can you do'.
+- The user writes short, casual, lowercase questions without terminal punctuation (e.g., 'what can you do').
+- The user communicates in very brief, lowercase, casual phrasing without terminal punctuation (e.g., 'what can you do').
+- The user writes in all lowercase with no terminal punctuation, giving messages a terse, command-like feel.
+- The user writes in short, direct, lowercase messages without punctuation at the end.
+- The user writes in all lowercase with minimal punctuation, using question marks only for explicit questions.
+- The user writes messages in lowercase without capitalizing the first letter.
+- The user favors extremely short, direct, command-style messages.
+- The user often adds specific formatting constraints to requests (e.g., limiting response length).
+- The user writes in all lowercase without terminal punctuation, conveying a casual and concise tone.
+- The user prefers extremely brief, direct prompts, often limiting the expected response length (e.g., 'in 2 sentences').
+- User prefers step-by-step walkthroughs when learning or understanding a concept.
+- The user used a tab character as a separator between words instead of a space.
+- The user issues terse, imperative instructions with explicit constraints on output format.
+- The user separates distinct terms with a tab character rather than a space or comma.
+- The user labels individual messages with parenthetical turn markers such as '(turn 1)' to track conversation sequence.
+- The user uses parentheses to label turn numbers in their messages, e.g. '(turn 2)', '(turn 3)'.
+- The user communicates with brief, direct, imperative commands rather than conversational phrasing.
+- The user specifies exact numeric constraints for response length and content volume.
+- The user ends imperative commands with a period to reinforce strict adherence, as in 'No more.'
+- The user issues terse, imperative requests with precise constraints, such as specifying exact sentence counts and limits (e.g., 'in exactly 3 short sentences. No more.').
+- The user uses terminal periods to reinforce strict limits, such as appending 'No more.' to emphasize adherence to constraints.
+- The user communicates in a direct, command-style manner, issuing clear constraints upfront.
+- The user often appends short, emphatic qualifiers such as 'No more' to enforce strict boundaries on responses.
+- The user uses parenthetical turn numbering such as '(turn 2)' to label repeated or sequenced messages.
+- The user uses parenthetical turn counters at the end of messages, e.g. '(turn 10)', '(turn 11)', to track the sequence of repeated prompts.
+- The user tests the assistant by requesting exact string replies with no additional content or commentary.
+- The user frequently sends very short, fragmented messages (single letters, empty messages, or brief greetings).
+- The user separates short words or phrases onto individual lines, e.g., 'hi / there / friend' on separate lines.
+- The user incorporates emojis (🚀🌍 ✅ ❓) into their messages, including in test/stress-test contexts.
+- The user tests or switches between multiple languages in a single conversation (English, Chinese, Arabic).
+- The user prefixes test inputs with descriptive labels followed by a colon, such as 'Mix:'.
+- The user ends certain test inputs with an em-dash followed by a completion word, e.g. '— done'.
+- The user sends very terse, minimal inputs that test specific edge cases rather than full requests.
+- The user embeds zero-width spaces, zero-width joiners, and other invisible Unicode characters into test strings to probe parsing behavior.
+- The user sends extremely long repetitive character strings (e.g. thousands of 'x' characters) as test inputs.
+- The user formats code in fenced code blocks with a language tag (e.g. ```python).
+- The user formats data using Markdown pipe-table syntax.
+- The user appends parenthetical turn labels such as '(turn 1)', '(turn 2)', '(turn 3)' to their messages to explicitly track sequential turns.
+- The user communicates in very short, terse, single-line messages rather than full sentences.
+- The user labels repeated prompts with a parenthetical turn counter, e.g. '(turn 11)'.
+- The user issues very short, literal, and repetitive test-style instructions to probe the agent's compliance.
+- The user specifies 'EXACTLY this string and nothing else' to constrain assistant output to precise string matching.
+- The user labels repeated requests with an incrementing turn counter in parentheses, such as '(turn 12)', '(turn 13)', '(turn 14)', '(turn 15)'.
+- The user communicates in lowercase and uses a casual, abbreviated tone with minimal punctuation.
+- The user frequently uses emojis (👋, 🌍, 🚀, ✅) as informal markers and test signals.
+- The user mixes multiple scripts and languages in a single message, often on the same line with em-dash separators.
+- The user sends terse, minimal messages that often consist only of a raw test payload with no surrounding context or explanation.
+- The user formats code using triple-backtick fenced code blocks.
+- The user labels sequential messages with parenthetical turn counters, such as '(turn 1)' and '(turn 2)', to track conversation position.
+- The user writes the target output in ALL CAPS for emphasis or to make the expected response unambiguous, e.g., 'PONG'.
+- The user appends parenthetical weight/turn markers (e.g., '(w1 t1)') to the end of their messages.
+- The user writes very short, direct task instructions with no additional context or explanation.
+- The user repeats the same or near-identical prompts across consecutive turns.
+- The user appends parenthetical session/turn markers such as (w2 t1), (w2 t2), (w2 t3) to the end of messages to track conversation turns or windows.
+- The user appends parenthetical session or turn markers such as (w0 t1), (w0 t2), (w0 t3) to the end of their messages.
+- The user appends a parenthesized alphanumeric tag (e.g., '(w0 t1)') to the end of each message as a turn or session identifier.
+- The user issues short, literal, repeated test instructions across consecutive turns.
+- The user appends parenthetical tracking tags such as (w1 t1), (w1 t2), (w1 t3) to the end of their messages, likely denoting work/task or trial/turn identifiers.
+- The user uses lowercase, concise, instruction-style messages with no punctuation at the end besides the trailing parenthetical annotation.
+- The user appends parenthetical session markers in the format (w{n} t{n}) to the end of their messages to track turn numbers.
+- The user appends parenthetical session identifiers (e.g., (w2 t1), (w2 t2), (w2 t3)) to the end of their messages.
+- The user increments the turn number sequentially (t1, t2, t3) across consecutive messages within the same session.
+- The user appends parenthetical session or turn identifiers such as (w3 t1), (w3 t2), and (w3 t3) to the end of their messages, using a 'w<number> t<number>' notation convention.
+- The user appends parenthetical tags at the end of messages in a consistent format such as '(w4 t1)', '(w4 t2)', '(w4 t3)', likely indicating work or turn identifiers.
+- The user appends a parenthesized turn counter to their message, formatted as '(turn N)'.
+- The user appends parenthetical session-tracking markers to messages, such as (w4 t1), (w4 t2), (w4 t3), where the second value appears to increment with each turn.
+- The user appends parenthesized turn-marker tags of the form (w5 tN) to their messages, where N increments per turn.
+- The user specifies explicit output formatting constraints such as 'one number per line' for list/counting tasks.
+- The user appends parenthetical metadata tags (e.g., '(w5 t1)', '(w5 t2)', '(w5 t3)') to their messages, likely as test or session identifiers.
+- The user repeats identical instructions verbatim across multiple turns, changing only the parenthetical tag, to verify consistent responses.
+- The user appends parenthetical turn numbering such as (turn 1), (turn 2), etc. to repeated messages.
+- The user uses parenthetical turn numbers (e.g. '(turn 1)', '(turn 2)') appended to their messages to label sequential interactions.
+- The user uses the NATO phonetic alphabet (e.g., ALPHA, BRAVO, CHARLIE) as reference strings in their prompts.
+- The user frequently emphasizes instructions by writing directive words in ALL CAPS (e.g., 'EXACTLY').
+- The user uses a repeated template phrasing 'Reply with EXACTLY this string and nothing else:' when issuing compliance instructions.
+- The user uses parenthetical turn numbering such as (turn 1), (turn 2), etc. to label sequential messages in a session.
+- The user issues instructions in imperative, direct phrasing with emphasis on exactness using all caps for the word 'EXACTLY'.
+- The user frequently uses emojis such as 🚀 🌍 ✅ ❓ mixed inline with short text messages.
+- The user separates short words or phrases using blank lines, for example typing 'hi', then 'there', then 'friend' on separate lines.
+- The user sends minimal exploratory test inputs including empty messages and single characters like 'a'.
+- The user combines multiple languages within a single message, such as mixing Arabic and English (e.g., 'مرحبا بالعالم — hello world').
+- The user frequently uses emojis such as 🚀, 🌍, ✅, and ❓ to punctuate or frame their messages.
+- The user uses em-dashes (—) to separate clauses or phrases in their messages.
+- The user often sends very short or terse messages, sometimes consisting of a single word, letter, or brief phrase.
+- The user sometimes breaks a single thought across multiple lines (e.g., 'hi / there / friend') for stylistic or testing effect.
+- The user mixes multiple languages and scripts within a single message.
+- The user prefixes messages with a category label followed by a colon, such as 'Mix:' to tag the topic or channel of the message.
+- The user uses the word 'done' as a terminal marker to indicate a thought or task is complete.
+- The user frequently mixes multiple scripts and languages (Latin, Chinese, Arabic, Hebrew) within a single greeting or message.
+- The user uses the globe emoji 🌍 as part of multilingual greetings.
+- The user frequently uses multiple line breaks to separate short words or fragments within a single message.
+- The user uses emojis (e.g., 🚀, 🌍, ✅, ❓) to convey tone or test interactions.
+- The user often sends very short or single-word/character messages.
+- The user sends terse, minimal test payloads (often just the adversarial string itself) without explanation, expecting the agent to infer the test category.
+- The user uses multilingual greetings with a globe emoji (🌍) as a friendly opener when starting a new test session.
+- The user chains rapid sequential edge-case tests in short succession, signaling an active stress-test session.
+- The user wraps Python code in fenced code blocks using triple backticks with the 'python' language identifier.
+- The user uses Markdown table syntax to share small data structures.
+- The user submitted a raw SQL injection string without any surrounding commentary or formatting, suggesting a terse, test-oriented input style.
+- The user uses parenthesized turn counters (e.g. '(turn 1)', '(turn 2)') to label sequential messages.
+- The user appends parenthetical session markers such as (w0 t1), (w0 t2) to track turn progression within a session.
+- The user writes very short, direct, imperative commands with no extraneous text.
+- The user appends parenthetical annotation tags to the end of their requests, such as (w2 t1), (w2 t2), and (w2 t3).
+- The user appends short parenthetical tags at the end of messages to label or identify individual tasks (e.g., (w3 t1), (w3 t2), (w3 t3)).
+- The user appends parenthetical session/test markers to the end of their messages, such as '(w4 t1)'.
+- The user uses concise, direct, repeatable prompts with no extraneous context.
+- The user appends parenthetical session/turn markers such as (w1 t1), (w1 t2), and (w1 t3) to the end of their messages.
+- The user writes very short, direct, and repetitive instructions with no greetings, pleasantries, or explanatory context.
+- The user uses parenthetical turn-numbering notation such as '(turn 1)', '(turn 2)' to label sequential messages in a conversation.
+- The user writes requests as short, direct imperative commands specifying exact expected output.
+- The user uses parenthetical annotations in the format '(w[number] t[number])' after their main request, appearing to label test or trial identifiers.
+- The user writes concise, imperative instructions without additional context or pleasantries.
+- The user appends short parenthetical metadata tags to otherwise minimal prompts.
+- The user numbers sequential test turns using parenthetical notation, e.g. '(turn 6)', '(turn 7)', '(turn 8)'.
+- The user issues explicit, literal output-format instructions such as 'Reply with the single word: PONG.'
+- The user frequently annotates their messages with parenthetical turn numbers such as (turn 9), (turn 10), etc., to label consecutive interactions in a sequence.
+- The user uses ALL CAPS for emphasis on key directive words such as EXACTLY.
+- The user uses multiple line breaks to separate short words and phrases in informal greetings, such as 'hi' / 'there' / 'friend' each on their own line.
+- The user frequently gives instructions in the format 'Reply with EXACTLY this string and nothing else:' followed by an uppercase hyphenated string.
+- The user frequently uses emojis to set the tone or frame the message (e.g., 🚀🌍✅❓🌍).
+- The user uses em-dashes (—) as separators or pivots within short, terse messages.
+- The user practices multilingual code-switching, blending several languages within a single short sentence.
+- The user writes very short, minimal messages, often using a single word or brief phrase.
+- The user uses the word 'done' as a termination or completion signal at the end of a task.
+- The user sends terse, minimal test inputs without accompanying explanation or context.
+- The user uses adversarial input patterns — hidden Unicode characters, control bytes, ANSI fragments, and oversized payloads — to probe edge cases.
+- The user submits raw payloads and shell snippets (e.g., '; DROP TABLE users;-- and echo 'hello'') as standalone lines with no surrounding context or framing.
+- The user appends a parenthetical turn counter such as '(turn 1)', '(turn 2)' to label sequential test messages.
+- The user appends parenthetical session/turn identifiers to messages in the format (w1 tN), using 'w' for what appears to be a window or worker identifier and 't' for turn number.
+- The user uses short, direct imperative commands without conversational framing.
+- The user appends parenthetical session or test labels (e.g., (w4 t1)) at the end of their messages, appearing to be tracking repeated trials.
+- The user appends parenthetical metadata tags in the format (w0 tN) to the end of their messages, where the second value increments sequentially across repeated prompts.
+- The user uses parentheses at the end of requests to append short alphanumeric metadata or test-condition labels (e.g., (w2 t1), (w2 t2), (w2 t3)).
+- The user writes prompts as short, imperative commands without punctuation beyond the parenthetical annotation.
+- The user appends parenthetical tracking labels such as '(w3 t1)' to the end of their messages, following a pattern of 'w' (week) and 't' (trial/task) with sequential numeric identifiers.
+- The user uses parenthetical turn-tracking notations such as '(turn 1)' appended after their messages.
+- The user appends parenthetical turn counters, such as '(turn 1)' or '(turn 6)', to their messages to track iteration numbers within a session.
+- The user numbers turns using parenthetical notation such as '(turn 6)' at the end of messages.
+- The user uses parentheses at the end of messages to append short coded annotations, such as '(w5 t1)', following a pattern of the form (letter-number space letter-number).
+- The user appends parenthetical tracking tags in the format (w{n} t{n}) to the end of their messages.
+- The user appends parenthetical metadata tags such as (w3 t1), (w3 t2), (w3 t3) to their prompts to label individual test trials or iterations.
+- The user uses parentheses at the end of messages to append short alphanumeric tags (e.g., (w1 t1), (w1 t2), (w1 t3)).
+- The user appends parenthetical short codes such as '(w0 t1)' to the end of messages, likely as experimental or test parameters.
+- The user writes requests in a terse, imperative style with no extra framing or pleasantries.
+- The user uses the pipe-free format of space-separated key-value pairs inside parentheses, e.g., '(w0 t1)', for metadata tagging.
+- The user labels their messages with parenthetical turn numbers (e.g. '(turn 7)', '(turn 8)') to track sequence in a ping/pong exchange.
+- The user appends parenthetical session identifiers like (w5 t1), (w5 t2), (w5 t3) to their messages to track test iterations.
+- The user annotates messages with parenthetical turn-number markers, e.g., '(turn 15)', to track conversation position.
+- The user uses uppercase words separated by hyphens when specifying exact output strings.
+- The user frequently uses emojis in messages, including 🚀, 🌍, ✅, and ❓.
+- The user often writes very short, fragmented messages (e.g., 'a', 'hi there friend').
+- The user mixes multiple languages within a single message.
+- The user uses the em dash (—) to separate or emphasize phrases in their messages.
+- The user sends terse, minimal test inputs without accompanying context, instructions, or task framing.
+- The user communicates in terse, minimal messages without providing explicit context or instructions, expecting the agent to infer intent.
+- The user appends parenthetical cycle-tracking metadata in the format (cycle msg N) to the end of their messages.
+- The user gives short, direct, imperative instructions without additional context or explanation.
+- The user's message begins with a Unicode byte order mark (BOM) character.
+- The user uses terse, imperative, command-style phrasing with explicit negative constraints.
+- The user writes requests in clear, direct, and concise language with a focus on task specifications.
+- The user wraps slash commands in triple-equals delimiters, e.g. '=== /help ===', to invoke system commands.
+- The user submits very short, isolated text fragments (often single lines) rather than full questions, typically pasting snippets of documentation verbatim.
+- The user does not use punctuation, capitalization, or conversational pleasantries in their messages.
+- The user's fragments preserve ALL CAPS for command names as they appear in the original documentation (e.g., ECHO, ON, OFF).
+- The user writes in a very brief, casual greeting style with no capitalization or punctuation.
+- The user sends terse, ALL-CAPS structured markers (e.g., 'VERIFY FIX 1 RETRY 1') as their entire prompt when conducting consistency or verification tests.
+- The user uses a structured naming convention with key tokens like VERIFY, FIX, and a RETRY counter to encode test intent in a single line.
+- The user communicates in very terse, abbreviated shorthand rather than full sentences.
+- The user keeps opening messages brief and lowercase, as seen in 'hello from paste'.
+- The user writes their messages in ALL CAPS.
+- The user communicates using terse, command-line style syntax with space-separated tokens and numbered references (e.g., 'VERIFY FIX 1 RETRY 1').

@@ -34,7 +34,12 @@ use crate::model_trait::ModelProvider;
 use crate::openrouter::{LLMRequest, ChatMessage};
 use zeroize::Zeroize;
 
-#[derive(Clone, Debug)]
+// `CustomProviderConfig` deliberately does **not** derive `Debug` because it
+// carries the `api_key` bearer token. The manual `Debug` impl below
+// redacts `api_key` with `mask_api_key_for_debug` so that no future
+// `format!("{:?}", cfg)` call site can accidentally leak a secret. (See
+// regression test `custom_provider_config_debug_redacts_api_key`.)
+#[derive(Clone)]
 pub struct CustomProviderConfig {
     /// Base URL of the OpenAI-compatible API, e.g. "https://api.together.xyz/v1"
     pub base_url: String,
@@ -48,6 +53,42 @@ pub struct CustomProviderConfig {
     pub timeout: Duration,
     /// Number of retry attempts on transient failure (429 / 5xx / network)
     pub max_retries: u8,
+}
+
+/// Redact a secret string for log output. Same policy as
+/// `hydragent_core::config::AppConfig::mask_key` — kept local so this
+/// module has no cross-crate dependency for diagnostics.
+fn mask_api_key_for_debug(s: &str) -> String {
+    if s.is_empty() {
+        return "<empty>".to_string();
+    }
+    let n = s.chars().count();
+    if n <= 12 {
+        return format!("<set> ({} chars)", n);
+    }
+    let head: String = s.chars().take(4).collect();
+    let tail_rev: String = s
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{}…{} ({} chars)", head, tail_rev, n)
+}
+
+impl std::fmt::Debug for CustomProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomProviderConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &mask_api_key_for_debug(&self.api_key))
+            .field("default_model", &self.default_model)
+            .field("provider_label", &self.provider_label)
+            .field("timeout", &self.timeout)
+            .field("max_retries", &self.max_retries)
+            .finish()
+    }
 }
 
 impl CustomProviderConfig {
@@ -219,15 +260,18 @@ impl CustomOpenAIClient {
                                         delta.get("content").and_then(|t| t.as_str())
                                     {
                                         full_content.push_str(token);
-                                        // Wrap in a JSON-RPC notification so
-                                        // the bus's newline-framed protocol
-                                        // survives raw newlines in the token.
-                                        let notification = serde_json::json!({
-                                            "jsonrpc": "2.0",
-                                            "method": "response.token",
-                                            "params": { "token": token }
-                                        });
-                                        let _ = tx.send(serde_json::to_string(&notification).unwrap()).await;
+                                        // The `chat_stream` trait contract
+                                        // is `Sender<String>` where each
+                                        // String is a plain token fragment
+                                        // (may contain raw newlines, code
+                                        // spans, etc.). The router / bus
+                                        // adapter is responsible for any
+                                        // wire framing (newline-delimited
+                                        // JSON, length-prefixed, etc.) on
+                                        // the *external* bus connection.
+                                        // On this in-process mpsc channel
+                                        // we send the token as-is.
+                                        let _ = tx.send(token.to_string()).await;
                                     }
                                 }
                                 // Some providers (OpenRouter compatible) also
@@ -239,12 +283,7 @@ impl CustomOpenAIClient {
                                     {
                                         if !token.is_empty() && full_content.is_empty() {
                                             full_content.push_str(token);
-                                            let notification = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "method": "response.token",
-                                                "params": { "token": token }
-                                            });
-                                            let _ = tx.send(serde_json::to_string(&notification).unwrap()).await;
+                                            let _ = tx.send(token.to_string()).await;
                                         }
                                     }
                                 }
@@ -368,5 +407,89 @@ mod tests {
         assert!(s.contains("\"stream\":true"));
         assert!(s.contains("\"max_tokens\":64"));
         assert!(s.contains("\"messages\""));
+    }
+
+    // ── P0: API-key leak prevention ────────────────────────────────────
+    //
+    // Regression: the old code derived `Debug` on `CustomProviderConfig`,
+    // so any `format!("{:?}", cfg)` would print the `api_key` in
+    // plaintext. The manual `Debug` impl above redacts the field. These
+    // tests pin the redaction so a future refactor can't quietly
+    // re-introduce the leak.
+
+    fn cfg_with_realistic_key() -> CustomProviderConfig {
+        CustomProviderConfig {
+            base_url: "https://api.together.xyz/v1".to_string(),
+            // 32-char secret — should be redacted.
+            api_key: "sk-together-ABCDefgh1234567890WXYZabcd".to_string(),
+            default_model: "meta-llama/Llama-3-70b-chat-hf".to_string(),
+            provider_label: "together".to_string(),
+            timeout: Duration::from_secs(60),
+            max_retries: 3,
+        }
+    }
+
+    #[test]
+    fn custom_provider_config_debug_redacts_api_key() {
+        let cfg = cfg_with_realistic_key();
+        let s = format!("{:?}", cfg);
+        // The raw secret must NEVER appear in the Debug output.
+        assert!(
+            !s.contains("sk-together-ABCDefgh1234567890WXYZabcd"),
+            "api_key leaked through Debug! output was: {s}"
+        );
+        // We should see the redaction sentinel.
+        assert!(
+            s.contains("…") && s.contains("chars"),
+            "expected redaction marker (… + chars) in Debug output, got: {s}"
+        );
+    }
+
+    #[test]
+    fn custom_provider_config_debug_handles_empty_key() {
+        let mut cfg = cfg_with_realistic_key();
+        cfg.api_key = String::new();
+        let s = format!("{:?}", cfg);
+        assert!(s.contains("<empty>"), "empty sentinel missing from: {s}");
+    }
+
+    #[test]
+    fn custom_provider_config_debug_handles_short_key() {
+        let mut cfg = cfg_with_realistic_key();
+        cfg.api_key = "short-key".to_string();
+        let s = format!("{:?}", cfg);
+        assert!(
+            !s.contains("short-key"),
+            "short key leaked through Debug! output was: {s}"
+        );
+        assert!(
+            s.contains("<set>") && s.contains("9 chars"),
+            "expected '<set> (9 chars)' redaction, got: {s}"
+        );
+    }
+
+    #[test]
+    fn custom_provider_config_debug_keeps_non_secret_fields_visible() {
+        // Sanity check: base_url / model / label are still visible so
+        // the log line remains useful for debugging.
+        let cfg = cfg_with_realistic_key();
+        let s = format!("{:?}", cfg);
+        assert!(s.contains("https://api.together.xyz/v1"), "base_url missing");
+        assert!(s.contains("meta-llama/Llama-3-70b-chat-hf"), "default_model missing");
+        assert!(s.contains("together"), "provider_label missing");
+        assert!(s.contains("CustomProviderConfig"), "struct name missing");
+    }
+
+    #[test]
+    fn custom_openai_client_debug_does_not_leak() {
+        // `CustomOpenAIClient` itself does not derive `Debug`, but a
+        // user might write `println!("{:?}", client.config)`. Make
+        // sure that round-trip stays redacted.
+        let client = CustomOpenAIClient::new(cfg_with_realistic_key());
+        let s = format!("{:?}", client.config);
+        assert!(
+            !s.contains("sk-together-ABCDefgh1234567890WXYZabcd"),
+            "api_key leaked through client.config Debug! output was: {s}"
+        );
     }
 }

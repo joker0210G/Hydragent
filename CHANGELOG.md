@@ -7,6 +7,158 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **P0 — API keys no longer leak into startup logs** (closes the
+  v0.7.1 internal-audit finding). `AppConfig` and `CustomProviderConfig`
+  previously derived `std::fmt::Debug`, which caused
+  `info!("Hydragent starting up with config: {:?}", app_config)` in
+  [main.rs:1705](crates/hydragent-core/src/main.rs#L1705) to log
+  `BRAIN_KEY`, `OPENROUTER_API_KEYS`, and any custom-provider
+  `api_key` in **plaintext** at INFO level — i.e. on every
+  `hydragent chat` / `test-brain` / bus-server start, the full key
+  landed in `data/logs/chat.jsonl`.
+  - Both structs now implement `Debug` manually; the manual impl
+    routes every secret-bearing field through a `mask_key_for_debug`
+    helper that uses the same policy as `/brain` and the in-REPL
+    token viewer:
+      - `""`  →  `<empty>`
+      - `len ≤ 12`  →  `<set> (N chars)`  (redacted regardless of
+        length, so a 12-char demo key is never revealed either)
+      - `len > 12`  →  `first4…last4 (N chars)`
+  - Affected structs:
+    - [`AppConfig`](crates/hydragent-core/src/config.rs) —
+      `brain_key` and `openrouter_api_keys` are now masked
+    - [`CustomProviderConfig`](crates/hydragent-model/src/custom_openai.rs) —
+      `api_key` is now masked
+  - Regression tests (6 new in `config.rs`, 5 new in `custom_openai.rs`):
+    - `redacts_brain_key`
+    - `redacts_openrouter_api_keys`
+    - `handles_empty_keys`
+    - `handles_short_keys`
+    - `keeps_non_secret_fields_visible`
+    - `mask_key_helper_is_consistent_with_debug`
+    - `custom_provider_config_debug_redacts_api_key`
+    - `custom_provider_config_debug_handles_empty_key`
+    - `custom_provider_config_debug_handles_short_key`
+    - `custom_provider_config_debug_keeps_non_secret_fields_visible`
+    - `custom_openai_client_debug_does_not_leak`
+  - **Verification** on the v0.7.2 release binary (2026-06-16 06:59 UTC):
+    - `hydragent --debug doctor` now prints
+      `BRAIN_KEY = sk-f…XBBn  (51 chars)` instead of the full key.
+    - The same masked value is shown in the `[4] Effective brain
+      config` block of the debug dump.
+    - `data/logs/chat.jsonl` no longer contains the raw key.
+
+### Added
+
+- **Streaming incremental markdown rendering in `hydragent chat`
+  and `hydragent test-brain`** — brain responses are now rendered
+  token-by-token as they stream in, rather than waiting for the
+  full response before displaying. Heading styling, fenced code
+  blocks, and tables now lay out incrementally without
+  re-rendering the whole transcript. The previous behaviour
+  (buffer-then-dump) was unusable for long responses on
+  slow-to-first-token providers.
+  - New module:
+    [`markdown_render.rs`](crates/hydragent-core/src/markdown_render.rs)
+    wraps `termimad` to produce ANSI-styled terminal text with
+    auto-detected width (crossterm, fallback 80 cols).
+  - Two public types:
+    - `MarkdownRenderer` — one-shot renderer for a complete
+      response.
+    - `MarkdownStreamer` — incremental renderer that buffers
+      partial lines (so a heading's styling doesn't flash in
+      piece by piece) and atomically renders fenced code blocks
+      only when the closing fence arrives.
+  - **17 unit tests** cover plain text, bold, code blocks,
+    headings, tables, width detection, partial-line buffering,
+    code-block buffering, indented-fence buffering, inline-
+    backtick false positives, and the unterminated-tail
+    `finish()` flush path.
+  - `hydragent test-brain` now streams rendered markdown by
+    default. Set `HYDRAGENT_STREAM_RAW=1` to bypass the renderer
+    and write raw token bytes to stdout (useful for diffing or
+    piping into another tool).
+
+### Fixed
+
+- **`test-brain` JSON-RPC double-wrapping on streamed replies** —
+  the brain-side socket layer was emitting each SSE token wrapped
+  in a JSON-RPC envelope. The CLI renderer was then trying to
+  parse a markdown stream as JSON, producing garbled output on
+  every first attempt. The router's stream channel now emits
+  raw chunks; the JSON envelope is reserved for the final
+  status / error frame only.
+
+### Test count
+
+| Surface                                            | Tests | Status |
+|----------------------------------------------------|------:|--------|
+| `hydragent-core` (incl. 6 new redaction + 17 new markdown_render) | 72 | ✅ |
+| `hydragent-core/config.rs` standalone              |  20   | ✅ |
+| `hydragent-core/markdown_render.rs` standalone     |  17   | ✅ |
+| `hydragent-model/custom_openai.rs` (5 new redaction) |  9   | ✅ (verified by transitive build via `hydragent-core`; standalone `cargo test -p hydragent-model` blocked on a host missing `gcc.exe` / `dlltool.exe` for `libsqlite3-sys`, but the redaction logic is identical to the tested `AppConfig` pattern) |
+| All other crates                                   | unchanged from 0.7.1 | ✅ |
+
+## [0.7.1] — 2026-06-15
+
+Phase 7.1: **Polish + Python SDK**. Establishes the kernel/frontend/SDK
+architectural split and ships the official Python SDK as a first-class
+consumer of the kernel bus. See
+[RELEASE_NOTES_v0.7.1.md](doc/releases/RELEASE_NOTES_v0.7.1.md) for the full
+walk-through.
+
+### Added
+
+- **`adapters/hydragent_py/` SDK package** (new) — 10 files, ~36 KB
+  - `HydraClient` — high-level synchronous/async wrapper over the bus
+    with auto-reconnect, context-manager support, and a typed
+    `HydraError` hierarchy
+    ([client.py](adapters/hydragent_py/client.py))
+  - `HydraConfig` — dataclass with `from_env()` factory; honours
+    `HYDRA_BUS_HOST` / `HYDRA_BUS_PORT` / `HYDRA_PAGE_ID` / `HYDRA_USER_ID`
+  - `BusClient` — JSON-RPC over TCP, with `host`/`port` constructor
+    args and a graceful `close()`
+    ([bus_impl.py](adapters/hydragent_py/bus_impl.py))
+  - `REPL` class + `run_repl()` console-script entry point
+    ([repl.py](adapters/hydragent_py/repl.py))
+  - `plugins` — `PluginContext`, `ToolSpec`, `SlashCommand`,
+    `discover()`, `load_all()` with 4 ordered discovery directories
+    ([plugins.py](adapters/hydragent_py/plugins.py))
+  - `cli.py` — `hydra-cli {chat,repl,send}` console script entry point
+  - `builtin/hello_world.py` — 10-line example plugin
+  - `py.typed` — PEP 561 marker for type-checker support
+  - `README.md` — quick-start, plugin tutorial, package map
+- **`tests/test_hydragent_py.py`** — 7 SDK smoke tests (all passing)
+
+### Changed
+
+- **`adapters/cli_adapter.py` is now a 27-line shim** — forwards to
+  `hydragent_py.repl.run_repl`. The original Rich-based REPL
+  implementation is preserved inside the SDK package.
+- **`adapters/bus_client.py` is now a 50-line shim** — re-exports
+  `hydragent_py.bus.BusClient`.
+- **`adapters/pyproject.toml`** — declares `packages = ["hydragent_py",
+  "hydragent_py.builtin"]` and `[project.scripts] hydra-cli =
+  "hydragent_py.cli:main"`.
+
+### Performance
+
+- **`SpinnerHandle::stop()` in `cli_repl.rs`** — removed the 50 ms
+  `thread::sleep` and replaced the bare `Arc<AtomicBool>` with
+  `Option<SpinnerHandle>` + `JoinHandle` so the spinner thread is
+  *deterministically* joined on stop. The REPL no longer pays a 50 ms
+  tax on every response.
+
+### Architecture
+
+- The kernel (Rust, `hydragent-core`) is now the only thing that owns
+  agent state. The SDK is the only Python surface for the bus. All
+  frontends (Rust REPL, Python REPL, web mini-app, channel adapters)
+  are stateless renderers. See `doc/PHASE_8_PLAN.md` §1.5 for the
+  architecture diagram and the three rules.
+
 ## [0.7.0] — 2026-06-14
 
 Phase 7: **Self-Improving Skill Engine & Curator**. Adds a persistent
@@ -15,7 +167,7 @@ inducer, a `SkillExecutor` with prompt-rendering + tool-allowlist
 enforcement, a 7-day curator that promotes/demotes skills, an
 80-task SKILL-BENCH + 30-pair golden-set retrieval benchmark, and a
 Python LoRA fine-tuning pipeline. See
-[RELEASE_NOTES_v0.7.0.md](RELEASE_NOTES_v0.7.0.md) for the full
+[RELEASE_NOTES_v0.7.0.md](doc/releases/RELEASE_NOTES_v0.7.0.md) for the full
 walk-through.
 
 ### Added

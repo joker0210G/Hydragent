@@ -13,7 +13,12 @@ pub mod provider_names {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+// `AppConfig` deliberately does **not** derive `Debug` because it carries
+// bearer tokens (brain_key, openrouter_api_keys). The manual `Debug` impl
+// below redacts those fields with `mask_key_for_debug` so that no future
+// `format!("{:?}", cfg)` call site can accidentally leak a secret to the
+// log file. (See regression test `appconfig_debug_redacts_keys`.)
+#[derive(Deserialize, Clone)]
 pub struct AppConfig {
     // ── The "brain" (single live provider) ────────────────────────────
     /// Base URL of the OpenAI-compatible `/v1/chat/completions` endpoint.
@@ -60,6 +65,55 @@ pub struct AppConfig {
     /// rows are deleted. Default 1_000_000 (effectively unbounded for
     /// small tests); lower this in production to bound disk usage.
     pub max_semantic_memories: usize,
+}
+
+/// Redact a secret string for log output.
+///
+/// * `""`           → `<empty>`
+/// * `len <= 12`    → `<set> (N chars)` (still redacted; never reveal
+///                    the raw value, no matter how short)
+/// * `len > 12`     → `first4…last4 (N chars)`
+fn mask_key_for_debug(s: &str) -> String {
+    if s.is_empty() {
+        return "<empty>".to_string();
+    }
+    let n = s.chars().count();
+    if n <= 12 {
+        return format!("<set> ({} chars)", n);
+    }
+    let head: String = s.chars().take(4).collect();
+    let tail_rev: String = s
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{}…{} ({} chars)", head, tail_rev, n)
+}
+
+impl std::fmt::Debug for AppConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppConfig")
+            .field("brain_base", &self.brain_base)
+            .field("brain_key", &mask_key_for_debug(&self.brain_key))
+            .field("brain_model", &self.brain_model)
+            .field("brain_fallbacks", &self.brain_fallbacks)
+            .field("log_format", &self.log_format)
+            .field("log_level", &self.log_level)
+            .field("data_dir", &self.data_dir)
+            .field("max_react_steps", &self.max_react_steps)
+            .field("bus_port", &self.bus_port)
+            .field(
+                "openrouter_api_keys",
+                &mask_key_for_debug(&self.openrouter_api_keys),
+            )
+            .field("enable_dreaming", &self.enable_dreaming)
+            .field("dreaming_interval_sec", &self.dreaming_interval_sec)
+            .field("max_semantic_memories", &self.max_semantic_memories)
+            .finish()
+    }
 }
 
 impl AppConfig {
@@ -136,6 +190,13 @@ impl AppConfig {
         }
     }
 
+    /// Redact a secret value for safe inclusion in logs.
+    /// Public re-export so call sites (e.g. `info!("…{:?}", …)` in
+    /// other modules) can use the same masking policy.
+    pub fn mask_key(s: &str) -> String {
+        mask_key_for_debug(s)
+    }
+
     /// Effective primary model. Falls back to `PRIMARY_MODEL` env for
     /// back-compat, then to a sane default.
     pub fn effective_brain_model(&self) -> String {
@@ -180,6 +241,7 @@ mod tests {
     //! deterministic.
 
     use super::AppConfig;
+    use super::mask_key_for_debug;
 
     fn cfg(
         brain_base: &str,
@@ -314,5 +376,114 @@ mod tests {
         assert_eq!(c.effective_brain_base(), "http://localhost:11434/v1");
         assert_eq!(c.effective_brain_key(), "");
         assert_eq!(c.effective_brain_model(), "llama3.1");
+    }
+
+    // ── P0: API-key leak prevention ────────────────────────────────────
+    //
+    // Regression: the old code derived `Debug` on `AppConfig`, so a single
+    // `info!("starting with {:?}", app_config)` in main.rs printed the
+    // `brain_key` and `openrouter_api_keys` in plaintext to the chat log
+    // (`data/logs/chat.jsonl`). The manual `Debug` impl above redacts
+    // both fields. These tests pin the redaction so a future refactor
+    // can't quietly re-introduce the leak.
+
+    fn cfg_with_realistic_secrets() -> AppConfig {
+        cfg(
+            "https://api.together.xyz/v1",
+            // 32-char secret that should be redacted (longer than the
+            // 12-char threshold, so we should see first-4…last-4 only).
+            "sk-together-ABCDefgh1234567890WXYZabcd",
+            "meta-llama/Llama-3-70b-chat-hf",
+            "openai/gpt-4o-mini",
+            // Legacy multi-key, also 32+ chars. Must also be redacted.
+            "sk-or-v1-aaaaaaaaaaaaaaa, sk-or-v1-bbbbbbbbbbbbbb",
+        )
+    }
+
+    #[test]
+    fn appconfig_debug_redacts_brain_key() {
+        let c = cfg_with_realistic_secrets();
+        let s = format!("{:?}", c);
+        // The raw secret must NEVER appear in the Debug output.
+        assert!(
+            !s.contains("sk-together-ABCDefgh1234567890WXYZabcd"),
+            "brain_key leaked through Debug! output was: {s}"
+        );
+        // We should see the redaction sentinel instead.
+        assert!(
+            s.contains("sk-") && s.contains("…") && s.contains("chars"),
+            "expected redaction marker (… + chars) in Debug output, got: {s}"
+        );
+    }
+
+    #[test]
+    fn appconfig_debug_redacts_openrouter_api_keys() {
+        let c = cfg_with_realistic_secrets();
+        let s = format!("{:?}", c);
+        // Each legacy key prefix should not appear verbatim.
+        assert!(
+            !s.contains("sk-or-v1-aaaaaaaaaaaaaaa"),
+            "openrouter key #1 leaked through Debug! output was: {s}"
+        );
+        assert!(
+            !s.contains("sk-or-v1-bbbbbbbbbbbbbb"),
+            "openrouter key #2 leaked through Debug! output was: {s}"
+        );
+        // And the redaction sentinel should be present.
+        assert!(
+            s.contains("…") && s.contains("chars"),
+            "expected redaction marker in Debug output, got: {s}"
+        );
+    }
+
+    #[test]
+    fn appconfig_debug_handles_empty_keys() {
+        // No secrets set — Debug should still work and the redaction
+        // should print the `<empty>` sentinel.
+        let c = cfg("", "", "", "", "");
+        let s = format!("{:?}", c);
+        assert!(s.contains("<empty>"), "empty sentinel missing from: {s}");
+    }
+
+    #[test]
+    fn appconfig_debug_handles_short_keys() {
+        // A 12-char or shorter key should be redacted with
+        // `<set> (N chars)`, never with the raw value.
+        let c = cfg("", "short-12char", "", "", "");
+        let s = format!("{:?}", c);
+        assert!(
+            !s.contains("short-12char"),
+            "short key leaked through Debug! output was: {s}"
+        );
+        assert!(
+            s.contains("<set>") && s.contains("12 chars"),
+            "expected '<set> (12 chars)' redaction, got: {s}"
+        );
+    }
+
+    #[test]
+    fn appconfig_debug_keeps_non_secret_fields_visible() {
+        // Sanity check: non-secret fields are still visible so the
+        // log line remains useful for debugging.
+        let c = cfg("https://api.openai.com/v1", "", "gpt-4o", "", "");
+        let s = format!("{:?}", c);
+        assert!(s.contains("https://api.openai.com/v1"), "brain_base missing");
+        assert!(s.contains("gpt-4o"), "brain_model missing");
+        assert!(s.contains("AppConfig"), "struct name missing");
+    }
+
+    #[test]
+    fn appconfig_mask_key_helper_is_consistent_with_debug() {
+        // `AppConfig::mask_key` is the public re-export of the same
+        // masking used by Debug. They must agree, otherwise some call
+        // site might be using the wrong policy.
+        let s = "sk-1234567890abcdefABCDEFGH";
+        assert_eq!(
+            AppConfig::mask_key(s),
+            mask_key_for_debug(s),
+            "public mask_key diverges from internal Debug masking"
+        );
+        assert_eq!(AppConfig::mask_key(""), "<empty>");
+        assert_eq!(AppConfig::mask_key("short"), "<set> (5 chars)");
     }
 }

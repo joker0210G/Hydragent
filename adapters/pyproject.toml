@@ -1,11 +1,39 @@
 [project]
 name = "hydragent-adapters"
 version = "0.1.0"
-description = "Channel adapters and CLI runner for Hydragent AI agent"
+description = "Channel adapters, SDK, and CLI frontends for the Hydragent AI agent"
 readme = "README.md"
 requires-python = ">=3.11"
+# Layout (v0.7.1+):
+#
+#   adapters/
+#     hydragent_py/        The official Python SDK (importable as `hydragent_py`)
+#     cli_adapter.py       Backwards-compat shim → hydragent_py.repl.run_repl
+#     bus_client.py        Backwards-compat shim → hydragent_py.bus.BusClient
+#     telegram_adapter.py  Channel adapter (unchanged)
+#     discord_adapter.py   Channel adapter (unchanged)
+#     ...                  Other channel adapters
+#
+# Entry points:
+#
+#   hydra-cli chat        Start the interactive REPL
+#   hydra-cli send "..."  Send a single message and print the reply
+#   python cli_adapter.py Run via the legacy script path
+packages = ["hydragent_py", "hydragent_py.builtin"]
 dependencies = [
     "rich>=13.0.0",
     "httpx>=0.25.0",
     "python-dotenv>=1.0.0",
 ]
+
+[project.scripts]
+# `hydra-cli` is the new official CLI entry point. The legacy
+# `python cli_adapter.py` path still works through the shim.
+hydra-cli = "hydragent_py.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+hydragent_py = ["py.typed"]

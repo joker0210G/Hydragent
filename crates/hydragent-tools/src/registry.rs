@@ -50,6 +50,26 @@ impl ToolRegistry {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    /// Number of registered tools.
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    /// True when no tools are registered.
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+
+    /// Return tool names in deterministic, sorted order. The CLI's
+    /// `/tools` slash command and any external introspection path
+    /// should use this rather than hard-coding the list — that way
+    /// new tools show up automatically as soon as they're registered.
+    pub fn names(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.tools.keys().cloned().collect();
+        out.sort();
+        out
+    }
 }
 impl Default for ToolRegistry {
     fn default() -> Self {

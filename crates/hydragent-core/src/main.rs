@@ -1,17 +1,24 @@
 // crates/hydragent-core/src/main.rs
+pub mod cli_repl;
+pub mod doctor;
+pub mod examples;
+pub mod markdown_render;
+pub mod onboard;
 pub mod orchestrator;
 pub mod react_loop;
 pub mod session;
 pub mod logger;
 pub mod config;
 pub mod dream;
+pub mod status_bar;
 pub mod strategy;
 pub mod swarm_runner;
 pub mod skill_induction;
+pub mod tui_header;
 
 use clap::Parser;
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 use hydragent_memory::SessionStore;
 use hydragent_tools::registry::ToolRegistry;
 use hydragent_tools::echo::EchoTool;
@@ -66,15 +73,31 @@ impl hydragent_tools::tool_trait::Tool for SandboxedTool {
 
 
 #[derive(Parser, Debug)]
-#[command(name = "hydragent", author, version, about = "Hydragent AI Agent core runtime")]
+#[command(
+    name = "hydragent",
+    author,
+    version,
+    about = "Hydragent AI Agent core runtime",
+    long_about = "Hydragent is a privacy-first, model-agnostic AI agent runtime.\n\
+                  Run `hydragent onboard` for a guided first-time setup, or\n\
+                  `hydragent doctor` to diagnose an existing installation.\n\
+                  Run `hydragent chat` for an interactive terminal REPL.\n\
+                  Run `hydragent serve` (or `hydragent` with no subcommand)\n\
+                  to start the gateway — bus + dream worker + tool registry —\n\
+                  so adapters (Telegram, Discord, Slack, CLI, …) can connect.\n\n\
+                  Process management:\n\
+                  \x20 hydragent ps               list running instances\n\
+                  \x20 hydragent stop [pid]        stop one or all instances\n\
+                  \x20 hydragent status            one-shot dashboard"
+)]
 struct Args {
-    /// Resumes or starts a specific chat session by ID
+    /// Resumes or starts a specific chat page by ID
     #[arg(short, long)]
-    session: Option<String>,
+    page: Option<String>,
 
-    /// Lists all past conversation sessions stored in the SQLite database and exits
+    /// Lists all past conversation pages stored in the SQLite database and exits
     #[arg(long)]
-    list_sessions: bool,
+    list_pages: bool,
 
     /// Enable verbose diagnostic output: forces LOG_LEVEL=debug AND prints
     /// a structured dump of every relevant environment variable, the .env
@@ -88,9 +111,75 @@ struct Args {
     command: Option<Commands>,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand, Debug, Clone)]
 enum Commands {
+    /// 🐣 Guided first-time setup (creates .env, picks provider, writes config)
+    #[command(
+        long_about = "Walks you through creating a `.env` file from scratch.\n\
+                      Picks a provider (OpenAI, OpenRouter, Together, Groq,\n\
+                      Ollama, LM Studio, or a custom OpenAI-compatible URL),\n\
+                      prompts for an API key, picks a primary model, and\n\
+                      optionally runs `test-brain` to verify the connection.\n\n\
+                      Non-interactive mode (for CI / scripts):\n\
+                      \x20 hydragent onboard --provider openrouter --api-key $KEY \\\n\
+                      \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20 --model openai/gpt-4o-mini --non-interactive --no-verify"
+    )]
+    Onboard {
+        /// Provider preset: openai, openrouter, together, groq, ollama, lmstudio, custom
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// API key (skip the masked prompt; do not commit secrets in CI logs!)
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// Primary model name (provider-specific)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Run without interactive prompts (requires --provider / --api-key / --model)
+        #[arg(long, short = 'y')]
+        non_interactive: bool,
+
+        /// Skip the live `test-brain` verification step
+        #[arg(long)]
+        no_verify: bool,
+
+        /// Overwrite an existing .env (default: update in place, prompting)
+        #[arg(long)]
+        force: bool,
+    },
+    /// 🩺 Run diagnostic checks and print a colour-coded report
+    #[command(
+        long_about = "Runs ~10 file-based checks (no network) and prints a\n\
+                      green/yellow/red report with a one-line fix hint for\n\
+                      every failure. Exits non-zero only if any check fails."
+    )]
+    Doctor,
+    /// 💬 Start an interactive terminal chat (REPL)
+    #[command(
+        long_about = "Starts a minimal interactive REPL. Wires the same\n\
+                      `run_react_loop` used by the channel adapters so you\n\
+                      can chat from the terminal without the Python CLI\n\
+                      adapter. Type /help inside the REPL for commands."
+    )]
+    Chat,
+    /// 💡 Show example prompts you can paste into `hydragent chat`
+    #[command(
+        long_about = "Prints a small catalogue of starter prompts, each\n\
+                      annotated with the tools it exercises. Useful as a\n\
+                      smoke test after `onboard`."
+    )]
+    Examples {
+        /// Optional substring filter on tool names (e.g. `memory`, `audit`)
+        filter: Option<String>,
+    },
     /// Manage long-term memory
+    #[command(
+        long_about = "Inspect or wipe the long-term memory stored in\n\
+                      `data/sessions.db` (semantic memories only — pages\n\
+                      and turns are managed by the chat adapter)."
+    )]
     Memory {
         #[command(subcommand)]
         action: MemoryAction,
@@ -101,12 +190,25 @@ enum Commands {
         action: EmbedAction,
     },
     /// Manage the encrypted credential vault
+    #[command(
+        long_about = "Create, read, update, delete entries in the encrypted\n\
+                      credential vault at `data/vault/.hydravault`. Requires\n\
+                      `HYDRAGENT_VAULT_PASSPHRASE` (or an interactive prompt)."
+    )]
     Vault {
         #[command(subcommand)]
         action: VaultAction,
     },
-    /// Send a real prompt to the live brain and stream the reply
+    /// 🧠 Send a real prompt to the live brain and stream the reply
     /// (a real-time end-to-end test of the swappable BRAIN_* config)
+    #[command(
+        long_about = "Streams a single prompt through the live brain and\n\
+                      prints the response token-by-token. This is the\n\
+                      quickest way to confirm a freshly pasted key\n\
+                      actually works end-to-end.\n\n\
+                      Example:\n\
+                      \x20 hydragent test-brain \"Reply with exactly: PONG\""
+    )]
     TestBrain {
         /// The prompt to send. Default: a one-liner that asks the model
         /// to introduce itself so you can confirm the brain is wired up.
@@ -118,14 +220,99 @@ enum Commands {
         #[command(subcommand)]
         action: AuditAction,
     },
-    /// Phase 6 user-callable security surface (Tracks 6.1–6.4)
+    /// 🛡 Phase 6 user-callable security surface (Tracks 6.1–6.4)
+    #[command(
+        long_about = "Direct (no-LLM) surface for inspecting and exercising\n\
+                      every Phase 6 feature from the terminal. Mirrors the\n\
+                      LLM-callable tools so you can verify behaviour before\n\
+                      relying on the chat adapter to wire it up.\n\n\
+                      `hydragent security status` is the canonical\n\
+                      \"is everything wired up?\" smoke test."
+    )]
     Security {
         #[command(subcommand)]
         action: SecurityAction,
     },
+    /// 🛰 Start the gateway (bus + dream worker + tool registry)
+    ///
+    /// Explicit alias for the no-subcommand default. Use `hydragent serve`
+    /// in scripts and systemd/Scheduled-Task units where it's clearer that
+    /// the process is a long-running daemon, not an interactive command.
+    #[command(
+        long_about = "Starts the Hydragent gateway and blocks forever.\n\
+                      Identical to running `hydragent` with no subcommand:\n\
+                      opens the event bus on 127.0.0.1:5000, starts the\n\
+                      dream worker, registers every tool, and accepts\n\
+                      connections from channel adapters (Telegram,\n\
+                      Discord, Slack, WebSocket, …).\n\n\
+                      Connection refused? Run `hydragent ps` — another\n\
+                      gateway may already be holding port 5000."
+    )]
+    Serve,
+    /// 📋 List running hydragent instances
+    #[command(
+        long_about = "Lists every hydragent.exe process on this host:\n\
+                      PID, parent PID, start time, uptime, the TCP port\n\
+                      each one holds (default 5000), and the binary path.\n\
+                      Mirrors `ollama ps` and Unix `ps`.\n\n\
+                      Example output:\n\
+                      \x20 PID     PPID    PORT     STARTED              UPTIME    CMD\n\
+                      \x20 11980   1       5000     2026-06-18 10:37:43  4m12s     target\\release\\hydragent.exe serve"
+    )]
+    Ps,
+    /// 🛑 Stop one or all running hydragent instances
+    #[command(
+        long_about = "Sends a kill signal to the named PID (Windows: taskkill /F).\n\
+                      With no PID, stops ALL hydragent instances on this\n\
+                      host. Use `hydragent ps` first to confirm what will\n\
+                      be stopped.\n\n\
+                      Examples:\n\
+                      \x20 hydragent stop             ← stop everything\n\
+                      \x20 hydragent stop 11980       ← stop just PID 11980"
+    )]
+    Stop {
+        /// PID to stop. Omit to stop ALL hydragent instances.
+        pid: Option<u32>,
+    },
+    /// 📊 One-shot dashboard: gateway, brain, storage, active pages
+    #[command(
+        long_about = "Prints a single-screen summary of:\n\
+                      \x20 • Gateway state (port 5000) + PID + uptime\n\
+                      \x20 • Brain model + provider\n\
+                      \x20 • Dream worker state\n\
+                      \x20 • Active chat pages + storage size\n\
+                      Designed as the first thing to run after a fresh\n\
+                      install, and the answer to \"is everything wired up?\"."
+    )]
+    Status,
+    /// 🌙 Manage the memory-consolidation dream cycle
+    #[command(
+        long_about = "Inspect or change the background dream-cycle settings.\n\
+                      Without flags, prints the current state.\n\n\
+                      Examples:\n\
+                      \x20 hydragent dream                   ← show current status\n\
+                      \x20 hydragent dream --enable           ← turn dreaming on\n\
+                      \x20 hydragent dream --disable          ← turn dreaming off\n\
+                      \x20 hydragent dream --interval 300     ← run every 5 minutes\n\
+                      \x20 hydragent dream --enable --interval 120"
+    )]
+    Dream {
+        /// Enable the dream cycle (persists to .env as ENABLE_DREAMING=true)
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+
+        /// Disable the dream cycle (persists to .env as ENABLE_DREAMING=false)
+        #[arg(long, conflicts_with = "enable")]
+        disable: bool,
+
+        /// Set the interval between dream cycles in seconds
+        /// (persists to .env as DREAMING_INTERVAL_SEC=<N>)
+        #[arg(long, value_name = "SECS")]
+        interval: Option<u64>,
+    },
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand, Debug, Clone)]
 enum VaultAction {
     /// Initialize a new encrypted vault
     Init,
@@ -146,7 +333,7 @@ enum VaultAction {
     },
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand, Debug, Clone)]
 enum MemoryAction {
     /// List all stored memories
     List,
@@ -154,7 +341,7 @@ enum MemoryAction {
     Clear,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand, Debug, Clone)]
 enum EmbedAction {
     /// Calculate cosine similarity between two sentences
     Compare {
@@ -163,7 +350,7 @@ enum EmbedAction {
     },
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand, Debug, Clone)]
 enum AuditAction {
     /// List recent audit events (default: oldest first, 20 rows)
     List {
@@ -191,7 +378,7 @@ enum AuditAction {
     },
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand, Debug, Clone)]
 enum SecurityAction {
     /// Show an overview of every Phase 6 subsystem and its current state
     /// (audit chain head, mlock availability, sanitizer pattern count, taint
@@ -274,6 +461,38 @@ patterns:
     regex: '(?i)(?:curl|wget|fetch)\s+https?://[^\s]+'
     description: 'Shell-style outbound exfiltration request'
 "#;
+
+/// Print a friendly welcome banner for first-time users who ran the
+/// binary with no `.env` and no subcommand. Goal: never let the first
+/// `hydragent` invocation crash silently with a config error.
+fn print_first_run_banner() {
+    eprintln!();
+    eprintln!("╔══════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  🐉  Welcome to Hydragent!                                       ║");
+    eprintln!("╚══════════════════════════════════════════════════════════════════╝");
+    eprintln!();
+    eprintln!("  It looks like this is your first time here — no `.env` file was");
+    eprintln!("  found in the current directory. Let's fix that.");
+    eprintln!();
+    eprintln!("  Quickest path:");
+    eprintln!();
+    eprintln!("     hydragent onboard          ← guided setup (recommended)");
+    eprintln!();
+    eprintln!("  After onboard, you'll be one command away from chatting:");
+    eprintln!();
+    eprintln!("     hydragent chat             ← interactive terminal REPL");
+    eprintln!();
+    eprintln!("  Other useful commands:");
+    eprintln!();
+    eprintln!("     hydragent doctor           ← diagnose an existing setup");
+    eprintln!("     hydragent test-brain       ← smoke-test the live brain");
+    eprintln!("     hydragent examples         ← starter prompts to try");
+    eprintln!("     hydragent --help           ← full command reference");
+    eprintln!();
+    eprintln!("  Manual setup: copy `.env.example` to `.env` and fill in BRAIN_BASE");
+    eprintln!("  + BRAIN_KEY, then run `hydragent chat`.");
+    eprintln!();
+}
 
 /// Print a structured dump of every relevant environment variable, the
 /// `.env` file the binary actually loaded, and the resolved brain
@@ -488,16 +707,494 @@ fn load_or_create_agent_signer(
     Ok(signer)
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// `ps` / `stop` / `status` helpers
+// ─────────────────────────────────────────────────────────────────────
+//
+// Ollama-style process introspection. Cross-platform shim: on Windows
+// we shell out to PowerShell (the `Get-NetTCPConnection` cmdlet is the
+// canonical way to map PID ↔ local port without a `windows` crate
+// dep); on Linux/macOS we use `lsof -nP -iTCP:<port> -sTCP:LISTEN`
+// which is pre-installed on both.
+//
+// `ps` walks every `hydragent` process and prints PID + parent PID +
+// start time + uptime + listening port + binary path. `stop` sends
+// SIGTERM-equivalent (taskkill /F on Windows, SIGTERM on Unix) to a
+// given PID, or all hydragent instances if none is supplied.
+// `status` prints a single-screen dashboard suitable for
+// "is everything wired up?" smoke tests.
+
+#[cfg(target_os = "windows")]
+fn ps_script() -> &'static str {
+    // Get-Process hydragent with: PID, PPID (via WMI CIM), StartTime, Path,
+    // and Listening port (cross-referenced via Get-NetTCPConnection).
+    r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$procs = Get-Process -Name hydragent -ErrorAction SilentlyContinue
+if (-not $procs) { Write-Output '<no hydragent processes>'; exit }
+$listeners = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+    Group-Object OwningProcess -AsHashTable -AsString
+$rows = foreach ($p in $procs) {
+    $port = ''
+    if ($listeners.ContainsKey([string]$p.Id)) {
+        $port = ($listeners[[string]$p.Id] | Select-Object -First 1).LocalPort
+    }
+    $uptime = (Get-Date) - $p.StartTime
+    $uptime_str = if ($uptime.TotalHours -ge 1) {
+        '{0}h{1:D2}m' -f [int]$uptime.TotalHours, [int]$uptime.Minutes
+    } else {
+        '{0}m{1:D2}s' -f [int]$uptime.TotalMinutes, [int]$uptime.Seconds
+    }
+    [pscustomobject]@{
+        PID      = $p.Id
+        Port     = if ($port) { $port } else { '—' }
+        Started  = $p.StartTime.ToString('yyyy-MM-dd HH:mm:ss')
+        Uptime   = $uptime_str
+        Command  = $p.Path
+    }
+}
+$rows | Format-Table -AutoSize | Out-String
+"#
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ps_script() -> &'static str {
+    // ps + lsof fallback for Linux/macOS. We avoid the `sysinfo` crate
+    // to keep this file dependency-light.
+    r#"
+if ! command -v ps >/dev/null; then
+  echo "<ps not installed>"
+  exit 1
+fi
+printf "%-8s %-8s %-8s %-20s %-10s %s\n" PID PPID PORT STARTED UPTIME COMMAND
+ps -eo pid,ppid,etime,comm | awk '$4 ~ /hydragent/ {print $1, $2, $3, $4}'
+"#
+}
+
+fn cmd_ps() {
+    let script = ps_script();
+    #[cfg(target_os = "windows")]
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", script])
+        .output();
+    #[cfg(not(target_os = "windows"))]
+    let out = std::process::Command::new("sh")
+        .args(["-c", script])
+        .output();
+
+    println!("------------------------------------------------------------------------");
+    println!("  📋 Running hydragent instances");
+    println!("------------------------------------------------------------------------");
+    match out {
+        Ok(out) => {
+            let s = String::from_utf8_lossy(&out.stdout);
+            // PowerShell emits a leading blank line via Out-String; trim it
+            let trimmed = s.trim_start_matches('\n').trim_start_matches('\r');
+            println!("{trimmed}");
+        }
+        Err(e) => eprintln!("  ✗ failed to query processes: {e}"),
+    }
+}
+
+fn cmd_stop(pid: Option<u32>) {
+    match pid {
+        Some(p) => stop_pids(&[p]),
+        None => {
+            // Resolve "all" → enumerate first
+            #[cfg(target_os = "windows")]
+            let out = std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-Process -Name hydragent -ErrorAction SilentlyContinue).Id",
+                ])
+                .output();
+            #[cfg(not(target_os = "windows"))]
+            let out = std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "pgrep -x hydragent || ps -eo pid,comm | awk '$2 ~ /hydragent/ {print $1}'",
+                ])
+                .output();
+            let pids: Vec<u32> = match out {
+                Ok(o) => String::from_utf8_lossy(&o.stdout)
+                    .split_whitespace()
+                    .filter_map(|s| s.parse().ok())
+                    .collect(),
+                Err(e) => {
+                    eprintln!("  ✗ failed to enumerate processes: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if pids.is_empty() {
+                eprintln!("  (no hydragent processes to stop)");
+                return;
+            }
+            stop_pids(&pids);
+        }
+    }
+}
+
+fn stop_pids(pids: &[u32]) {
+    for &pid in pids {
+        let result = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output();
+        match result {
+            Ok(out) if out.status.success() => {
+                println!("  ✓ stopped PID {pid}");
+            }
+            Ok(out) => {
+                let err = String::from_utf8_lossy(&out.stderr);
+                eprintln!("  ✗ failed to stop PID {pid}: {err}");
+            }
+            Err(e) => eprintln!("  ✗ failed to invoke taskkill for PID {pid}: {e}"),
+        }
+    }
+}
+
+/// Try to find the PID that owns `port` (in LISTEN state). Returns
+/// `Some(pid)` if found, `None` if the port is free or the lookup
+/// failed. Used by the bus startup to detect "another hydragent is
+/// already serving" so we can exit cleanly instead of erroring.
+fn check_port_owner(port: u16) -> Option<u32> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "$c = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; \
+             if ($c) {{ Write-Output $c.OwningProcess }}"
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .ok()?;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            s.parse().ok()
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // lsof -nP -iTCP:5000 -sTCP:LISTEN -F p  → "p<pid>"
+        let out = std::process::Command::new("lsof")
+            .args([
+                "-nP",
+                &format!("-iTCP:{port}"),
+                "-sTCP:LISTEN",
+                "-F",
+                "p",
+            ])
+            .output()
+            .ok()?;
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some(rest) = line.strip_prefix('p') {
+                return rest.parse().ok();
+            }
+        }
+        None
+    }
+}
+
+/// Probe whether `pid` is actually a hydragent process (matches the
+/// executable name). Used after `check_port_owner` returns `Some`
+/// to decide between "joining existing gateway" (exit 0) and
+/// "port held by something else" (exit 1 with hint).
+fn is_hydragent_pid(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; \
+             if ($p -and $p.ProcessName -eq 'hydragent') {{ Write-Output 'yes' }}"
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .ok();
+        match out {
+            Some(o) => String::from_utf8_lossy(&o.stdout).trim() == "yes",
+            None => false,
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // /proc/<pid>/comm on Linux, ps -p on macOS
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                .map(|s| s.trim() == "hydragent")
+                .unwrap_or(false)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let out = std::process::Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "comm="])
+                .output()
+                .ok();
+            match out {
+                Some(o) => String::from_utf8_lossy(&o.stdout).trim() == "hydragent",
+                None => false,
+            }
+        }
+    }
+}
+
+/// One-shot status dashboard. Tries to be useful even when the
+/// gateway isn't running (so `hydragent status` is the first thing
+/// to run on a fresh install).
+fn cmd_status(app_config: &config::AppConfig) {
+    let bus_port = app_config.bus_port;
+    let pid = check_port_owner(bus_port);
+    let (gw_state, gw_pid, gw_uptime) = match pid {
+        Some(p) if is_hydragent_pid(p) => {
+            // Look up uptime via the same ps script we use for `ps`
+            #[cfg(target_os = "windows")]
+            let up = {
+                // We avoid `{0:D2}` in PowerShell because Rust's format!
+                // macro sees the inner `{1:D2}` and complains. Instead we
+                // call `.ToString('00')` which is a .NET format string
+                // passed as a method argument — no inner braces.
+                let script = format!(
+                    "$p = Get-Process -Id {p} -ErrorAction SilentlyContinue; \
+                     if ($p) {{ $u = (Get-Date) - $p.StartTime; \
+                               $h = [int]$u.TotalHours; \
+                               $m = [int]$u.Minutes; \
+                               $s = [int]$u.Seconds; \
+                               if ($h -ge 1) {{ Write-Output ($h.ToString() + 'h' + $m.ToString('00') + 'm') }} \
+                               else {{ Write-Output ($m.ToString() + 'm' + $s.ToString('00') + 's') }} }}"
+                );
+                std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &script])
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default()
+            };
+            #[cfg(not(target_os = "windows"))]
+            let up = String::new();
+            ("🟢 running", Some(p), up)
+        }
+        Some(p) => (
+            "🟡 port held by another process",
+            Some(p),
+            String::new(),
+        ),
+        None => ("🔴 offline", None, String::new()),
+    };
+
+    let brain = app_config.effective_brain_model();
+    let brain_base = app_config.effective_brain_base();
+
+    let dreaming = if app_config.enable_dreaming {
+        format!(
+            "🟢 every {}s",
+            app_config.dreaming_interval_sec
+        )
+    } else {
+        "🔴 disabled".to_string()
+    };
+
+    let db_path = format!("{}/sessions.db", app_config.data_dir);
+    let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+    let db_size_human = human_bytes(db_size);
+
+    println!("------------------------------------------------------------------------");
+    println!("  🐉 Hydragent v{}", env!("CARGO_PKG_VERSION"));
+    println!("------------------------------------------------------------------------");
+    println!("  Gateway      : {}", gw_state);
+    if let Some(p) = gw_pid {
+        if !gw_uptime.is_empty() {
+            println!("                 PID {p} uptime {gw_uptime}");
+        } else {
+            println!("                 PID {p}");
+        }
+    }
+    println!("  Bus          : 127.0.0.1:{bus_port}");
+    println!("  Brain        : {brain}");
+    println!("                 via {brain_base}");
+    println!("  Dream worker : {dreaming}");
+    println!("  Storage      : {db_size_human}  ({db_path})");
+    println!("------------------------------------------------------------------------");
+}
+
+fn human_bytes(n: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{} {}", n, UNITS[0])
+    } else {
+        format!("{:.1} {}", v, UNITS[i])
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let start_time = std::time::Instant::now();
     let args = Args::parse();
 
+    // ── Helpers used by the `chat` subcommand's startup banner ──────
+    //
+    // `short_id_pub` mirrors `cli_repl::short_id` (which is private to
+    // that module) — we keep a tiny copy here so main.rs can build
+    // a `BrandInfo` without exposing the helper or threading the full
+    // `cli_repl` module surface into this dispatch.
+    fn short_id_pub(id: &str) -> String {
+        if id.len() <= 8 {
+            id.to_string()
+        } else {
+            id[..8].to_string()
+        }
+    }
+
+    // Best-effort `git rev-parse --abbrev-ref HEAD` with a 1s timeout.
+    // We use a plain `std::process::Command` (not tokio::process) so
+    // the helper stays sync and callable from any context; the
+    // timeout is enforced by polling `try_wait` from another thread
+    // — simpler than the `tokio::time::timeout` integration and
+    // avoids pulling in another `use` block.
+    fn detect_git_branch() -> String {
+        // `Command` with no `.output()` already does what we want
+        // when piped through a child thread: we get the output
+        // and a join handle, and we can drop the process if it
+        // takes too long. We use `Output` (not `status`) so the
+        // stdout bytes are captured.
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        let mut child = match Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return "unknown".to_string(),
+        };
+        // Wait up to 1s. We use `try_wait` + a small sleep because
+        // `Command::wait_timeout` is unstable on Rust 1.81 stable.
+        let start = std::time::Instant::now();
+        let mut stdout_bytes = Vec::new();
+        let mut timed_out = false;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    if let Some(mut out) = child.stdout.take() {
+                        let _ = out.read_to_end(&mut stdout_bytes);
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    if start.elapsed() > std::time::Duration::from_secs(1) {
+                        timed_out = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(_) => return "unknown".to_string(),
+            }
+        }
+        if timed_out {
+            // We deliberately *don't* kill the child — the user might
+            // be running this command interactively, and a stray
+            // background git process is harmless. The OS will reap it
+            // when it exits. The branch display falls back to "unknown"
+            // and the REPL continues.
+            return "unknown".to_string();
+        }
+        let s = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
+        if s.is_empty() || s == "HEAD" {
+            // "HEAD" is what detached checkouts return. We still
+            // show the long SHA so the user knows what they're on.
+            if let Ok(child2) = Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+            {
+                let s2 = String::from_utf8_lossy(&child2.stdout).trim().to_string();
+                if !s2.is_empty() {
+                    return format!("detached@{}", s2);
+                }
+            }
+            return "unknown".to_string();
+        }
+        s
+    }
+
+    // ── First-run interception ────────────────────────────────────────
+    //
+    // When the user runs `hydragent` with no subcommand and no flag, the
+    // bare command starts the bus server. That's a *valid* use case (run
+    // the bus, then connect adapters), but it's also a trap: a brand-new
+    // user who runs `hydragent` with no `.env` and no idea what to do
+    // would just see a crash.
+    //
+    // So before doing anything else, check: is there a `.env` file in
+    // the current directory? If not AND the user didn't pass a subcommand
+    // or --debug, hand them a friendly nudge instead of crashing.
+    let env_exists = std::env::current_dir()
+        .map(|p| p.join(".env").exists())
+        .unwrap_or(false);
+    if !env_exists && args.command.is_none() && !args.list_pages {
+        print_first_run_banner();
+        std::process::exit(0);
+    }
+
     // Load configuration
     let mut app_config = config::AppConfig::load().unwrap_or_else(|e| {
-        eprintln!("Failed to load configuration: {}", e);
+        // Print an actionable error that points the user at the
+        // built-in onboarding command instead of a raw config error.
+        eprintln!();
+        eprintln!("  ✗ Failed to load configuration: {}", e);
+        eprintln!();
+        eprintln!("  Most likely cause: no `.env` file in the current directory.");
+        eprintln!();
+        eprintln!("  Quickest fix:    hydragent onboard");
+        eprintln!("  Or manually:     cp .env.example .env   (then edit the keys)");
+        eprintln!("  Diagnose:        hydragent doctor");
+        eprintln!();
         std::process::exit(1);
     });
+
+    // ── Early-return handlers for short-lived subcommands ─────────────
+    //
+    // These don't touch the gateway, bus, dream worker, or tool
+    // registry — they only inspect process state. Running them here
+    // (after config load but before logger init) means even a broken
+    // gateway install can still answer `hydragent ps` / `status`.
+    //
+    // `Serve` deliberately does NOT early-return: it falls through
+    // to the default gateway startup path below, so `hydragent serve`
+    // and `hydragent` (no subcommand) produce identical log output.
+    match &args.command {
+        Some(Commands::Ps) => {
+            cmd_ps();
+            std::process::exit(0);
+        }
+        Some(Commands::Stop { pid }) => {
+            cmd_stop(*pid);
+            std::process::exit(0);
+        }
+        Some(Commands::Status) => {
+            cmd_status(&app_config);
+            std::process::exit(0);
+        }
+        // Handle `status` BEFORE the config-load failure path above is
+        // an issue — but the only way we reach this match is if
+        // config loaded, so that's fine.
+        Some(Commands::Serve) | None => {
+            // Fall through to gateway startup
+        }
+        // All other commands continue to the heavy init below
+        _ => {}
+    }
 
     // ── --debug mode: print a structured env/config diagnostic dump ─────
     //
@@ -544,8 +1241,191 @@ async fn main() {
         }
     }
 
-    // Initialize the logger using configured values
-    logger::init_logger(&app_config.log_format, &app_config.log_level);
+    // Initialize the logger using configured values.
+    //
+    // For interactive `chat` we send the file layer to a JSONL file and
+    // keep the on-screen terminal at "warn" — that way the user only
+    // sees real problems, not 30 lines of "tool registered" chatter.
+    // For every other subcommand (server, onboard, doctor, ...) we
+    // keep the original behaviour: everything to stderr.
+    let log_file_path = match &args.command {
+        Some(Commands::Chat) => {
+            let dir = std::path::PathBuf::from(&app_config.data_dir).join("logs");
+            let _ = std::fs::create_dir_all(&dir);
+            Some(dir.join("chat.jsonl"))
+        }
+        _ => None,
+    };
+    let screen_level = match &args.command {
+        Some(Commands::Chat) => {
+            // Chat stays clean. Background worker chatter (memory
+            // inserts, dream-cycle parse failures, deprecation
+            // warnings, …) hits the file only. Only *real* errors
+            // surface on screen so a single broken tool doesn't drown
+            // the transcript. Override with HYDRAGENT_CHAT_LOG=warn
+            // (or info / debug) to bring a level back to stderr.
+            std::env::var("HYDRAGENT_CHAT_LOG").unwrap_or_else(|_| "error".to_string())
+        }
+        _ => app_config.log_level.clone(),
+    };
+    logger::init_logger(
+        &app_config.log_format,
+        &screen_level,
+        log_file_path.as_deref(),
+    );
+
+    // ── Onboard subcommand (first-time setup wizard) ─────────────────
+    //
+    // Runs *before* logger init is strictly necessary (it has its own
+    // println! output), but we want consistent log-level output during
+    // the wizard's optional `test-brain` verification step, so we
+    // initialise the logger first.
+    if let Some(Commands::Onboard {
+        provider, api_key, model, non_interactive, no_verify, force,
+    }) = &args.command
+    {
+        let code = onboard::run(onboard::OnboardOptions {
+            provider: provider.clone(),
+            api_key: api_key.clone(),
+            model: model.clone(),
+            non_interactive: *non_interactive,
+            no_verify: *no_verify,
+            force: *force,
+        });
+        std::process::exit(code);
+    }
+
+    // ── Doctor subcommand (diagnostic report) ────────────────────────
+    //
+    // Also runs *before* the bus-server setup so it stays fast and
+    // doesn't need any of the heavy crates to be live.
+    if matches!(&args.command, Some(Commands::Doctor)) {
+        let report = doctor::run(&app_config);
+        report.print();
+        if report.has_failures() {
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // ── Examples subcommand (catalogue of starter prompts) ──────────
+    if let Some(Commands::Examples { filter }) = &args.command {
+        examples::print(filter.as_deref());
+        return;
+    }
+
+    // ── Dream subcommand (manage the dream-cycle background worker) ──
+    //
+    // Runs before the heavy session-store / bus setup because it only
+    // reads and optionally patches the `.env` file. The change is
+    // persisted to disk so it survives the next restart without any
+    // further action from the user.
+    if let Some(Commands::Dream { enable, disable, interval }) = &args.command {
+        let env_path = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(".env");
+
+        // Determine if we are making any changes
+        let making_changes = *enable || *disable || interval.is_some();
+
+        if making_changes {
+            // Read the existing .env, patch the relevant keys, and write back.
+            // We do a line-by-line rewrite so every other setting is preserved.
+            let content = std::fs::read_to_string(&env_path).unwrap_or_default();
+            let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+
+            // Flags for whether we found (and replaced) each key in-place
+            let mut found_enable = false;
+            let mut found_interval = false;
+
+            for line in lines.iter_mut() {
+                // Clone to an owned String so the borrow of `*line` ends
+                // before we potentially assign to `*line` below.
+                let trimmed = line.trim_start().to_owned();
+
+                // Handle ENABLE_DREAMING
+                if (*enable || *disable)
+                    && (trimmed.starts_with("ENABLE_DREAMING=")
+                        || trimmed.starts_with("# ENABLE_DREAMING="))
+                {
+                    *line = format!("ENABLE_DREAMING={}", if *enable { "true" } else { "false" });
+                    found_enable = true;
+                }
+
+                // Handle DREAMING_INTERVAL_SEC
+                if let Some(secs) = interval {
+                    if trimmed.starts_with("DREAMING_INTERVAL_SEC=")
+                        || trimmed.starts_with("# DREAMING_INTERVAL_SEC=")
+                    {
+                        *line = format!("DREAMING_INTERVAL_SEC={}", secs);
+                        found_interval = true;
+                    }
+                }
+            }
+
+
+            // If the keys weren't in .env, append them
+            if (*enable || *disable) && !found_enable {
+                lines.push(format!(
+                    "ENABLE_DREAMING={}",
+                    if *enable { "true" } else { "false" }
+                ));
+            }
+            if let Some(secs) = interval {
+                if !found_interval {
+                    lines.push(format!("DREAMING_INTERVAL_SEC={}", secs));
+                }
+            }
+
+            let new_content = lines.join("\n") + "\n";
+            match std::fs::write(&env_path, &new_content) {
+                Ok(_) => {
+                    println!("------------------------------------------------------------------------");
+                    println!("  🌙 Hydragent Dream Cycle — settings updated");
+                    println!("  .env: {}", env_path.display());
+                    println!("------------------------------------------------------------------------");
+                    if *enable {
+                        println!("  ✓ dreaming enabled    (ENABLE_DREAMING=true)");
+                    }
+                    if *disable {
+                        println!("  ✓ dreaming disabled   (ENABLE_DREAMING=false)");
+                    }
+                    if let Some(secs) = interval {
+                        println!("  ✓ interval set to {}s  (DREAMING_INTERVAL_SEC={})", secs, secs);
+                    }
+                    println!();
+                    println!("  Restart the bus server for changes to take effect.");
+                    println!("------------------------------------------------------------------------");
+                }
+                Err(e) => {
+                    eprintln!("  ✗ Failed to write .env: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            // No flags — just print current status from the loaded config
+            println!("------------------------------------------------------------------------");
+            println!("  🌙 Hydragent Dream Cycle — current status");
+            println!("------------------------------------------------------------------------");
+            println!(
+                "  enabled       : {}",
+                if app_config.enable_dreaming { "yes ✓" } else { "no ✗" }
+            );
+            println!(
+                "  interval      : {}s  (every {:.1} minutes)",
+                app_config.dreaming_interval_sec,
+                app_config.dreaming_interval_sec as f64 / 60.0
+            );
+            println!("  config source : {} (or ENABLE_DREAMING / DREAMING_INTERVAL_SEC env vars)", env_path.display());
+            println!("------------------------------------------------------------------------");
+            println!("  To change settings:");
+            println!("    hydragent dream --enable           turn dreaming on");
+            println!("    hydragent dream --disable          turn dreaming off");
+            println!("    hydragent dream --interval <SECS>  set the cycle interval");
+            println!("------------------------------------------------------------------------");
+        }
+        return;
+    }
 
     if let Some(Commands::Embed { action }) = &args.command {
         match action {
@@ -1281,24 +2161,87 @@ async fn main() {
             content: prompt.clone(),
         }];
 
-        // Spawn the stream consumer so we can print tokens as they arrive.
-        let printer = tokio::spawn(async move {
-            let mut stdout = tokio::io::stdout();
+        // Collect tokens and stream them to the terminal. In
+        // the default (render) mode each token is fed through
+        // a [`MarkdownStreamer`] which renders complete lines
+        // (or whole code blocks) as soon as they arrive — the
+        // user sees a "typewriter" effect. Set
+        // `HYDRAGENT_STREAM_RAW=1` to bypass the renderer and
+        // write raw token bytes straight to stdout (useful for
+        // diffing or piping into another tool).
+        let stream_raw = std::env::var("HYDRAGENT_STREAM_RAW")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let collector = tokio::spawn(async move {
+            let mut collected = String::new();
             use tokio::io::AsyncWriteExt;
-            while let Some(token) = rx.recv().await {
-                let _ = stdout.write_all(token.as_bytes()).await;
-                let _ = stdout.flush().await;
+            let mut stdout = tokio::io::stdout();
+
+            // Header: print the prompt prefix *before* the first
+            // token lands so the user knows the stream has
+            // started. This is the only thing the test prints
+            // synchronously; everything else is incremental.
+            // ▸ is U+25B8 (3 bytes in UTF-8: E2 96 B8). We use
+            // a `&str` and `.as_bytes()` because byte-string
+            // literals (`b"…"`) can't contain `\u{}` escapes.
+            let _ = stdout.write_all("hydra \u{25B8} ".as_bytes()).await;
+            let _ = stdout.flush().await;
+
+            if stream_raw {
+                // Raw mode: write token bytes through unchanged.
+                // No buffering, no styling.
+                while let Some(token) = rx.recv().await {
+                    collected.push_str(&token);
+                    let _ = stdout.write_all(token.as_bytes()).await;
+                    let _ = stdout.flush().await;
+                }
+            } else {
+                // Render mode: feed each token into the streamer
+                // and write the rendered text it returns. The
+                // streamer buffers partial lines (so a single
+                // line's heading styling doesn't flash in piece
+                // by piece) and atomically renders fenced code
+                // blocks.
+                let renderer = markdown_render::MarkdownRenderer::new();
+                let mut streamer = markdown_render::MarkdownStreamer::new(&renderer);
+                while let Some(token) = rx.recv().await {
+                    collected.push_str(&token);
+                    let rendered = streamer.push(&token);
+                    if !rendered.is_empty() {
+                        let _ = stdout.write_all(rendered.as_bytes()).await;
+                        let _ = stdout.flush().await;
+                    }
+                }
+                // End of stream: flush any text the streamer is
+                // still holding (the last line, if it didn't end
+                // in a newline, or a code block whose closing
+                // fence never arrived).
+                let tail = streamer.finish();
+                if !tail.is_empty() {
+                    let _ = stdout.write_all(tail.as_bytes()).await;
+                    let _ = stdout.flush().await;
+                }
             }
+            collected
         });
 
         let started = std::time::Instant::now();
         match model_router.chat_stream(messages, tx, None).await {
             Ok((content, used_model)) => {
-                let _ = printer.await;
+                // The collector streamed the response
+                // (rendered line-by-line, or raw) while the
+                // router was producing tokens; we just need
+                // its handle here so the task is fully joined
+                // before we print the summary. The actual
+                // rendered text is already on the terminal.
+                let _ = collector.await;
                 let elapsed = started.elapsed();
                 println!();
-                println!();
                 println!("------------------------------------------------------------------------");
+                // The collector has already streamed the response
+                // (rendered line-by-line, or raw). We only need
+                // the summary line now.
                 println!(
                     "  ✅ Brain spoke (model={}, {:.2}s, {} chars)",
                     used_model,
@@ -1319,7 +2262,7 @@ async fn main() {
         return;
     }
 
-    if args.list_sessions {
+    if args.list_pages {
         println!("------------------------------------------------------------------------");
         println!("  🐉 Hydragent Page History");
         println!("  Database: {}", db_path);
@@ -1347,8 +2290,17 @@ async fn main() {
         return;
     }
 
-    if let Some(cmd) = args.command {
+    if let Some(cmd) = args.command.clone() {
+        let mut dispatch_chat = false;
         match cmd {
+            // NOTE: Commands::Chat and Commands::Serve set `dispatch_chat`
+            // to true and fall through. The REPL needs the ToolRegistry
+            // (built later in main()); `serve` is a documented alias for
+            // "no subcommand" — both should continue to the gateway path
+            // below. `dispatch_chat` is misnamed: it's actually
+            // "should I run the gateway path?".
+            Commands::Chat => dispatch_chat = true,
+            Commands::Serve => dispatch_chat = true, // fall through to gateway startup (same as no subcommand)
             Commands::Memory { action } => {
                 match action {
                     MemoryAction::List => {
@@ -1383,9 +2335,24 @@ async fn main() {
                     }
                 }
             }
-            Commands::Embed { .. } | Commands::Vault { .. } | Commands::TestBrain { .. } | Commands::Audit { .. } | Commands::Security { .. } => unreachable!(),
+            Commands::Embed { .. }
+            | Commands::Vault { .. }
+            | Commands::TestBrain { .. }
+            | Commands::Audit { .. }
+            | Commands::Security { .. }
+            | Commands::Onboard { .. }
+            | Commands::Doctor
+            | Commands::Dream { .. }
+            | Commands::Examples { .. }
+            | Commands::Ps
+            | Commands::Stop { .. }
+            | Commands::Status => unreachable!(
+                "Onboard/Doctor/Examples/Dream/Ps/Stop/Status are early-returned before this match; Chat/Serve fall through"
+            ),
         }
-        return;
+        if !dispatch_chat {
+            return;
+        }
     }
 
     info!("Hydragent starting up with config: {:?}", app_config);
@@ -1738,6 +2705,63 @@ async fn main() {
         panic!("Failed to initialize ToolRegistry OnceCell");
     }
 
+    // ── Chat subcommand (interactive terminal REPL) ──────────────────
+    //
+    // Dispatched here, *after* the registry is built but *before* the
+    // audit chain / bus router / bus server. The REPL only needs
+    // (store, model_router, registry) and exits when stdin closes. The
+    // bus server blocks forever; if we let it start, the user has to
+    // Ctrl-C to get back to the REPL. So short-circuit early.
+    //
+    // We use `args.page` directly (it's a `Option<String>`, and
+    // `ReplState::page_id` is also `Option<String>`) so a page
+    // id is auto-minted inside `cli_repl::run` if the user didn't
+    // pass `--page`.
+    if let Some(Commands::Chat) = &args.command {
+        let workspace_dir = std::env::var("WORKSPACE_DIR")
+            .unwrap_or_else(|_| ".".to_string());
+        // `--page` overrides the auto-minted one; otherwise we mint
+        // a fresh UUID here so each `hydragent chat` invocation starts
+        // a clean page (the user can `/resume` an older one).
+        let page_id = args
+            .page
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        // Build the brand metadata once, here, so the banner +
+        // /status command see the same view. `detect_git_branch`
+        // shells out to `git rev-parse --abbrev-ref HEAD`; we fall
+        // back to "unknown" when git is not on PATH or the
+        // directory isn't a checkout, so the header always has the
+        // same number of lines. The model + tool count come from
+        // the same `app_config` and `registry` the REPL uses for
+        // its routing, so there's no chance of the banner
+        // promising one model and the LLM speaking another.
+        let brand = tui_header::BrandInfo {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            branch: detect_git_branch(),
+            path: std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "<unknown cwd>".to_string()),
+            page_id_short: short_id_pub(&page_id),
+            model: app_config.effective_brain_model(),
+            tool_count: registry.len(),
+        };
+        let state = cli_repl::ReplState {
+            page_id,
+            user_id: "local-cli".to_string(),
+            channel_id: "cli".to_string(),
+            store: store.clone(),
+            model_router: Arc::clone(&model_router),
+            registry: registry.clone(),
+            max_react_steps: app_config.max_react_steps,
+            app_config: app_config.clone(),
+            workspace_dir: PathBuf::from(workspace_dir),
+            brand,
+        };
+        let code = cli_repl::run(state).await;
+        std::process::exit(code);
+    }
+
     // Initialize runtime audit chain for Phase 6.1 / Merkle audit logging.
     let audit_dir = std::path::PathBuf::from(&app_config.data_dir).join("audit");
     let keys_dir = std::path::PathBuf::from(&app_config.data_dir).join("keys");
@@ -1861,6 +2885,60 @@ async fn main() {
 
     info!("Starting Event Bus server on port {}...", app_config.bus_port);
     if let Err(e) = bus.start().await {
+        let msg = e.to_string();
+        let port_in_use = msg.contains("10048")
+            || msg.contains("98")
+            || msg.to_lowercase().contains("address already in use")
+            || msg.to_lowercase().contains("in use");
+        if port_in_use {
+            match check_port_owner(app_config.bus_port) {
+                Some(pid) if is_hydragent_pid(pid) => {
+                    info!(
+                        "Port {} is already held by hydragent.exe (PID {}). \
+                         Gateway is already running; this invocation is a no-op.",
+                        app_config.bus_port, pid
+                    );
+                    eprintln!(
+                        "\n  ℹ  Gateway already running as PID {}. Exiting cleanly.",
+                        pid
+                    );
+                    eprintln!("     Use `hydragent status` to see the dashboard,");
+                    eprintln!("     or `hydragent stop {}` to stop it.\n", pid);
+                    std::process::exit(0);
+                }
+                Some(pid) => {
+                    error!(
+                        "Port {} is held by another process (PID {}).",
+                        app_config.bus_port, pid
+                    );
+                    eprintln!(
+                        "  ✗ Port {} is in use by another process (PID {}).",
+                        app_config.bus_port, pid
+                    );
+                    eprintln!(
+                        "    Set HYDRAGENT_BUS_PORT=<other> in .env and try again."
+                    );
+                    std::process::exit(1);
+                }
+                None => {
+                    error!(
+                        "Port {} is in use but we couldn't identify the owner.",
+                        app_config.bus_port
+                    );
+                    eprintln!(
+                        "  ✗ Port {} is held by an unknown process.",
+                        app_config.bus_port
+                    );
+                    eprintln!(
+                        "    On Windows: netstat -ano | findstr :{}",
+                        app_config.bus_port
+                    );
+                    eprintln!("    On Unix:    lsof -iTCP:{} -sTCP:LISTEN",
+                        app_config.bus_port);
+                    std::process::exit(1);
+                }
+            }
+        }
         error!("Event Bus server failed to run: {}", e);
         std::process::exit(1);
     }

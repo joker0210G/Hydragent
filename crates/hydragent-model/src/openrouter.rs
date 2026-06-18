@@ -210,17 +210,19 @@ impl OpenRouterClient {
                                 if let Some(delta) = choices[0].get("delta") {
                                     if let Some(token) = delta.get("content").and_then(|t| t.as_str()) {
                                         full_content.push_str(token);
-                                        // Wrap the token in a JSON-RPC notification
-                                        // so the line-framing protocol on the bus
-                                        // (newline-delimited) doesn't break when a
-                                        // token itself contains a raw newline (e.g.
-                                        // paragraph breaks in the model's output).
-                                        let notification = serde_json::json!({
-                                            "jsonrpc": "2.0",
-                                            "method": "response.token",
-                                            "params": { "token": token }
-                                        });
-                                        let _ = tx.send(serde_json::to_string(&notification).unwrap()).await;
+                                        // The `chat_stream` trait contract is
+                                        // `Sender<String>` where each String is
+                                        // the raw token text (may contain
+                                        // newlines, code spans, etc.). Any wire
+                                        // framing (JSON-RPC, newline-delimited,
+                                        // etc.) is the *bus adapter's*
+                                        // responsibility — it sits on the
+                                        // external bus connection, not on this
+                                        // in-process mpsc channel. Sending the
+                                        // token verbatim is what the in-process
+                                        // consumers (test_brain, react_loop)
+                                        // already expect.
+                                        let _ = tx.send(token.to_string()).await;
                                     }
                                 }
                             }

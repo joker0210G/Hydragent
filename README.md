@@ -54,17 +54,21 @@ Hydragent's architecture mirrors that mytheme in five concrete ways:
 > new ones get authored from the failure mode.* The name isn't branding —
 > it's a contract with the runtime.
 
-## ⚡ Current State (v0.7.0 — 2026-06-14)
+## ⚡ Current State (v0.7.1 — 2026-06-15)
 
 Hydragent is **shipped, not aspirational**. The numbers below are audited by
 [`doc/STATE.md`](doc/STATE.md) against the working tree — they are not targets.
 
+> **New here?** Read [`ONBOARDING.md`](ONBOARDING.md) first — the
+> 10-minute zero-to-first-chat guide. Coming back to contribute? See
+> [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 | | |
 |---|---|
-| **Latest release** | **v0.7.0** — *Self-Improving Skill Engine & Curator* (2026-06-14) |
+| **Latest release** | **v0.7.1** — *Polish + Python SDK* (2026-06-15) |
 | **Patch release** | **v0.6.1** (same day) — 4 user-perspective CLI bug fixes |
 | **Workspace** | 16 Rust crates on `resolver = "2"` |
-| **Test count** | **567 tests passing** (1 pre-existing failure, unrelated) |
+| **Test count** | **49 tests passing in `hydragent-core` kernel binary** (v0.7.1) |
 | **Phase 7 net-new** | 86 tests — 52 skills + 30 bench + 4 skill-induction |
 | **Channels live** | 6 messaging adapters + Telegram Mini App + bus client |
 | **Model Council** | **20+ model profiles** in `config/model_council.yaml`, 8 task types |
@@ -73,8 +77,58 @@ Hydragent is **shipped, not aspirational**. The numbers below are audited by
 | **Security** | 16-layer pipeline live; 79 vault tests pass; SQLCipher deferred post-MVP |
 | **Phase 5 status** | Tracks 5.1–5.2 ✅; 5.3 (DagEngine) + 5.4 (self-healing) pending |
 | **Edge binary** | 🐉 Stubbed — Zig workspace present, not yet compiling |
-| **Full changelog** | [CHANGELOG.md](CHANGELOG.md) · [RELEASE_NOTES_v0.7.0.md](RELEASE_NOTES_v0.7.0.md) |
+| **Full changelog** | [CHANGELOG.md](CHANGELOG.md) · [RELEASE_NOTES_v0.7.0.md](doc/releases/RELEASE_NOTES_v0.7.0.md) |
 | **Ground truth** | [`doc/STATE.md`](doc/STATE.md) — verified against `git rev 3d99366` |
+
+### 🐣 Install in one command
+
+Hydragent ships with a single-line installer — the same UX as Ollama and
+OpenClaw. Paste, run, done.
+
+**Windows (PowerShell 5.1+ / 7+):**
+```powershell
+irm https://hydragent.dev/install.ps1 | iex
+```
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://hydragent.dev/install.sh | sh
+```
+
+What you get:
+
+- The latest `hydragent` binary on your user `PATH` (~/.hydragent/bin).
+- An auto-generated `Hydragent.cmd` / `hydragent` launcher.
+- A data directory at `~/.hydragent/data/` with sane defaults.
+- A guided first-run onboarding wizard that asks for a brain provider
+  and writes `.env` for you.
+
+Then:
+
+```powershell
+hydragent status          # one-shot status dashboard
+hydragent serve           # gateway in the foreground
+hydragent ps              # list running gateways
+hydragent stop [pid]      # stop a running gateway
+hydragent chat            # interactive REPL
+```
+
+> Full guide, flags, troubleshooting, offline / air-gapped installs, and
+> uninstall: **[INSTALL.md](INSTALL.md)**.
+>
+> Working from a checkout? See the contributor flow below.
+
+### 🛠 For contributors (build from source)
+
+```bash
+git clone https://github.com/your-org/hydragent.git
+cd hydragent
+cargo build --release -p hydragent-core
+./target/release/hydragent onboard       # 🐣 guided setup wizard
+./target/release/hydragent chat         # 💬 interactive terminal REPL
+```
+
+Other useful commands: `hydragent doctor` (diagnose), `hydragent examples` (starter prompts), `hydragent test-brain` (smoke-test the live brain), `hydragent --help` (full reference). All subcommands have rich `long_about` text — try `hydragent onboard --help` to see it.
 
 ## 🌊 What is Hydragent?
 
@@ -148,10 +202,12 @@ Hydragent structures user sessions and workspaces as an interconnected **Library
 ```text
 hydragent/
 ├── README.md                   # Project overview (this file)
+├── ONBOARDING.md               # 🐣 Zero-to-first-chat guide (read this first)
+├── CONTRIBUTING.md             # 🛠 Code conventions + where to add a tool/skill/channel
 ├── CHANGELOG.md                # Version history (Keep-a-Changelog format)
-├── RELEASE_NOTES_v0.7.0.md     # v0.7.0 walkthrough
 ├── Cargo.toml                  # Rust workspace manifest (16 crates)
 ├── Cross.toml                  # Cross-compile targets (ARM64, RISC-V)
+├── Hydragent.cmd               # 🪟 Windows single-entry point (install/onboard/chat/doctor)
 │
 ├── doc/                        # All design, architecture, and process docs
 │   ├── ARCHITECTURE.md         # Technical specification, layers, and API schemas
@@ -163,7 +219,8 @@ hydragent/
 │   │   ├── chatgpt.md          # Comparative agent analysis
 │   │   └── ...
 │   ├── phases/                 # Per-phase implementation retrospectives
-│   └── archive/                # Archived phase reports & old release notes
+│   ├── releases/               # Current & historical release notes (v0.7.x)
+│   └── archive/                # Archived phase reports & older release notes
 │
 ├── crates/                     # Rust Multi-Crate Workspace (16 crates)
 │   ├── hydragent-core/         # Main orchestrator binary & react loop
@@ -245,64 +302,166 @@ For the full technical specification, interface contracts, and API schemas → *
 
 ## 🚀 Getting Started
 
-### Prerequisites
+> **First time?** Read **[`ONBOARDING.md`](ONBOARDING.md)** — it walks you
+> from `git clone` to first chat in ~10 minutes and explains the
+> `Hydragent.cmd` entry point. The abbreviated version is below.
 
-- **Rust 1.78+** (`cargo`) — core orchestrator, event bus, tool dispatcher, security vault
-- **Python 3.11+** (`uv` or `pip`) — channel adapters, RAG pipelines, CLI frontend
-- **Docker** — execution sandbox isolation (code runner, browser bot)
-- **Zig 0.13+** *(optional, edge-only)* — only needed to build the RISC-V / ESP32-S3 edge binary
-- **An LLM backend**: OpenRouter API key *or* local Ollama instance (Llama 3, Qwen 2.5, Mistral)
+### TL;DR (Windows, 4 commands)
 
-### Quick Install (MVP Shell)
-
-```bash
-# Clone repository
+```powershell
 git clone https://github.com/your-org/hydragent.git
 cd hydragent
-
-# Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install Python adapter dependencies (using uv)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-cd adapters && uv sync && cd ..
-
-# Build the Rust core
-cargo build --release
-
-# Bootstrap the encrypted credential vault
-./target/release/hydragent vault init
-
-# Configure your agent persona
-cp config/SOUL.md.example config/SOUL.md
-cp config/USER.md.example config/USER.md
+.\Hydragent.cmd install      # one-time: Rust + MinGW + build
+.\Hydragent.cmd onboard      # guided .env wizard
+.\Hydragent.cmd chat         # start chatting
 ```
 
-> **Edge binary only** (optional): Install Zig 0.13+ and run `cd edge && zig build -Doptimize=ReleaseSmall -Dtarget=riscv64-linux-musl`
+`Hydragent.cmd` is the **only entry point you need to remember**. It
+auto-detects what state you're in (no Rust yet? missing MinGW? no
+binary built? no `.env`?) and runs the right thing. The explicit
+subcommands `install | onboard | chat | doctor | examples` are also
+available.
 
-### Configuration
+### Prerequisites
+
+| Prereq | Why | Required? |
+|---|---|---|
+| **Rust ≥ 1.78** | Builds the kernel | ✅ |
+| **MinGW-w64 at `C:\mingw64`** | `dlltool.exe` for some build steps | ✅ |
+| **Python ≥ 3.11** | Channel adapters + the Python SDK | ✅ for adapters, ❌ for chat |
+| **An LLM endpoint** | The "brain" — any OpenAI-compatible `/v1/chat/completions` | ✅ |
+| **Docker** | Not implemented (Phase 3 sandbox is Wasmtime-only — see [`doc/STATE.md`](doc/STATE.md)) | ❌ |
+| **Zig 0.13+** | Only for the RISC-V / ESP32-S3 edge binary | ❌ |
+
+`Hydragent.cmd install` downloads and wires up Rust + MinGW for you;
+the only thing you need to bring is a LLM API key (or a local
+Ollama / LM Studio server).
+
+### 🐣 First-time setup (90 seconds)
+
+The `Hydragent.cmd` flow above handles everything. If you prefer
+explicit `cargo` commands:
+
+```powershell
+# 1. Build (first build = 2-5 minutes)
+cargo build -p hydragent-core
+
+# 2. Guided onboarding (writes a .env with BRAIN_BASE / BRAIN_KEY / BRAIN_MODEL)
+.\target\debug\hydragent.exe onboard
+
+# 3. Verify the live brain end-to-end
+.\target\debug\hydragent.exe test-brain
+
+# 4. Start chatting in the terminal
+.\target\debug\hydragent.exe chat
+```
+
+`hydragent onboard` walks you through:
+
+1. **Picking a provider** — arrow-key navigable picker (↑/↓/Enter, or type a digit to quick-select, `q` to cancel). On a non-TTY (piped/CI) it falls back to a plain number prompt.
+2. **Pasting your API key** (input is masked with `rpassword`; leave empty for local Ollama / LM Studio).
+3. **Picking a primary model** — same arrow-key picker, with a `custom` entry at the end.
+4. **Saving a `.env`** that preserves any existing keys you already had.
+5. **Running `test-brain`** to confirm the connection works before you commit.
+
+Non-interactive mode for CI / scripts:
+
+```powershell
+.\target\debug\hydragent.exe onboard `
+  --provider openrouter `
+  --api-key "$env:OPENROUTER_API_KEY" `
+  --model openai/gpt-4o-mini `
+  --non-interactive --no-verify
+```
+
+### 🩺 Diagnose an existing setup
+
+```powershell
+.\Hydragent.cmd doctor
+# or
+.\target\debug\hydragent.exe doctor
+```
+
+Runs ~10 file-based checks (no network calls) and prints a colour-coded report:
+
+| Symbol | Meaning |
+|---|---|
+| ✅ green | Check passed |
+| ⚠️ yellow | Warning, not blocking |
+| ❌ red | Failure — every red check prints a one-line fix hint |
+
+Exits non-zero only if any check fails, so it's safe to wire into CI.
+
+### 💡 Discover what's possible
+
+```powershell
+.\target\debug\hydragent.exe examples            # full catalogue
+.\target\debug\hydragent.exe examples memory     # filter by tool name
+```
+
+Each example shows a copy-pasteable prompt, the tools it exercises, and a short note about what to expect.
+
+### ⚙️ Configuration (manual)
+
+If you prefer to hand-craft `.env`, only the **BRAIN_\*** keys are required
+to chat. The vault passphrase and channel tokens are optional until you
+use those features.
 
 ```ini
-# .env — credentials stay here, never committed
-OPENROUTER_API_KEY=sk-or-...
-LOCAL_OLLAMA_URL=http://localhost:11434
-DATA_DIR=./data
-VAULT_PASSPHRASE=<your-secure-local-passphrase>
-TELEGRAM_BOT_TOKEN=...
+# .env — credentials stay here, never committed.
+# Only the BRAIN_* block is required for first chat.
+
+# ── The Brain (the agent's single live LLM) ───────────────────────
+BRAIN_BASE=https://openrouter.ai/api/v1     # any OpenAI-compatible /v1 URL
+BRAIN_KEY=sk-or-...                         # your API key (empty for local Ollama / LM Studio)
+BRAIN_MODEL=openai/gpt-4o-mini              # primary model
+BRAIN_FALLBACKS=openai/gpt-4o,anthropic/claude-3-haiku  # tried in order on failure
+
+# ── Optional: encrypted vault (Phase 3) ───────────────────────────
+# HYDRAGENT_VAULT_PASSPHRASE=<your-secure-local-passphrase>
+
+# ── Optional: chat platform tokens (only if you run those adapters) ─
+# TELEGRAM_BOT_TOKEN=...
+# TELEGRAM_ALLOWED_CHAT_IDS=123456789,987654321
+# DISCORD_BOT_TOKEN=...
+# SLACK_BOT_TOKEN=...
+# See .env.example for the full list.
 ```
+
+> **Legacy aliases** (still supported): `OPENROUTER_API_KEYS` ↔
+> `BRAIN_KEY`, `PRIMARY_MODEL` ↔ `BRAIN_MODEL`, `FALLBACK_MODELS` ↔
+> `BRAIN_FALLBACKS`. The new `BRAIN_*` names are preferred and used
+> by `hydragent onboard`. If both are set, `BRAIN_*` wins.
+>
+> **Common pitfall**: don't put a trailing slash on `BRAIN_BASE`. Use
+> `https://x.y/v1`, not `https://x.y/v1/`. The kernel appends
+> `/chat/completions` itself.
 
 ### Run
 
-```bash
-# Start the Rust core (listens on Unix socket)
-./target/release/hydragent start &
+```powershell
+# Option A — interactive terminal chat (REPL, no adapter needed)
+.\Hydragent.cmd chat
+# or
+.\target\debug\hydragent.exe chat
 
-# Start the Python CLI adapter (connects to Rust core)
-python adapters/cli_adapter.py
+# Option B — start the bus server so adapters (Telegram / Discord / Slack / CLI) can connect
+.\target\debug\hydragent.exe                    # no subcommand = bus server
+python adapters\cli_adapter.py                  # then in another shell
 
-# Or in lightweight edge mode (Zig binary, no Docker, local model only)
-./edge/zig-out/bin/hydragent-edge --model=tinyllama
+# Option C — from Python, via the official SDK
+pip install -e adapters\
+python -c "from hydragent_py import HydraClient; print(HydraClient.connect().__enter__().chat('Hello!'))"
 ```
+
+Inside `hydragent chat`, type `/help` for a list of slash commands
+(`/model`, `/memory list`, `/clear`, `/reasoning`, …). For the full
+walkthrough of the REPL plus the reasoning-trace toggle, see
+[`ONBOARDING.md` §3](ONBOARDING.md#3-the-4-step-first-run).
+
+> **Coming back to add code?** See [`CONTRIBUTING.md`](CONTRIBUTING.md)
+> for code conventions and the exact files to touch when you add a
+> tool, skill, or channel adapter.
 
 ---
 

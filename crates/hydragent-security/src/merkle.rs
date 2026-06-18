@@ -38,6 +38,7 @@ use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::signer::AgentSigner;
 
@@ -98,6 +99,20 @@ impl VerificationResult {
 pub struct MerkleAuditChain {
     pool: SqlitePool,
     signer: Arc<AgentSigner>,
+    /// Serializes [`Self::append`] calls so the `prev_hash` lookup and
+    /// the `INSERT` are atomic with respect to other writers.
+    ///
+    /// Without this mutex, two concurrent appends can both read the
+    /// same "current chain head", compute different `chain_hash`
+    /// values, and both insert with the same `prev_hash` — permanently
+    /// forking the chain from that point on. This was observed in the
+    /// wild during the `stress-conc` run (seq 117, 118, 119 all share
+    /// the same `prev_hash` from seq 115, breaking verification at
+    /// seq 117).
+    ///
+    /// Held only across the write path; reads (verify, list) do not
+    /// acquire it, so concurrent readers are unaffected.
+    append_lock: Arc<Mutex<()>>,
 }
 
 impl MerkleAuditChain {
@@ -113,7 +128,11 @@ impl MerkleAuditChain {
             .connect(&url)
             .await?;
         Self::initialize(&pool).await?;
-        Ok(Self { pool, signer })
+        Ok(Self {
+            pool,
+            signer,
+            append_lock: Arc::new(Mutex::new(())),
+        })
     }
 
     /// In-memory chain (for tests). Schema is initialized automatically.
@@ -123,7 +142,11 @@ impl MerkleAuditChain {
             .connect("sqlite::memory:")
             .await?;
         Self::initialize(&pool).await?;
-        Ok(Self { pool, signer })
+        Ok(Self {
+            pool,
+            signer,
+            append_lock: Arc::new(Mutex::new(())),
+        })
     }
 
     /// Create the `audit_chain` table and its indexes. Idempotent.
@@ -155,6 +178,10 @@ impl MerkleAuditChain {
     /// to the chain. Computes the full hash chain and Ed25519 signature
     /// in a single SQL transaction.
     pub async fn append(&self, event: AuditEvent) -> anyhow::Result<i64> {
+        // Serialize concurrent appends. See the field comment on
+        // `append_lock` for the bug this prevents.
+        let _guard = self.append_lock.lock().await;
+
         // 1. Canonical JSON of the event. serde_json uses the field
         //    declaration order of `AuditEvent`, which is stable.
         let event_json = serde_json::to_string(&event)?;
