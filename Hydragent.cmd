@@ -16,6 +16,7 @@ REM     Hydragent ps               - list running Hydragent processes
 REM     Hydragent status           - one-shot status dashboard
 REM     Hydragent stop [pid]      - stop a running gateway
 REM     Hydragent chat             - interactive REPL
+REM     Hydragent ui               - launch the browser Control UI
 REM     Hydragent <subcommand> ... - any other subcommand of the binary
 REM
 REM If a .env is found at the canonical location (%HYDRAGENT_HOME%\.env,
@@ -42,6 +43,13 @@ REM `Hydragent install` runs the one-command installer. If the binary is
 REM missing, we run the installer unconditionally (it's the only way to
 REM put the binary in place).
 if /I "%~1"=="install" goto :do_install
+
+REM --- 2b. Special subcommand: ui ---------------------------------------------
+REM `Hydragent ui` launches the browser-based Control UI (Python adapter
+REM in adapters/control_ui/). This is a thin convenience wrapper around
+REM `python -m adapters.control_ui`; the kernel must already be running
+REM (or the UI will just show "offline" until it comes up).
+if /I "%~1"=="ui" goto :do_ui
 if not exist "%HYDRAGENT_BIN_EXE%" (
     echo [Hydragent] hydragent.exe not found at "%HYDRAGENT_BIN_EXE%".
     echo [Hydragent] Routing to the one-command installer.
@@ -88,6 +96,32 @@ if not exist "%HYDRAGENT_INSTALLER%" (
         "try { Invoke-WebRequest -UseBasicParsing -Uri 'https://joker0210G.github.io/Hydragent/install.ps1' -OutFile '%HYDRAGENT_INSTALLER%' } catch { try { Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/joker0210G/Hydragent/main/install.ps1' -OutFile '%HYDRAGENT_INSTALLER%' } catch { exit 1 } }"
     if errorlevel 1 (
         echo [Hydragent] ERROR: Could not download install.ps1.
+:do_ui
+REM Launch the Control UI adapter. We try the repo layout first (so
+REM contributors running from a clone get the latest code), then fall
+REM back to the packaged adapter under %HYDRAGENT_HOME%\adapters.
+if exist "%HYDRAGENT_HOME%\.env" call :load_env "%HYDRAGENT_HOME%\.env"
+set "HYDRA_CONTROL_UI_REPO_ROOT=%HYDRAGENT_HOME%\src\adapters"
+if not exist "%HYDRA_CONTROL_UI_REPO_ROOT%\control_ui" (
+    set "HYDRA_CONTROL_UI_REPO_ROOT=%HYDRAGENT_HOME%\adapters"
+)
+where python >nul 2>nul
+if errorlevel 1 (
+    echo [Hydragent] ERROR: python is not on PATH. Install Python 3.10+ and try again.
+    exit /b 1
+)
+if not exist "%HYDRAGENT_CONTROL_UI_REPO_ROOT%\control_ui\__init__.py" (
+    echo [Hydragent] ERROR: Could not find adapters/control_ui at:
+    echo             "%HYDRAGENT_CONTROL_UI_REPO_ROOT%"
+    echo             Run `Hydragent install` to bootstrap a fresh checkout.
+    exit /b 1
+)
+echo [Hydragent] Starting Control UI on http://%HYDRA_CONTROL_UI_HOST%:%HYDRA_CONTROL_UI_PORT%/
+echo             Press Ctrl-C to stop.
+set "PYTHONPATH=%HYDRAGENT_CONTROL_UI_REPO_ROOT%;%HYDRAGENT_HOME%\adapters;%PYTHONPATH%"
+python -m adapters.control_ui %2 %3 %4 %5 %6 %7 %8 %9
+exit /b %ERRORLEVEL%
+
         echo [Hydragent] Please clone the repo and run: git clone https://github.com/joker0210G/Hydragent ^&^& cd Hydragent ^&^& Hydragent.cmd install
         exit /b 1
     )

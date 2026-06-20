@@ -54,10 +54,18 @@ hydragent --version     # prints version + git hash
 hydragent status        # one-shot dashboard
 hydragent ps            # no gateways running yet (expected)
 hydragent serve         # starts the gateway in the foreground
+
+# Launch the browser Control UI (token-auth; opens http://127.0.0.1:8765/)
+Hydragent ui
 ```
 
 > **Tip:** open a **new** terminal first. The `PATH` change only applies to
 > processes spawned after the installer finishes.
+
+The browser **Control UI** (`adapters/control_ui/`) ships with Hydragent
+and is started by the launcher above — it bundles the SPA shell, four
+themes, seven locales, PWA install, and VAPID-based Web Push. See
+[`doc/CONTROL_UI.md`](doc/CONTROL_UI.md) for the full feature reference.
 
 ---
 

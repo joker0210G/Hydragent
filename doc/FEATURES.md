@@ -240,7 +240,7 @@ A single Hydragent runtime instance communicates across **40+ channel adapters**
 | **Voice** | Whisper STT + Coqui TTS (local), ElevenLabs TTS (cloud) |
 | **Work** | Microsoft Teams, DingTalk, Lark, QQ, WeChat Work |
 | **Developer** | CLI (terminal-native), GitHub webhooks, GitLab CI, Jira |
-| **Web** | Embedded web chat widget, REST webhook, WebSocket stream |
+| **Web** | Embedded web chat widget, REST webhook, WebSocket stream, **browser Control UI** (token / password / proxy auth, device pairing, themes, i18n, PWA, Web Push — see `doc/CONTROL_UI.md`) |
 | **IoT / Hardware** | MQTT broker, GPIO serial (for edge deployments) |
 
 ### 3.2 Gateway Architecture

@@ -1,0 +1,66 @@
+{
+  "$schema": "https://hydragent.ai/schemas/control-ui/themes.json",
+  "default": "hydra-dark",
+  "themes": [
+    {
+      "id": "hydra-dark",
+      "label": "Hydra Dark",
+      "type": "dark",
+      "vars": {
+        "--hydra-bg": "#0a0e14",
+        "--hydra-bg-elev": "#0f141b",
+        "--hydra-bg-soft": "#131923",
+        "--hydra-fg": "#d6deeb",
+        "--hydra-fg-muted": "#8a98ad",
+        "--hydra-accent": "#6cb6ff",
+        "--hydra-accent-soft": "#1f6feb33",
+        "--hydra-border": "#1d2530"
+      }
+    },
+    {
+      "id": "hydra-light",
+      "label": "Hydra Light",
+      "type": "light",
+      "vars": {
+        "--hydra-bg": "#f7f9fc",
+        "--hydra-bg-elev": "#ffffff",
+        "--hydra-bg-soft": "#eef2f8",
+        "--hydra-fg": "#0a0e14",
+        "--hydra-fg-muted": "#54627a",
+        "--hydra-accent": "#1f6feb",
+        "--hydra-accent-soft": "#1f6feb22",
+        "--hydra-border": "#d8dfe9"
+      }
+    },
+    {
+      "id": "abyss",
+      "label": "Abyss",
+      "type": "dark",
+      "vars": {
+        "--hydra-bg": "#02030a",
+        "--hydra-bg-elev": "#06091a",
+        "--hydra-bg-soft": "#0b1024",
+        "--hydra-fg": "#b4b8ff",
+        "--hydra-fg-muted": "#64689a",
+        "--hydra-accent": "#a48dff",
+        "--hydra-accent-soft": "#6c4cf033",
+        "--hydra-border": "#161b3a"
+      }
+    },
+    {
+      "id": "aurora",
+      "label": "Aurora",
+      "type": "dark",
+      "vars": {
+        "--hydra-bg": "linear-gradient(135deg, #0b1430 0%, #1c0b30 60%, #0b3022 100%)",
+        "--hydra-bg-elev": "rgba(20, 30, 50, 0.55)",
+        "--hydra-bg-soft": "rgba(20, 30, 50, 0.30)",
+        "--hydra-fg": "#f1f3ff",
+        "--hydra-fg-muted": "#b6c1da",
+        "--hydra-accent": "#76e4c1",
+        "--hydra-accent-soft": "#76e4c133",
+        "--hydra-border": "rgba(255, 255, 255, 0.08)"
+      }
+    }
+  ]
+}

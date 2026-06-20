@@ -1,0 +1,10 @@
+# Control UI — runtime dependencies
+#
+# The Control UI is a thin layer over the existing websocket adapter's
+# wire format, so its only new dependencies are the same ones the
+# websocket adapter needs (aiohttp + dotenv) plus `cryptography` for
+# the VAPID keypair (Web Push).
+
+aiohttp>=3.9,<4
+python-dotenv>=1.0
+cryptography>=42

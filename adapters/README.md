@@ -88,6 +88,7 @@ platforms to the Hydragent kernel via the bus.
 | `email_adapter.py` | IMAP/SMTP | stdlib |
 | `webhook_adapter.py` | Generic HTTP | stdlib |
 | `websocket_adapter.py` | WebSocket | `websockets` |
+| `control_ui/` | Browser Control UI | `aiohttp` (reuses the websocket adapter's wire format) |
 
 All adapters import `BusClient` from `bus_client.py` (which is a
 shim → `hydragent_py.bus.BusClient`).
@@ -102,6 +103,11 @@ hydragent serve &
 python -m adapters.telegram_adapter
 python -m adapters.discord_adapter
 python -m adapters.slack_adapter
+
+# Browser Control UI (token auth by default; see adapters/control_ui/README.md)
+HYDRA_GATEWAY_TOKEN=changeme python -m adapters.control_ui
+# or, on Windows, just:
+Hydragent ui
 ```
 
 Each adapter reads its credentials from environment variables —
@@ -134,6 +140,7 @@ from `hydragent_py` directly.
 | `test_connection.py` | Adapter smoke test |
 | `generate_library_graph.py` | Builds the D3 graph for the miniapp |
 | `miniapp/` | The web-based visual UI (D3 + Chart.js) |
+| `control_ui/` | The browser **Control UI** (token auth, device pairing, themes, i18n, PWA, Web Push, admin RPC, hooks). See [control_ui/README.md](control_ui/README.md) and [../../doc/CONTROL_UI.md](../../doc/CONTROL_UI.md). |
 
 ---
 

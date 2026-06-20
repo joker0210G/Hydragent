@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en" data-theme="hydra-dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Hydragent — Control UI</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#0a0e14" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='52' font-size='52'>🐙</text></svg>" />
+    <link rel="stylesheet" href="./assets/style.css" />
+  </head>
+  <body>
+    <noscript>This Control UI requires JavaScript.</noscript>
+
+    <header class="topbar" role="banner">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">🐙</span>
+        <span class="name">Hydragent</span>
+        <span class="channel">Control UI</span>
+      </div>
+      <nav class="tabs" id="tabs" role="tablist" aria-label="Panels">
+        <button class="tab" role="tab" data-tab="chat" aria-selected="true">Chat</button>
+        <button class="tab" role="tab" data-tab="memory">Memory</button>
+        <button class="tab" role="tab" data-tab="library">Library</button>
+        <button class="tab" role="tab" data-tab="skills">Skills</button>
+        <button class="tab" role="tab" data-tab="dreams">Dreams</button>
+        <button class="tab" role="tab" data-tab="cron">Cron</button>
+        <button class="tab" role="tab" data-tab="pages">Pages</button>
+        <button class="tab" role="tab" data-tab="config">Config</button>
+      </nav>
+      <div class="topbar-right">
+        <label class="sr-only" for="theme-select">Theme</label>
+        <select id="theme-select" class="select" aria-label="Theme"></select>
+        <label class="sr-only" for="lang-select">Language</label>
+        <select id="lang-select" class="select" aria-label="Language">
+          <option value="en">English</option>
+          <option value="zh-CN">简体中文</option>
+          <option value="de">Deutsch</option>
+          <option value="es">Español</option>
+          <option value="fr">Français</option>
+          <option value="ja-JP">日本語</option>
+          <option value="pt-BR">Português</option>
+        </select>
+        <span id="conn-status" class="conn-status" data-state="offline" title="WebSocket status">
+          <span class="dot" aria-hidden="true"></span>
+          <span class="label">offline</span>
+        </span>
+        <button id="install-pwa" class="btn ghost" hidden>Install</button>
+      </div>
+    </header>
+
+    <main id="panels" class="panels" role="main">
+      <!-- CHAT ------------------------------------------------------------ -->
+      <section class="panel" data-panel="chat" role="tabpanel" aria-label="Chat">
+        <div class="chat-stream" id="chat-stream" aria-live="polite"></div>
+        <form id="chat-form" class="chat-form" autocomplete="off">
+          <textarea id="chat-input"
+                    rows="1"
+                    placeholder="Talk to Hydragent…"
+                    aria-label="Message"></textarea>
+          <button type="submit" class="btn primary" id="chat-send">Send</button>
+          <button type="button" class="btn ghost" id="chat-cancel" hidden>Stop</button>
+        </form>
+        <div class="chat-actions">
+          <button class="btn ghost" id="chat-clear">Clear</button>
+          <button class="btn ghost" id="chat-new">New page</button>
+        </div>
+      </section>
+
+      <!-- MEMORY ---------------------------------------------------------- -->
+      <section class="panel" data-panel="memory" role="tabpanel" hidden>
+        <div class="row">
+          <input id="memory-search" class="input" placeholder="Search memory…" />
+          <button class="btn" id="memory-refresh">Refresh</button>
+        </div>
+        <ul id="memory-list" class="list" aria-busy="true"></ul>
+        <div class="footer">
+          <button class="btn danger" id="memory-clear-all">Clear all</button>
+        </div>
+      </section>
+
+      <!-- LIBRARY --------------------------------------------------------- -->
+      <section class="panel" data-panel="library" role="tabpanel" hidden>
+        <div class="row">
+          <input id="library-search" class="input" placeholder="Search library…" />
+          <button class="btn" id="library-refresh">Refresh</button>
+        </div>
+        <ul id="library-list" class="list" aria-busy="true"></ul>
+      </section>
+
+      <!-- SKILLS ---------------------------------------------------------- -->
+      <section class="panel" data-panel="skills" role="tabpanel" hidden>
+        <div class="row">
+          <input id="skill-search" class="input" placeholder="Search skills…" />
+          <button class="btn" id="skill-refresh">Refresh</button>
+        </div>
+        <ul id="skill-list" class="list" aria-busy="true"></ul>
+      </section>
+
+      <!-- DREAMS ---------------------------------------------------------- -->
+      <section class="panel" data-panel="dreams" role="tabpanel" hidden>
+        <div class="row">
+          <span class="muted">Dreams are reflective consolidation cycles.</span>
+          <button class="btn" id="dream-status">Status</button>
+          <button class="btn primary" id="dream-run">Run now</button>
+        </div>
+        <pre id="dream-output" class="output" aria-live="polite"></pre>
+      </section>
+
+      <!-- CRON ------------------------------------------------------------ -->
+      <section class="panel" data-panel="cron" role="tabpanel" hidden>
+        <div class="row">
+          <button class="btn" id="cron-refresh">Refresh</button>
+          <button class="btn primary" id="cron-add">Add job…</button>
+        </div>
+        <table class="table" id="cron-table">
+          <thead>
+            <tr><th>Name</th><th>Cron</th><th>Last run</th><th>Next run</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- PAGES ----------------------------------------------------------- -->
+      <section class="panel" data-panel="pages" role="tabpanel" hidden>
+        <div class="row">
+          <button class="btn" id="page-refresh">Refresh</button>
+          <button class="btn ghost" id="page-compact">Compact current</button>
+        </div>
+        <ul id="page-list" class="list"></ul>
+      </section>
+
+      <!-- CONFIG ---------------------------------------------------------- -->
+      <section class="panel" data-panel="config" role="tabpanel" hidden>
+        <pre id="config-output" class="output" aria-live="polite"></pre>
+        <div class="footer">
+          <button class="btn" id="config-reload">Reload</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Permission modal -------------------------------------------------- -->
+    <dialog id="perm-modal" class="modal">
+      <form method="dialog">
+        <h2 id="perm-title">Permission requested</h2>
+        <p id="perm-summary" class="muted"></p>
+        <div class="row">
+          <button class="btn" value="once" id="perm-once">Allow once</button>
+          <button class="btn primary" value="session" id="perm-session">Allow for session</button>
+          <button class="btn ghost" value="deny" id="perm-deny">Deny</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Auth / pairing banner -------------------------------------------- -->
+    <div id="auth-banner" class="auth-banner" hidden>
+      <span class="msg">🔒 Auth required</span>
+      <input id="auth-token" class="input" type="password" placeholder="Token / Password" />
+      <button class="btn primary" id="auth-submit">Unlock</button>
+      <button class="btn ghost" id="auth-dismiss">Dismiss</button>
+    </div>
+
+    <script src="./assets/i18n.js"></script>
+    <script src="./assets/app.js"></script>
+    <script>
+      // Register the service worker as soon as the HTML is parsed.
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("./sw.js").catch((err) => console.warn("SW register failed", err));
+        });
+      }
+    </script>
+  </body>
+</html>

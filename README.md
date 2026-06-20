@@ -70,7 +70,7 @@ Hydragent is **shipped, not aspirational**. The numbers below are audited by
 | **Workspace** | 16 Rust crates on `resolver = "2"` |
 | **Test count** | **49 tests passing in `hydragent-core` kernel binary** (v0.7.1) |
 | **Phase 7 net-new** | 86 tests — 52 skills + 30 bench + 4 skill-induction |
-| **Channels live** | 6 messaging adapters + Telegram Mini App + bus client |
+| **Channels live** | 6 messaging adapters + Telegram Mini App + browser **Control UI** + bus client |
 | **Model Council** | **20+ model profiles** in `config/model_council.yaml`, 8 task types |
 | **Skill library** | 3 builtins shipped; FTS5 + tag retrieval; 7-day Curator active |
 | **Eval harness** | SKILL-BENCH v1 (**80 tasks**) + Golden Set v1 (**30 pairs**) |
@@ -111,6 +111,7 @@ hydragent serve           # gateway in the foreground
 hydragent ps              # list running gateways
 hydragent stop [pid]      # stop a running gateway
 hydragent chat            # interactive REPL
+Hydragent ui              # browser Control UI (http://127.0.0.1:8765/)
 hydragent update          # ⬆️  self-update to the latest release
 hydragent uninstall       # 🗑️  remove the install + PATH entry (prompts first)
 ```

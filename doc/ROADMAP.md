@@ -201,7 +201,7 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 - [x] Persistent cron daemon for proactive task triggers
 - [x] **`WorkIQ` awareness bus** (event bus only; persistence + summarisation pending)
 - [ ] WhatsApp / Signal / iMessage / Matrix adapters
-- [ ] Web chat UI (embedded widget, REST API + WebSocket)
+- [x] **Web Control UI** (browser dashboard — token / pairing / themes / i18n / PWA / Web Push, see `doc/CONTROL_UI.md`)
 - [ ] Voice I/O: Whisper STT + Coqui TTS integration
 - [ ] Work IQ knowledge base (persistence + summarisation on top of the bus)
 - [ ] Auth profile rotation with exponential backoff (1 min → 5 min → 25 min, capped at 1 hour)
@@ -215,6 +215,7 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 | WhatsApp adapter | Baileys library; handle media messages, contact references |
 | Slack adapter | Slack Bolt; home tab, events API, interactive components |
 | Web widget | React-based embedded chat widget with WebSocket streaming |
+| **Browser Control UI** | `adapters/control_ui/` — token / pairing / themes / i18n / PWA / Web Push, shares the WS adapter wire format, no Rust changes. See [`doc/CONTROL_UI.md`](CONTROL_UI.md) |
 | Cron daemon | YAML-configured cron with dynamic task creation from conversation |
 | Proactive monitoring | Inbox scanner, RSS reader, system metric monitor — all cron-triggered |
 | Whisper STT | Local Whisper integration (ggml C++ bindings) for voice input |

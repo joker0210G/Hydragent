@@ -84,7 +84,8 @@ From `Cargo.toml` (`resolver = "2"`, members list):
 | `formatter.py` | ✅ Live | Channel-agnostic message rendering. |
 | `test_connection.py` | ✅ Live | Adapter smoke test. |
 | `generate_library_graph.py` | ✅ Live | Builds the D3.js graph for the miniapp. |
-| `miniapp/` | ✅ Live | D3 graph + glassmorphism UI. |
+| `miniapp/` | ✅ Live | D3 graph + glassmorphism UI (Telegram-specific Mini App). |
+| `control_ui/` | ✅ Live | Browser **Control UI** (token / password / proxy auth, device pairing, themes, i18n, PWA, Web Push, admin RPC, hooks). See [`doc/CONTROL_UI.md`](CONTROL_UI.md) and [`adapters/control_ui/README.md`](../adapters/control_ui/README.md). |
 | WhatsApp, Signal, Matrix, iMessage, Teams, Lark, etc. | ❌ Not present | Phase 4 spec lists them; not built. |
 
 ### 1.3 Tools actually registered
