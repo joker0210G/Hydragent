@@ -195,6 +195,123 @@ function Ensure-Directory {
 }
 
 # ---------------------------------------------------------------------------
+# 1b. Install helpers (used by the Rust installer)
+# ---------------------------------------------------------------------------
+
+# Always-writable temp directory owned by Hydragent. Using $env:TEMP is
+# fragile on Windows: it can be a short 8.3 path (C:\Users\FOO~1\...),
+# a UNC path with embedded credentials, or a directory full of stale
+# half-written installer scripts. Remove-Item has been observed to throw
+# "object at the specified path X does not exist" on those legacy
+# short-name paths during the cleanup step of rustup-init, which made
+# the installer loop forever. Using our own directory under the install
+# root avoids all of that.
+function Get-HydraTempDir {
+    $dir = Join-Path $InstallRoot 'tmp'
+    Ensure-Directory $dir
+    return $dir
+}
+
+# Locate an existing cargo.exe, even if not on the current session's
+# PATH. Returns the directory containing cargo.exe, or $null.
+#
+# Checks, in order:
+#   1. Current session PATH (Get-Command)
+#   2. %USERPROFILE%\.cargo\bin (the rustup default)
+#   3. C:\Program Files\Rust\bin (the legacy .msi installer location)
+function Find-ExistingCargo {
+    $cmd = Get-Command cargo -ErrorAction SilentlyContinue
+    if ($cmd -and (Test-Path $cmd.Path)) {
+        return Split-Path -Parent $cmd.Path
+    }
+
+    $candidates = @(
+        (Join-Path $env:USERPROFILE '.cargo\bin'),
+        'C:\Program Files\Rust\bin'
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path (Join-Path $c 'cargo.exe')) { return $c }
+    }
+
+    return $null
+}
+
+# Locate the Visual Studio Build Tools install that ships the MSVC
+# toolchain (cl.exe + link.exe + Windows SDK). Returns the install
+# root, or $null if not installed. Uses vswhere.exe, which ships with
+# every Visual Studio install (Community, Professional, Build Tools).
+function Find-MsvcBuildTools {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path $vswhere)) { return $null }
+
+    try {
+        $path = & $vswhere -latest -products * `
+                       -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                       -property installationPath 2>$null
+    } catch {
+        return $null
+    }
+    if ($LASTEXITCODE -ne 0) { return $null }
+    if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+    return $path
+}
+
+# Verify that a cargo install actually works end-to-end. Just checking
+# `cargo --version` is necessary but not sufficient: the MSVC toolchain
+# can install successfully yet fail every `cargo build` because the
+# Visual Studio Build Tools (or "Windows SDK") aren't installed -- this
+# is exactly the warning that fires during a bare rustup install:
+#
+#     warn: installing msvc toolchain without its prerequisites
+#
+# We catch it by probing for the linker (link.exe) via vswhere when the
+# installed triple looks like MSVC.
+function Test-CargoToolchain {
+    param([string]$CargoBin)
+
+    $cargoExe = Join-Path $CargoBin 'cargo.exe'
+    if (-not (Test-Path $cargoExe)) { return $false }
+
+    $env:Path = "$CargoBin;$env:Path"
+
+    $cv = & cargo --version 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+
+    $rv = & rustc --version 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+
+    if ($cv -match 'msvc') {
+        if (-not (Find-MsvcBuildTools)) { return $false }
+    }
+
+    return $true
+}
+
+# Add a directory to the persistent user PATH (and the current session's
+# PATH), if it's not already there. This is the canonical way to expose
+# a newly-installed toolchain to FUTURE shells; new shells that the
+# user opens will inherit it automatically via the User env var.
+function Install-PersistentPathEntry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Dir
+    )
+
+    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $entries = if ($current) { $current -split ';' } else { @() }
+    if ($entries -contains $Dir) {
+        Write-Info "PATH already contains $Dir"
+        $env:Path = "$Dir;$env:Path"
+        return
+    }
+    $new = if ($current) { "$Dir;$current" } else { $Dir }
+    [Environment]::SetEnvironmentVariable('Path', $new, 'User')
+    $env:Path = "$Dir;$env:Path"
+    Write-OK "Added $Dir to user PATH"
+}
+
+# ---------------------------------------------------------------------------
 # 2. Install steps
 # ---------------------------------------------------------------------------
 
@@ -215,7 +332,7 @@ function Install-FromRelease {
 
     $asset    = "hydragent-$v-$triple.zip"
     $download = "$ReleaseBase/download/$v/$asset"
-    $zipPath  = Join-Path $env:TEMP $asset
+    $zipPath  = Join-Path (Get-HydraTempDir) $asset
 
     Write-Step 2 "Downloading prebuilt binary"
     Write-Info "URL: $download"
@@ -230,7 +347,7 @@ function Install-FromRelease {
         Remove-Item (Join-Path $BinDir $BinName) -Force
     }
     Expand-Archive -Path $zipPath -DestinationPath $BinDir -Force
-    Remove-Item $zipPath -Force
+    try { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue } catch { }
 
     if (-not (Test-Path (Join-Path $BinDir $BinName))) {
         throw "Extraction succeeded but $BinName not found in archive"
@@ -239,34 +356,177 @@ function Install-FromRelease {
 
 function Install-FromSource {
     [CmdletBinding()]
-    param()
+    param(
+        [ValidateSet('auto', 'msvc', 'gnu')]
+        [string]$Toolchain = 'auto'
+    )
 
-    Install-RustIfMissing
+    Install-RustIfMissing -Toolchain $Toolchain
     Install-SourceCheckout
     Build-Source
 }
 
 function Install-RustIfMissing {
-    if (Test-Command cargo) {
-        $cv = (& cargo --version) -replace "`r`n", ''
-        Write-OK "Rust already installed: $cv"
-        return
+    [CmdletBinding()]
+    param(
+        [switch]$Force,
+        [ValidateSet('auto', 'msvc', 'gnu')]
+        [string]$Toolchain = 'auto'
+    )
+
+    # 1. Fast path: a working toolchain is already on PATH (or in a
+    #    well-known install dir). Confirm it works end-to-end, persist
+    #    the PATH entry, then bail.
+    if (-not $Force) {
+        $existingBin = Find-ExistingCargo
+        if ($existingBin -and (Test-CargoToolchain -CargoBin $existingBin)) {
+            $cv = (& cargo --version) -replace "`r`n", ''
+            $rv = (& rustc --version) -replace "`r`n", ''
+            Write-OK "Rust toolchain ready: $rv / $cv  (at $existingBin)"
+            Install-PersistentPathEntry -Dir $existingBin | Out-Null
+            return
+        }
+        if ($existingBin) {
+            Write-Warn "cargo found at $existingBin but failed sanity check; reinstalling."
+        }
     }
 
+    # 2. Decide which Rust target triple to install. Default follows the
+    #    OS preference: MSVC if Visual Studio Build Tools are installed
+    #    (the canonical Windows target), GNU otherwise. Override with
+    #    -Toolchain msvc|gnu.
+    $triple = Get-TargetTriple   # x86_64-pc-windows-msvc | aarch64-pc-windows-msvc
+    if ($Toolchain -eq 'auto') {
+        if (Find-MsvcBuildTools) {
+            Write-Info "MSVC build tools detected -> using MSVC toolchain."
+            # $triple already ends in -msvc; nothing to change.
+        } else {
+            Write-Warn "MSVC build tools not detected."
+            Write-Warn "Falling back to the GNU toolchain (rustup will install MinGW)."
+            Write-Warn "For MSVC later, install Visual Studio Build Tools:"
+            Write-Warn "  https://visualstudio.microsoft.com/visual-cpp-build-tools/"
+            $triple = $triple -replace '-msvc$', '-gnu'
+        }
+    } elseif ($Toolchain -eq 'gnu') {
+        $triple = $triple -replace '-msvc$', '-gnu'
+    }
+    # -Toolchain 'msvc' keeps $triple as-is.
+    Write-Info "Target triple: $triple"
+
+    # 3. Prepare a safe temp dir. See Get-HydraTempDir for the rationale.
+    $work = Get-HydraTempDir
+    $tmp  = Join-Path $work 'rustup-init.exe'
+    $log  = Join-Path $work 'rustup-init.log'
+
+    # 4. Download rustup-init. Try the canonical URL first, then fall
+    #    back to winget if a network proxy blocks the direct download.
     Write-Step 'A1' "Installing Rust toolchain via rustup"
     $url = 'https://win.rustup.rs/x86_64'
-    $tmp = Join-Path $env:TEMP 'rustup-init.exe'
     Write-Info "Downloading $url"
-    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tmp
-    Write-Info "Running rustup-init -y (stable, minimal profile)"
-    & $tmp -y --default-toolchain stable --profile minimal --no-modify-path | Out-Null
-    Remove-Item $tmp -Force
-    $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
-    if (Test-Path $cargoBin) { $env:Path = "$cargoBin;$env:Path" }
-    if (-not (Test-Command cargo)) {
-        Write-Err "Rust installation reported success but cargo is not on PATH. Restart your shell and retry."
+
+    $skipRun = $false
+    try {
+        if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $log) { Remove-Item $log -Force -ErrorAction SilentlyContinue }
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tmp -ErrorAction Stop
+    } catch {
+        Write-Warn "Direct rustup download failed: $($_.Exception.Message)"
+        if (Test-Command winget) {
+            Write-Info "Trying winget as a fallback..."
+            try {
+                & winget install --id Rustlang.Rustup -e --source winget `
+                                 --accept-package-agreements --accept-source-agreements `
+                                 --disable-interactivity
+                if ($LASTEXITCODE -eq 0) {
+                    Write-OK "Rust installed via winget"
+                    $skipRun = $true   # winget handled the whole install
+                } else {
+                    Write-Warn "winget exited with code $LASTEXITCODE"
+                }
+            } catch {
+                Write-Warn "winget failed: $($_.Exception.Message)"
+            }
+        } else {
+            Write-Warn "winget is not available either."
+        }
+        if (-not $skipRun) {
+            Write-Err "Could not download rustup-init.exe. Check network/proxy and retry."
+        }
     }
-    Write-OK "Rust installed: $((& cargo --version) -replace "`r`n", '')"
+
+    # 5. Sanity-check the download. A real rustup-init.exe is ~10 MB.
+    #    Anything smaller than 1 MB is a redirect or error page, not
+    #    the installer. Catch this BEFORE we try to run it.
+    if (-not $skipRun) {
+        if (-not (Test-Path $tmp)) {
+            Write-Err "rustup-init.exe was not created at $tmp"
+        }
+        $size = (Get-Item $tmp).Length
+        if ($size -lt 1MB) {
+            Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+            Write-Err "rustup-init.exe is only $size bytes; download likely failed."
+        }
+        Write-Info "Downloaded $([math]::Round($size / 1MB, 1)) MB"
+
+        # 6. Run rustup-init. Stream output so the user sees progress
+        #    (a fresh toolchain install is 1-3 minutes) AND we keep a
+        #    transcript for bug reports.
+        Write-Info "Running rustup-init -y --default-toolchain stable-$triple --profile minimal"
+        Write-Info "(this typically takes 1-3 minutes for a fresh install)"
+        & $tmp -y --default-toolchain "stable-$triple" --profile minimal --no-modify-path `
+            2>&1 | Tee-Object -FilePath $log | Out-Host
+        $rustupExit = $LASTEXITCODE
+    } else {
+        $rustupExit = 0
+    }
+
+    # 7. Best-effort cleanup of the temp dir contents (never crash).
+    #    The Rust install itself lives in ~/.cargo and ~/.rustup, which
+    #    are NOT touched here.
+    try {
+        if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+        if ($rustupExit -eq 0 -and (Test-Path $log)) {
+            # Keep last 100 lines as a debug breadcrumb.
+            Get-Content $log -Tail 100 -ErrorAction SilentlyContinue |
+                Set-Content -Path "$log.last" -Force -ErrorAction SilentlyContinue
+            Remove-Item $log -Force -ErrorAction SilentlyContinue
+            if (Test-Path "$log.last") {
+                Move-Item "$log.last" $log -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch { }
+
+    if ($rustupExit -ne 0) {
+        Write-Err "rustup-init exited with code $rustupExit. See $log for details."
+    }
+
+    # 8. Verify the new toolchain actually works end-to-end.
+    $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+    if (-not (Test-Path $cargoBin)) {
+        Write-Err "Rust installation reported success but $cargoBin does not exist."
+    }
+
+    # 9. If we installed MSVC but Build Tools aren't actually present,
+    #    the toolchain is broken (rustc will work, cargo build will fail
+    #    with a missing linker). Warn loudly so the user knows what to
+    #    install next.
+    if ($triple.EndsWith('-msvc') -and -not (Find-MsvcBuildTools)) {
+        Write-Warn "Rust installed with MSVC target, but Visual Studio Build Tools are missing."
+        Write-Warn "`cargo build` will fail with linker errors until you install:"
+        Write-Warn "  https://visualstudio.microsoft.com/visual-cpp-build-tools/"
+        Write-Warn "Tick the 'Desktop development with C++' workload (includes Windows SDK)."
+    }
+
+    if (-not (Test-CargoToolchain -CargoBin $cargoBin)) {
+        Write-Err "Rust installation completed but the toolchain is not functional. Check $log."
+    }
+
+    # 10. Persist the PATH update so future shells pick up cargo.
+    Install-PersistentPathEntry -Dir $cargoBin | Out-Null
+
+    $cv = (& cargo --version) -replace "`r`n", ''
+    $rv = (& rustc --version) -replace "`r`n", ''
+    Write-OK "Rust installed: $rv / $cv  (toolchain: stable-$triple)"
 }
 
 function Install-SourceCheckout {
@@ -370,16 +630,7 @@ function Install-SelfCopy {
 }
 
 function Install-PathEntry {
-    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $entries = if ($current) { $current -split ';' } else { @() }
-    if ($entries -contains $BinDir) {
-        Write-Info "PATH already contains $BinDir"
-        return
-    }
-    $new = if ($current) { "$BinDir;$current" } else { $BinDir }
-    [Environment]::SetEnvironmentVariable('Path', $new, 'User')
-    $env:Path = "$BinDir;$env:Path"
-    Write-OK "Added $BinDir to user PATH"
+    Install-PersistentPathEntry -Dir $BinDir
 }
 
 function Invoke-Onboarding {
