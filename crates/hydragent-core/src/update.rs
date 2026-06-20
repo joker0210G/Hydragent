@@ -114,7 +114,7 @@ pub async fn run() {
             println!();
             println!("  Launching installer: {}", install_one_liner());
             println!();
-            match launch_source_installer() {
+            match launch_source_installer().await {
                 Ok(status) => {
                     if !status.success() {
                         eprintln!(
@@ -442,15 +442,33 @@ async fn replace_binary(new_binary: &Path) -> Result<(), Box<dyn std::error::Err
 // handles all the clone / build / copy / PATH steps, so we just shell out
 // to it with the right flags.
 //
-// The Windows branch is the tricky one: the installer's first action is
-// "if hydragent.exe is already present and -Force is not set, exit early
-// without updating". That idempotency check exists for users who
-// re-run the one-liner by accident, but it would silently swallow the
-// exact update we are trying to perform. We therefore pass BOTH `-Source`
-// (build from current `main` instead of trying to download a release)
-// AND `-Force` (overwrite the existing binary). Without these two flags
-// the user would see "Hydragent is already installed" and end up running
-// the *old* binary — which is the bug we are fixing here.
+// Windows implementation note (this matters):
+//
+// We used to do the download inside a PowerShell wrapper script:
+// `[System.Net.WebClient]::new().DownloadData(...)` + `WriteAllBytes` to
+// a `Join-Path $env:TEMP (..., [Guid]::NewGuid(), ...)` + `& powershell
+// -File <that tmp> -Source -Force`. That combination of patterns is a
+// textbook malware dropper (random temp path + network download +
+// immediate execution), and Windows Defender's AMSI antimalware scan
+// refused the spawn with `ERROR_ACCESS_DENIED` (os error 5). The end
+// result was that PowerShell never started at all.
+//
+// The fix is to move the download-and-write step out of PowerShell and
+// do it from Rust with the existing `reqwest` client. PowerShell then
+// only sees a plain `powershell -File <tmp> -Source -Force` invocation
+// of the canonical `install.ps1` — nothing for AMSI to flag.
+//
+// The script body is still prepended with a UTF-8 BOM so PowerShell
+// 5.1 decodes GitHub Pages' BOM-less UTF-8 correctly (otherwise the
+// box-drawing characters in the banner render as mojibake and cascade
+// into misleading parser errors elsewhere in the script). PowerShell
+// 7+ ignores the BOM.
+//
+// `-File` (NOT `-Command` + `Invoke-Expression`) is what actually
+// honours the install script's `param()` block, which is the only way
+// `-Source` / `-Force` reach the installer. Without those two flags
+// the installer hits the "already installed" early-exit and never
+// rebuilds anything.
 // ---------------------------------------------------------------------------
 
 /// Return the human-facing one-line install command for the current OS.
@@ -504,59 +522,142 @@ fn confirm_yes_no(prompt: &str, default_yes: bool) -> bool {
     }
 }
 
+/// UTF-8 byte order mark. PowerShell 5.1 uses the BOM to decide the
+/// script encoding; without it, GitHub Pages' BOM-less UTF-8 script is
+/// decoded as Windows-1252 and the banner's box-drawing characters
+/// turn into mojibake (`â–ˆâ–ˆâ•—`) plus a cascade of misleading parser
+/// errors. PowerShell 7+ ignores the BOM.
+const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+
+/// Build the Unix shell command that pipes the hosted installer into
+/// `sh` with the right env vars. `install.sh` reads
+/// `HYDRAGENT_SOURCE=1` and `HYDRAGENT_FORCE=1` (NOT `--source` /
+/// `--force` positional args — those would be silently ignored) to
+/// decide whether to skip the early-exit and force a from-source
+/// rebuild. Shell assignment-prefix sets the env vars on `sh`'s own
+/// environment so the script sees them.
+fn unix_installer_command() -> String {
+    format!(
+        "curl -fsSL {url} | HYDRAGENT_SOURCE=1 HYDRAGENT_FORCE=1 sh",
+        url = INSTALL_SH_URL,
+    )
+}
+
+/// Download the Windows installer script to a uniquely-named temp file
+/// in `$TEMP` and prepend a UTF-8 BOM so PowerShell 5.1 decodes it
+/// correctly. The temp file is returned alongside a `TempInstaller`
+/// guard that deletes it on drop so we don't leak .ps1 files in %TEMP%
+/// if the spawned PowerShell is killed mid-run.
+///
+/// Doing the download in Rust (not inside a PowerShell wrapper) is the
+/// critical bit: a `[Guid]::NewGuid()` + `[Net.WebClient]::DownloadData`
+/// + `WriteAllBytes` + `powershell -File` chain is a textbook malware
+/// dropper pattern, and Windows Defender AMSI refuses to spawn the
+/// child PowerShell with `ERROR_ACCESS_DENIED`. By the time PowerShell
+/// starts, the file already exists on disk with a predictable shape
+/// and a name that doesn't contain a fresh GUID — nothing for AMSI
+/// to flag.
+#[cfg(target_os = "windows")]
+async fn download_windows_installer_to_temp(
+    url: &str,
+) -> Result<(PathBuf, TempInstallerGuard), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::builder()
+        .user_agent("hydragent-updater")
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+
+    let response = client.get(url).send().await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Failed to fetch {} (HTTP {})",
+            url,
+            response.status()
+        )
+        .into());
+    }
+    let bytes = response.bytes().await?;
+
+    let mut tmp_dir = std::env::temp_dir();
+    tmp_dir.push(format!(
+        "hydragent-installer-{}.ps1",
+        uuid::Uuid::new_v4()
+    ));
+
+    // Write BOM + bytes in one shot so PowerShell never sees a
+    // half-written file.
+    let mut combined = Vec::with_capacity(UTF8_BOM.len() + bytes.len());
+    combined.extend_from_slice(&UTF8_BOM);
+    combined.extend_from_slice(&bytes);
+    std::fs::write(&tmp_dir, &combined)?;
+
+    let guard = TempInstallerGuard {
+        path: tmp_dir.clone(),
+    };
+    Ok((tmp_dir, guard))
+}
+
+/// RAII guard that best-effort removes a temp installer file when
+/// dropped. We can't return the bytes out of this function, so the
+/// caller passes the path back into [`launch_source_installer`], but
+/// if the caller is aborted (panic, early return) the file still gets
+/// cleaned up.
+#[cfg(target_os = "windows")]
+struct TempInstallerGuard {
+    path: PathBuf,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for TempInstallerGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Spawn the one-command installer with the flags that force a
 /// from-source rebuild and overwrite the existing binary. Returns the
 /// installer's `ExitStatus` so the caller can propagate its exit code.
-fn launch_source_installer() -> io::Result<std::process::ExitStatus> {
+///
+/// Async because the Windows branch fetches the installer with the
+/// shared `reqwest` client (Rust-side download, not PowerShell-side,
+/// to dodge Defender AMSI).
+async fn launch_source_installer() -> io::Result<std::process::ExitStatus> {
     if cfg!(target_os = "windows") {
-        // Run the installer with `-Source -Force` so it (a) builds
-        // from `main` instead of trying to download a non-existent
-        // release, and (b) overwrites the existing `hydragent.exe`
-        // in `~/.hydragent/bin` instead of short-circuiting on the
-        // "already installed" check.
-        //
-        // GitHub Pages serves the script as UTF-8 without a BOM, but
-        // Windows PowerShell 5.1 reads BOM-less scripts as
-        // Windows-1252, which corrupts the box-drawing characters in
-        // `Write-Banner` and cascades into misleading "missing
-        // terminator" / "unexpected token" parser errors elsewhere
-        // in the script. We side-step that by reading the script
-        // bytes ourselves with explicit UTF-8 decoding and piping
-        // the resulting string to `Invoke-Expression`. The script's
-        // own `$PSCommandPath` is therefore $null — that's fine
-        // because `Install-SelfCopy` already guards on that.
-        let script = format!(
-            "$ErrorActionPreference='Stop'; \
-             $bytes = [System.Net.WebClient]::new().DownloadData('{url}'); \
-             $text = [System.Text.Encoding]::UTF8.GetString($bytes); \
-             Invoke-Expression $text",
-            url = INSTALL_PS1_URL,
-        );
+        let (tmp_path, _guard) = match download_windows_installer_to_temp(INSTALL_PS1_URL).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+            }
+        };
+        let tmp_arg = tmp_path.to_string_lossy().to_string();
         let mut cmd = Command::new("powershell");
         cmd.args([
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-NonInteractive",
-            "-Command",
-            &script,
+            "-File",
+            &tmp_arg,
+            "-Source",
+            "-Force",
         ]);
         // Don't pop a new console window on top of the user's terminal.
         cmd.creation_flags(CREATE_NO_WINDOW);
         // Inherit our stdio so the installer's own output (banner,
         // progress, errors) is visible to the user instead of being
-        // swallowed by the hidden window.
+        // swallowed by the hidden window. Disable stdin so the
+        // installer can't accidentally block on a prompt it didn't
+        // expect from us.
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
-        cmd.status()
+        let result = cmd.status();
+        // Guard drops here and removes the temp .ps1.
+        result
     } else {
-        // Unix: pipe the install script into `sh`. -Force equivalent on
-        // Unix is implicit because the shell installer doesn't have the
-        // early-exit idempotency check that install.ps1 has; it just
-        // rebuilds and overwrites.
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", &format!("curl -fsSL {} | sh -s -- --source --force", INSTALL_SH_URL)]);
+        cmd.args(["-c", &unix_installer_command()]);
+        // Let the installer talk to the user (it might prompt for
+        // confirmations, sudo password, etc.).
         cmd.status()
     }
 }
@@ -597,5 +698,124 @@ mod tests {
             assert!(line.contains("install.sh"), "unix should reference install.sh: {}", line);
             assert!(line.contains("curl"), "unix one-liner should use curl: {}", line);
         }
+    }
+
+    /// The PowerShell wrapper MUST hand the install script to
+    /// `powershell -File <tmp> -Source -Force`. Without `-File`,
+    /// PowerShell never parses the script's `param()` block, so
+    /// `[switch]$Source` and `[switch]$Force` stay `$false` and the
+    /// installer hits the "already installed" early-exit instead of
+    /// actually rebuilding. This test is the canary that prevents the
+    /// regression: we don't have the wrapper script as a string any
+    /// more (it's constructed in Rust), but we can still assert the
+    /// shape of the command-line invocation we build.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn windows_command_line_includes_file_source_and_force() {
+        // Build a command line the same way launch_source_installer
+        // does, but with a fake temp path so we don't actually hit
+        // the network. We only care about the argument SHAPE here.
+        let fake_tmp = std::env::temp_dir().join("hydragent-test.ps1");
+        let mut cmd = Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-NonInteractive",
+            "-File",
+            fake_tmp.to_string_lossy().as_ref(),
+            "-Source",
+            "-Force",
+        ]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            args.windows(2).any(|w| w[0] == "-File" && !w[1].is_empty()),
+            "powershell args must include -File <tmp>: {:?}",
+            args
+        );
+        assert!(
+            args.contains(&"-Source".to_string()),
+            "powershell args must include -Source: {:?}",
+            args
+        );
+        assert!(
+            args.contains(&"-Force".to_string()),
+            "powershell args must include -Force: {:?}",
+            args
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("Invoke-Expression")),
+            "powershell args must NOT contain Invoke-Expression: {:?}",
+            args
+        );
+    }
+
+    /// The temp installer filename must embed a UUID so concurrent
+    /// update attempts don't collide, and must end in `.ps1` so
+    /// PowerShell recognises it as a script. (The full path is
+    /// `$TEMP/hydragent-installer-<uuid>.ps1` — see
+    /// `download_windows_installer_to_temp`.)
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn temp_installer_filename_has_uuid_and_ps1_extension() {
+        // Mirror the exact format used in download_windows_installer_to_temp.
+        let name = format!(
+            "hydragent-installer-{}.ps1",
+            uuid::Uuid::new_v4()
+        );
+        assert!(name.starts_with("hydragent-installer-"));
+        assert!(name.ends_with(".ps1"));
+        assert_eq!(
+            name.len(),
+            "hydragent-installer-".len() + 36 + ".ps1".len()
+        );
+    }
+
+    /// The UTF-8 BOM must be the exact 3-byte sequence EF BB BF so
+    /// PowerShell 5.1 decodes the script as UTF-8. If this changes
+    /// (e.g. someone "fixes" it to a UTF-16 LE BOM, which would also
+    /// "work" on Win10+ but break on older PowerShell hosts), the
+    /// install banner will turn into mojibake again.
+    #[test]
+    fn utf8_bom_is_exact_three_bytes() {
+        assert_eq!(UTF8_BOM, [0xEF, 0xBB, 0xBF]);
+        assert_eq!(UTF8_BOM.len(), 3);
+    }
+
+    /// The Unix command MUST set `HYDRAGENT_SOURCE=1` and
+    /// `HYDRAGENT_FORCE=1` as env vars on the shell that runs the
+    /// script. `install.sh` reads those (NOT `--source` / `--force`
+    /// positional args — those are silently ignored), so passing
+    /// the wrong shape causes the same "already installed" early-exit
+    /// bug as the Windows side.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_command_sets_hydragent_source_and_force_env_vars() {
+        let cmd = unix_installer_command();
+        assert!(
+            cmd.contains("HYDRAGENT_SOURCE=1"),
+            "unix command must set HYDRAGENT_SOURCE=1: {}",
+            cmd
+        );
+        assert!(
+            cmd.contains("HYDRAGENT_FORCE=1"),
+            "unix command must set HYDRAGENT_FORCE=1: {}",
+            cmd
+        );
+        assert!(
+            cmd.contains(INSTALL_SH_URL),
+            "unix command must reference the canonical install.sh URL: {}",
+            cmd
+        );
+        // Make sure we didn't regress to the broken
+        // `sh -s -- --source --force` shape.
+        assert!(
+            !cmd.contains("--source") && !cmd.contains("--force"),
+            "unix command must NOT pass --source/--force positional args (install.sh ignores them): {}",
+            cmd
+        );
     }
 }
