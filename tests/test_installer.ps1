@@ -71,7 +71,7 @@ $launcherContent = Get-Content $launcher -Raw
 $expectedFragments = @(
     'HYDRAGENT_HOME',
     'HYDRAGENT_DATA_DIR',
-    'if exist "%HYDRAGENT_DATA_DIR%\.env"',
+    'if exist "%HYDRAGENT_HOME%\.env"',
     'hydragent.exe',
     'do_install'
 )

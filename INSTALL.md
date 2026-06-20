@@ -123,8 +123,8 @@ Layout:
 │   ├── hydragent            # the binary (or hydragent.exe on Windows)
 │   ├── Hydragent.cmd        # Windows launcher (auto-generated)
 │   └── install.{ps1,sh}     # the installer (for future re-runs)
+├── .env                     # your config (written by onboard) — top-level
 ├── data/
-│   ├── .env                 # your config (written by onboard)
 │   ├── logs/                # gateway + tool logs
 │   └── swarm/               # dreaming worker output
 └── src/                     # only on source installs (git clone)
@@ -133,6 +133,11 @@ Layout:
 The installer **never writes outside this directory** and **never requires
 admin elevation**. To uninstall, simply `rm -rf ~/.hydragent` and remove
 the `~/.hydragent/bin` entry from your `PATH` / shell rc.
+
+> Note: the `.env` file lives at the **top level** of `~/.hydragent/` (not
+> inside `data/`). Putting it there keeps secret material next to its
+> owning app, and mirrors the layout used by tools like Claude Code and
+> aider. See [`crates/hydragent-core/src/paths.rs`](crates/hydragent-core/src/paths.rs).
 
 ---
 
@@ -146,7 +151,7 @@ The installer ends by launching `hydragent onboard`. The wizard asks for:
 - **Brain model** — the default model for the live agent brain.
 - **Storage root** — defaults to the data directory created above.
 
-Output: `~/.hydragent/data/.env`. The launcher auto-loads this file on
+Output: `~/.hydragent/.env` (top level). The launcher auto-loads this file on
 every subsequent invocation.
 
 To re-run the wizard later:

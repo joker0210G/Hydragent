@@ -1,3 +1,4 @@
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -5,6 +6,13 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 
 const GITHUB_API_URL: &str = "https://api.github.com/repos/joker0210G/Hydragent/releases/latest";
+const INSTALL_PS1_URL: &str = "https://joker0210G.github.io/Hydragent/install.ps1";
+const INSTALL_SH_URL: &str = "https://joker0210G.github.io/Hydragent/install.sh";
+
+// `CREATE_NO_WINDOW` so the spawned PowerShell doesn't flash a console
+// window on top of the user's terminal.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, serde::Deserialize)]
 struct Release {
@@ -29,7 +37,7 @@ pub async fn run() {
     println!("  Checking for updates… (current version: {})", current_version);
 
     match check_latest_version().await {
-        Ok(Some((latest_version, asset))) => {
+        Ok(CheckOutcome::NewRelease { version: latest_version, asset }) => {
             println!(
                 "  New version available: {} (current: {})",
                 latest_version, current_version
@@ -64,11 +72,65 @@ pub async fn run() {
                 }
             }
         }
-        Ok(None) => {
+        Ok(CheckOutcome::UpToDate) => {
             println!(
                 "  Hydragent is already up to date (v{}).",
                 current_version
             );
+            std::process::exit(0);
+        }
+        Ok(CheckOutcome::NoReleasesPublished) => {
+            // GitHub returned 404 from /releases/latest, which means the
+            // repo has not published any tagged releases yet. This is the
+            // expected state for a project whose distribution channel is
+            // still `main` (i.e. source builds). Tell the user, and offer
+            // to pull the current state from GitHub via the one-command
+            // installer before exiting.
+            println!(
+                "  Hydragent is on the pre-release channel — no GitHub releases have"
+            );
+            println!(
+                "  been published yet for this repo ({}).",
+                GITHUB_REPO
+            );
+            println!();
+            println!("  The one-command installer builds from `main` and replaces the");
+            println!("  existing binary in place. It will:");
+            println!("    1. Clone the repo into ~/.hydragent/src (or update it)");
+            println!("    2. cargo build --release -p hydragent-core");
+            println!("    3. Copy the fresh binary over the running one");
+            println!("    4. Refresh the launcher and PATH entries");
+            println!();
+
+            if !confirm_yes_no("  Update from current GitHub state via the one-command installer?", true) {
+                println!("  Update cancelled.");
+                println!(
+                    "  (You can run this anytime: {} )",
+                    install_one_liner()
+                );
+                std::process::exit(0);
+            }
+
+            println!();
+            println!("  Launching installer: {}", install_one_liner());
+            println!();
+            match launch_source_installer() {
+                Ok(status) => {
+                    if !status.success() {
+                        eprintln!(
+                            "  ✗ Installer exited with code {}",
+                            status.code().unwrap_or(-1)
+                        );
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
+                    // Installer already printed its own success message;
+                    // nothing more to add.
+                }
+                Err(e) => {
+                    eprintln!("  ✗ Failed to launch installer: {}", e);
+                    std::process::exit(1);
+                }
+            }
             std::process::exit(0);
         }
         Err(e) => {
@@ -78,18 +140,43 @@ pub async fn run() {
     }
 }
 
+/// Repo identifier for the source-only "no release" hint. Kept in sync
+/// with the launchers and installer (`install.ps1`, `install.sh`,
+/// `Hydragent.cmd`). The single `GITHUB_API_URL` constant above is the
+/// authoritative endpoint used by the check itself.
+const GITHUB_REPO: &str = "joker0210G/Hydragent";
+
+/// Outcome of querying GitHub for the latest release.
+#[derive(Debug)]
+enum CheckOutcome {
+    /// A release newer than the local binary is available.
+    NewRelease {
+        version: String,
+        asset: Asset,
+    },
+    /// The local binary is at least as new as the published release.
+    UpToDate,
+    /// The repo has not published any releases yet (API returned 404
+    /// for `/releases/latest`). Treated as informational, not an error.
+    NoReleasesPublished,
+}
+
 /// Query GitHub Releases for the latest tag and see if it is newer than
-/// the binary’s compile-time version.
-///
-/// Returns `Some((version_string, matching_asset))` when an update is
-/// available, or `None` when the local build is already the latest.
-async fn check_latest_version() -> Result<Option<(String, Asset)>, Box<dyn std::error::Error>> {
+/// the binary's compile-time version.
+async fn check_latest_version() -> Result<CheckOutcome, Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .user_agent("hydragent-updater")
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
     let response = client.get(GITHUB_API_URL).send().await?;
+
+    // Special case: /releases/latest returns 404 when the repo has not
+    // published any releases at all. Treat as "no release channel yet"
+    // instead of an error so the user gets an actionable hint.
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(CheckOutcome::NoReleasesPublished);
+    }
 
     if !response.status().is_success() {
         return Err(format!(
@@ -101,18 +188,29 @@ async fn check_latest_version() -> Result<Option<(String, Asset)>, Box<dyn std::
     }
 
     let release: Release = response.json().await?;
+
+    // Defensive: even if /releases/latest succeeds, an empty tag list
+    // (shouldn't happen, but GitHub occasionally returns odd shapes) is
+    // also treated as "no release channel".
+    if release.tag_name.trim().is_empty() {
+        return Ok(CheckOutcome::NoReleasesPublished);
+    }
+
     let latest_version = release.tag_name.trim_start_matches('v').to_string();
     let current_version = env!("CARGO_PKG_VERSION");
 
     if !is_newer(&latest_version, current_version) {
-        return Ok(None);
+        return Ok(CheckOutcome::UpToDate);
     }
 
     let target_triple = get_target_triple();
     let asset = find_asset(&release.assets, &latest_version, target_triple)
         .ok_or_else(|| format!("No release asset found for target {}", target_triple))?;
 
-    Ok(Some((latest_version, asset)))
+    Ok(CheckOutcome::NewRelease {
+        version: latest_version,
+        asset,
+    })
 }
 
 /// Parse two dotted version strings and compare them as (major,minor,patch).
@@ -333,4 +431,171 @@ async fn replace_binary(new_binary: &Path) -> Result<(), Box<dyn std::error::Err
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// No-release fallback: interactive prompt + one-command installer launch.
+//
+// When the repo has no published GitHub releases we offer to update from
+// the current `main` commit by invoking the same one-command installer the
+// docs recommend (`install.ps1` / `install.sh`). The installer already
+// handles all the clone / build / copy / PATH steps, so we just shell out
+// to it with the right flags.
+//
+// The Windows branch is the tricky one: the installer's first action is
+// "if hydragent.exe is already present and -Force is not set, exit early
+// without updating". That idempotency check exists for users who
+// re-run the one-liner by accident, but it would silently swallow the
+// exact update we are trying to perform. We therefore pass BOTH `-Source`
+// (build from current `main` instead of trying to download a release)
+// AND `-Force` (overwrite the existing binary). Without these two flags
+// the user would see "Hydragent is already installed" and end up running
+// the *old* binary — which is the bug we are fixing here.
+// ---------------------------------------------------------------------------
+
+/// Return the human-facing one-line install command for the current OS.
+/// Used both in the prompt and in the "you can run this anytime" hint.
+fn install_one_liner() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "irm https://joker0210G.github.io/Hydragent/install.ps1 | iex"
+    } else {
+        "curl -fsSL https://joker0210G.github.io/Hydragent/install.sh | sh"
+    }
+}
+
+/// Read a single line from stdin and interpret it as a yes/no answer.
+///
+/// - `prompt` is printed verbatim (caller is responsible for any
+///   leading whitespace and trailing punctuation).
+/// - `default_yes` controls what an empty line (just Enter) means.
+/// - Recognized: `y` / `yes` (always yes), `n` / `no` / `q` / `quit`
+///   (always no), and the empty line which falls back to `default_yes`.
+/// - Any other input re-prompts until the user gives a recognizable
+///   answer, so we never accidentally launch the installer on a typo.
+fn confirm_yes_no(prompt: &str, default_yes: bool) -> bool {
+    let stdin = io::stdin();
+    let mut handle = stdin.lock();
+    loop {
+        print!("{} [{}] ", prompt, if default_yes { "Y/n" } else { "y/N" });
+        let _ = io::stdout().flush();
+
+        let mut line = String::new();
+        if handle.read_line(&mut line).is_err() {
+            // EOF on stdin (e.g. piped input that ran out, or a
+            // non-interactive shell). Respect `default_yes` rather than
+            // guessing.
+            return default_yes;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return default_yes;
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "y" | "yes" => return true,
+            "n" | "no" | "q" | "quit" => return false,
+            other => {
+                println!(
+                    "  (unrecognized answer '{}'; please type y, n, or press Enter)",
+                    other
+                );
+                continue;
+            }
+        }
+    }
+}
+
+/// Spawn the one-command installer with the flags that force a
+/// from-source rebuild and overwrite the existing binary. Returns the
+/// installer's `ExitStatus` so the caller can propagate its exit code.
+fn launch_source_installer() -> io::Result<std::process::ExitStatus> {
+    if cfg!(target_os = "windows") {
+        // Run the installer with `-Source -Force` so it (a) builds
+        // from `main` instead of trying to download a non-existent
+        // release, and (b) overwrites the existing `hydragent.exe`
+        // in `~/.hydragent/bin` instead of short-circuiting on the
+        // "already installed" check.
+        //
+        // GitHub Pages serves the script as UTF-8 without a BOM, but
+        // Windows PowerShell 5.1 reads BOM-less scripts as
+        // Windows-1252, which corrupts the box-drawing characters in
+        // `Write-Banner` and cascades into misleading "missing
+        // terminator" / "unexpected token" parser errors elsewhere
+        // in the script. We side-step that by reading the script
+        // bytes ourselves with explicit UTF-8 decoding and piping
+        // the resulting string to `Invoke-Expression`. The script's
+        // own `$PSCommandPath` is therefore $null — that's fine
+        // because `Install-SelfCopy` already guards on that.
+        let script = format!(
+            "$ErrorActionPreference='Stop'; \
+             $bytes = [System.Net.WebClient]::new().DownloadData('{url}'); \
+             $text = [System.Text.Encoding]::UTF8.GetString($bytes); \
+             Invoke-Expression $text",
+            url = INSTALL_PS1_URL,
+        );
+        let mut cmd = Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-NonInteractive",
+            "-Command",
+            &script,
+        ]);
+        // Don't pop a new console window on top of the user's terminal.
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        // Inherit our stdio so the installer's own output (banner,
+        // progress, errors) is visible to the user instead of being
+        // swallowed by the hidden window.
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::inherit());
+        cmd.status()
+    } else {
+        // Unix: pipe the install script into `sh`. -Force equivalent on
+        // Unix is implicit because the shell installer doesn't have the
+        // early-exit idempotency check that install.ps1 has; it just
+        // rebuilds and overwrites.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", &format!("curl -fsSL {} | sh -s -- --source --force", INSTALL_SH_URL)]);
+        cmd.status()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The no-release fallback shells out to the canonical hosted
+    /// install script. Make sure the constants agree with the live
+    /// site, otherwise `hydragent update` on a repo with no releases
+    /// will silently fail to fetch the installer.
+    #[test]
+    fn installer_urls_point_to_canonical_github_pages() {
+        assert!(
+            INSTALL_PS1_URL.starts_with("https://joker0210G.github.io/Hydragent/"),
+            "unexpected install.ps1 URL: {}",
+            INSTALL_PS1_URL
+        );
+        assert!(
+            INSTALL_SH_URL.starts_with("https://joker0210G.github.io/Hydragent/"),
+            "unexpected install.sh URL: {}",
+            INSTALL_SH_URL
+        );
+        assert_eq!(GITHUB_REPO, "joker0210G/Hydragent");
+    }
+
+    /// The one-liner we print to the user must match the platform
+    /// we are running on, otherwise we'd tell a Windows user to run
+    /// a bash command (or vice versa).
+    #[test]
+    fn one_liner_matches_current_platform() {
+        let line = install_one_liner();
+        if cfg!(target_os = "windows") {
+            assert!(line.contains("install.ps1"), "windows should reference install.ps1: {}", line);
+            assert!(line.contains("irm"), "windows one-liner should use irm: {}", line);
+        } else {
+            assert!(line.contains("install.sh"), "unix should reference install.sh: {}", line);
+            assert!(line.contains("curl"), "unix one-liner should use curl: {}", line);
+        }
+    }
 }

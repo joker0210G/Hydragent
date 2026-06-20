@@ -18,8 +18,9 @@ REM     Hydragent stop [pid]      - stop a running gateway
 REM     Hydragent chat             - interactive REPL
 REM     Hydragent <subcommand> ... - any other subcommand of the binary
 REM
-REM If a .env is found in the data dir, it is auto-loaded before the
-REM binary runs, so the binary sees a fully-configured environment.
+REM If a .env is found at the canonical location (%HYDRAGENT_HOME%\.env,
+REM top-level, NOT under data\), it is auto-loaded before the binary runs,
+REM so the binary sees a fully-configured environment.
 REM ============================================================================
 
 setlocal EnableExtensions EnableDelayedExpansion
@@ -56,25 +57,23 @@ if "%~1"=="" goto :no_args
 
 REM --- 4. Forward everything else -------------------------------------------------
 REM Load .env if present, then exec the binary with all args.
-if exist "%HYDRAGENT_DATA_DIR%\.env" call :load_env "%HYDRAGENT_DATA_DIR%\.env"
+REM Canonical .env location: %HYDRAGENT_HOME%\.env (top-level, per paths.rs).
+if exist "%HYDRAGENT_HOME%\.env" call :load_env "%HYDRAGENT_HOME%\.env"
 "%HYDRAGENT_BIN_EXE%" %*
 exit /b %ERRORLEVEL%
 
 :no_args
-if exist "%HYDRAGENT_DATA_DIR%\.env" (
+REM Canonical .env location: %HYDRAGENT_HOME%\.env (top-level, per paths.rs).
+if exist "%HYDRAGENT_HOME%\.env" (
     set "HYDRAGENT_DEFAULT_CMD=serve"
 ) else (
     set "HYDRAGENT_DEFAULT_CMD=onboard"
     echo.
-    echo [Hydragent] No .env found in %HYDRAGENT_DATA_DIR%.
+    echo [Hydragent] No .env found at %HYDRAGENT_HOME%\.env.
     echo [Hydragent] Launching the first-run onboarding wizard...
     echo.
 )
-if "%HYDRAGENT_DEFAULT_CMD%"=="onboard" (
-    if exist "%HYDRAGENT_DATA_DIR%\.env" call :load_env "%HYDRAGENT_DATA_DIR%\.env"
-) else (
-    if exist "%HYDRAGENT_DATA_DIR%\.env" call :load_env "%HYDRAGENT_DATA_DIR%\.env"
-)
+if exist "%HYDRAGENT_HOME%\.env" call :load_env "%HYDRAGENT_HOME%\.env"
 "%HYDRAGENT_BIN_EXE%" %HYDRAGENT_DEFAULT_CMD%
 exit /b %ERRORLEVEL%
 

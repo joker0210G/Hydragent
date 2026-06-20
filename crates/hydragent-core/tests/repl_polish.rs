@@ -40,8 +40,13 @@ fn chat_with(input: &str, timeout: Duration) -> std::process::Output {
 /// NUL / control characters that wouldn't survive a `&str` round-trip
 /// in some test runners.
 fn chat_with_bytes(input: &[u8], timeout: Duration) -> std::process::Output {
+    // Each REPL invocation gets its own tempdir-as-home so the test
+    // never reads the user's real `~/.hydragent/.env` and never
+    // collides with parallel runs.
+    let home = tempdir_home("repl_polish");
     let mut child = Command::new(bin())
         .arg("chat")
+        .env("HYDRAGENT_HOME", &home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -213,4 +218,25 @@ fn single_line_input_over_64kb_is_rejected() {
         "REPL should still process /exit after rejecting oversized input.\n\
          stdout:\n{stdout}",
     );
+}
+
+/// Build a unique tempdir path for one REPL invocation. The directory
+/// does not need to exist beforehand — `paths::ensure_dirs` inside the
+/// binary creates the subdirectories lazily when the binary first
+/// writes to them. We just need a unique path that won't collide with
+/// parallel test runs.
+fn tempdir_home(tag: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    // Per-test counter so multiple chat_with_bytes calls inside the
+    // same test get distinct homes and don't trip over each other.
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir()
+        .join(format!("hydragent-test-{tag}-{pid}-{nanos}-{n}"));
+    dir.to_string_lossy().into_owned()
 }

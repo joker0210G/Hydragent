@@ -22,7 +22,8 @@
 //   --force                overwrite existing `.env` (default: update in place)
 
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+
+use crate::paths;
 
 /// True when the current stdin/stdout is a real terminal (i.e. the user
 /// is sitting in front of a shell). False when stdin has been piped or
@@ -243,9 +244,11 @@ pub fn run(opts: OnboardOptions) -> i32 {
     };
 
     // ── 5. Write .env ─────────────────────────────────────────────────
-    let env_path = std::env::current_dir()
-        .map(|p| p.join(".env"))
-        .unwrap_or_else(|_| PathBuf::from(".env"));
+    // Always write to ~/.hydragent/.env (top-level), never cwd/.env.
+    // The installer creates ~/.hydragent/ and exports HYDRAGENT_HOME;
+    // ensure_dirs() will create the home dir on first run if absent.
+    let _ = paths::ensure_dirs();
+    let env_path = paths::env_file();
     if env_path.exists() && !opts.force {
         if opts.non_interactive {
             eprintln!(
@@ -310,9 +313,10 @@ pub fn run(opts: OnboardOptions) -> i32 {
         new_env.insert("BRAIN_FALLBACKS".to_string(), String::new());
     }
 
-    // Re-render the file.
+    // Re-render the file. write_env_file() creates the parent
+    // directory if it doesn't already exist.
     let rendered = render_env(&new_env);
-    if let Err(e) = std::fs::write(&env_path, rendered) {
+    if let Err(e) = paths::write_env_file(&rendered) {
         eprintln!("✗ Failed to write .env: {}", e);
         return 1;
     }

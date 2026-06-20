@@ -218,7 +218,9 @@ if [[ "\${1:-}" == "update" ]] || [[ "\${1:-}" == "uninstall" ]]; then
 fi
 
 if [[ \$# -eq 0 ]]; then
-    if [[ -f "\$HYDRAGENT_DATA_DIR/.env" ]]; then
+    # The canonical .env lives at $HYDRAGENT_HOME/.env (top-level), not
+    # in the data dir. See crates/hydragent-core/src/paths.rs.
+    if [[ -f "\$HYDRAGENT_HOME/.env" ]]; then
         set -- serve
     else
         set -- onboard

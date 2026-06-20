@@ -302,7 +302,9 @@ if /I "%~1"=="update" goto :do_update
 if /I "%~1"=="uninstall" goto :do_uninstall
 if not exist "%HYDRAGENT_BIN%\hydragent.exe" goto :do_install
 if "%~1"=="" (
-    if exist "%HYDRAGENT_DATA_DIR%\.env" ( set "_CMD=serve" ) else ( set "_CMD=onboard" )
+    rem The canonical .env lives at %HYDRAGENT_HOME%\.env (top-level),
+    rem not in the data dir. See crates\hydragent-core\src\paths.rs.
+    if exist "%HYDRAGENT_HOME%\.env" ( set "_CMD=serve" ) else ( set "_CMD=onboard" )
     "%HYDRAGENT_BIN%\hydragent.exe" !_CMD!
     exit /b %ERRORLEVEL%
 )

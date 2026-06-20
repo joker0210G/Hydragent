@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use config::{Config as ConfigBuilder, ConfigError, Environment};
 
+use crate::paths;
+
 /// Standard provider name constants used throughout the registry.
 pub mod provider_names {
     /// Live "brain" — any OpenAI-compatible endpoint the user wants to use.
@@ -118,8 +120,19 @@ impl std::fmt::Debug for AppConfig {
 
 impl AppConfig {
     pub fn load() -> Result<Self, ConfigError> {
-        // Load .env file if it exists
-        let _ = dotenvy::dotenv();
+        // Load .env from the resolved install root (~/.hydragent/.env on
+        // Unix, %USERPROFILE%\.hydragent\.env on Windows). We deliberately
+        // do NOT use `dotenvy::dotenv()` here — that helper walks the
+        // current directory and would pick up the wrong .env if the
+        // user happens to `cd` somewhere else.
+        let _ = paths::load_dotenv();
+
+        // If the user has neither set HYDRAGENT_HOME nor has a HOME /
+        // USERPROFILE variable, paths::hydragent_home() falls back to a
+        // relative `./.hydragent`. In that case we still want the
+        // binary to be useful, so we make sure the directory exists
+        // before any other code tries to write into it.
+        let _ = paths::ensure_dirs();
 
         let builder = ConfigBuilder::builder()
             // Brain
@@ -131,7 +144,11 @@ impl AppConfig {
             // Runtime
             .set_default("log_format", "terminal")?
             .set_default("log_level", "info")?
-            .set_default("data_dir", "./data")?
+            // Default data_dir is now anchored at the resolved install
+            // root (e.g. `/home/me/.hydragent/data`), not `./data` in
+            // cwd. The post-processing below makes the path absolute
+            // regardless of what the env override was.
+            .set_default("data_dir", paths::data_dir().to_string_lossy().to_string())?
             .set_default("max_react_steps", 10_u64)?
             .set_default("bus_port", 5000_u64)?
 
@@ -150,11 +167,15 @@ impl AppConfig {
             .build()?;
 
         let mut config: AppConfig = builder.try_deserialize()?;
+
+        // Resolve relative `data_dir` settings so every downstream
+        // `format!("{}/sessions.db", cfg.data_dir)` produces a stable
+        // absolute path regardless of cwd. We anchor at the resolved
+        // install root (NOT cwd) so a config file like `data_dir=./data`
+        // lands at `<home>/data` rather than `<cwd>/data`.
         let data_dir_path = std::path::PathBuf::from(&config.data_dir);
         if data_dir_path.is_relative() {
-            config.data_dir = std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                .join(data_dir_path)
+            config.data_dir = paths::absolutize(&data_dir_path)
                 .to_string_lossy()
                 .to_string();
         }

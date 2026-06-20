@@ -5,6 +5,7 @@ pub mod examples;
 pub mod markdown_render;
 pub mod onboard;
 pub mod orchestrator;
+pub mod paths;
 pub mod react_loop;
 pub mod session;
 pub mod logger;
@@ -514,8 +515,13 @@ fn print_first_run_banner() {
     eprintln!("║  🐉  Welcome to Hydragent!                                       ║");
     eprintln!("╚══════════════════════════════════════════════════════════════════╝");
     eprintln!();
+    let env_path = paths::env_file();
     eprintln!("  It looks like this is your first time here — no `.env` file was");
-    eprintln!("  found in the current directory. Let's fix that.");
+    eprintln!("  found at:");
+    eprintln!();
+    eprintln!("     {}", env_path.display());
+    eprintln!();
+    eprintln!("  Let's fix that.");
     eprintln!();
     eprintln!("  Quickest path:");
     eprintln!();
@@ -532,8 +538,8 @@ fn print_first_run_banner() {
     eprintln!("     hydragent examples         ← starter prompts to try");
     eprintln!("     hydragent --help           ← full command reference");
     eprintln!();
-    eprintln!("  Manual setup: copy `.env.example` to `.env` and fill in BRAIN_BASE");
-    eprintln!("  + BRAIN_KEY, then run `hydragent chat`.");
+    eprintln!("  Manual setup: copy `.env.example` to `{}` and fill", env_path.display());
+    eprintln!("  in BRAIN_BASE + BRAIN_KEY, then run `hydragent chat`.");
     eprintln!();
 }
 
@@ -547,7 +553,7 @@ fn debug_dump_env_and_config(cfg: &config::AppConfig) {
     eprintln!("║   🔍 --debug mode: environment + config diagnostic dump         ║");
     eprintln!("╚══════════════════════════════════════════════════════════════════╝");
 
-    // [1] working directory + binary path
+    // [1] working directory + binary path + resolved home
     eprintln!();
     eprintln!("[1] Process");
     eprintln!("    cwd       : {}", std::env::current_dir()
@@ -556,26 +562,31 @@ fn debug_dump_env_and_config(cfg: &config::AppConfig) {
         Ok(p) => eprintln!("    binary    : {}", p.display()),
         Err(e) => eprintln!("    binary    : <err: {}>", e),
     }
+    eprintln!("    home      : {}", paths::hydragent_home().display());
+    eprintln!("    data_dir  : {}", paths::data_dir().display());
 
     // [2] .env file
+    // The actual .env the binary loaded is whatever `paths::load_dotenv()`
+    // resolved to (i.e. ~/.hydragent/.env, not cwd/.env). We re-read the
+    // file's metadata for the dump, but we do NOT re-call
+    // `dotenvy::dotenv()` here — that would walk cwd, find whatever
+    // stale .env might be there, and silently override the env vars
+    // we already loaded via the paths module at startup.
     eprintln!();
-    eprintln!("[2] .env file (loaded by `dotenvy::dotenv()`)");
-    match dotenvy::dotenv() {
-        Ok(path) => {
+    eprintln!("[2] .env file (loaded by `paths::load_dotenv()`)");
+    let env_path = paths::env_file();
+    match std::fs::metadata(&env_path) {
+        Ok(md) => {
             eprintln!("    status    : LOADED ✓");
-            eprintln!("    path      : {}", path.display());
-            match std::fs::metadata(&path) {
-                Ok(md) => {
-                    eprintln!("    size      : {} bytes", md.len());
-                    eprintln!("    modified  : {:?}", md.modified().ok());
-                }
-                Err(e) => eprintln!("    stat      : <err: {}>", e),
-            }
+            eprintln!("    path      : {}", env_path.display());
+            eprintln!("    size      : {} bytes", md.len());
+            eprintln!("    modified  : {:?}", md.modified().ok());
         }
         Err(e) => {
             eprintln!("    status    : NOT FOUND ✗");
+            eprintln!("    path      : {}", env_path.display());
             eprintln!("    reason    : {}", e);
-            eprintln!("    hint      : make sure `.env` exists in the cwd, not `.env_` or `.env.example`");
+            eprintln!("    hint      : run `hydragent onboard` to create one at this path");
         }
     }
 
@@ -1179,12 +1190,12 @@ async fn main() {
     // user who runs `hydragent` with no `.env` and no idea what to do
     // would just see a crash.
     //
-    // So before doing anything else, check: is there a `.env` file in
-    // the current directory? If not AND the user didn't pass a subcommand
-    // or --debug, hand them a friendly nudge instead of crashing.
-    let env_exists = std::env::current_dir()
-        .map(|p| p.join(".env").exists())
-        .unwrap_or(false);
+    // So before doing anything else, check: is there an `.env` file at
+    // the canonical home location (`paths::env_file_anywhere()` also
+    // catches a legacy cwd-relative one so users mid-migration don't
+    // get re-prompted)? If not AND the user didn't pass a subcommand or
+    // --debug, hand them a friendly nudge instead of crashing.
+    let env_exists = paths::env_file_anywhere();
     if !env_exists && args.command.is_none() && !args.list_pages {
         print_first_run_banner();
         std::process::exit(0);
@@ -1376,10 +1387,12 @@ async fn main() {
     // reads and optionally patches the `.env` file. The change is
     // persisted to disk so it survives the next restart without any
     // further action from the user.
+    //
+    // `.env` always lives at the canonical home location
+    // (`paths::env_file()`), never in cwd — this is the single source
+    // of truth shared with the installer and onboard command.
     if let Some(Commands::Dream { enable, disable, interval }) = &args.command {
-        let env_path = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join(".env");
+        let env_path = paths::env_file();
 
         // Determine if we are making any changes
         let making_changes = *enable || *disable || interval.is_some();
@@ -1434,7 +1447,7 @@ async fn main() {
             }
 
             let new_content = lines.join("\n") + "\n";
-            match std::fs::write(&env_path, &new_content) {
+            match paths::write_env_file(&new_content) {
                 Ok(_) => {
                     println!("------------------------------------------------------------------------");
                     println!("  🌙 Hydragent Dream Cycle — settings updated");

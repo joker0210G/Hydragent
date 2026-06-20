@@ -645,18 +645,12 @@ async fn handle_slash_command(
             // that preserves every other setting. Changes take effect on
             // the next restart of the bus server; the in-process worker's
             // interval is already fixed at startup.
-            let env_path = std::path::PathBuf::from(&state.app_config.data_dir)
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join(".env");
-            // Fallback: look for .env next to cwd (covers dev layout)
-            let env_path = if env_path.exists() {
-                env_path
-            } else {
-                std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                    .join(".env")
-            };
+            //
+            // Always read/write ~/.hydragent/.env via the paths module
+            // (never cwd/.env or <data_dir>/.env). The fallback chain
+            // is gone — there's exactly one .env and it lives at the
+            // top of the user's hydragent home.
+            let env_path = crate::paths::env_file();
 
             let mut parts = rest.splitn(2, char::is_whitespace);
             let sub = parts.next().unwrap_or("").trim();

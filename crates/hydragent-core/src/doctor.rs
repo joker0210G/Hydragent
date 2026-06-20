@@ -20,6 +20,8 @@
 
 use std::path::PathBuf;
 
+use crate::paths;
+
 /// Severity of a single check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -123,21 +125,46 @@ pub fn run(app_config: &crate::config::AppConfig) -> Report {
     let mut checks = Vec::new();
 
     // ── [1] .env file ─────────────────────────────────────────────────
-    let env_path = std::env::current_dir()
+    // ~/.hydragent/.env is the single source of truth (top-level, not
+    // data/.env, not cwd/.env). If a legacy cwd/.env exists we still
+    // note it so the user knows to migrate it, but it doesn't satisfy
+    // this check.
+    let env_path = paths::env_file();
+    let legacy_env = std::env::current_dir()
+        .ok()
         .map(|p| p.join(".env"))
-        .unwrap_or_else(|_| PathBuf::from(".env"));
+        .unwrap_or_else(|| PathBuf::from(".env"));
+    let legacy_env_present = legacy_env.exists() && legacy_env != env_path;
     match std::fs::metadata(&env_path) {
         Ok(md) => {
+            let extra = if legacy_env_present {
+                format!(
+                    " — also found a legacy .env at {}; move its keys into {}",
+                    legacy_env.display(),
+                    env_path.display()
+                )
+            } else {
+                String::new()
+            };
             checks.push(Check::ok(
                 ".env file",
-                format!("present ({} bytes, {})", md.len(), env_path.display()),
+                format!("present ({} bytes, {}){}", md.len(), env_path.display(), extra),
             ));
         }
         Err(_) => {
+            let hint = if legacy_env_present {
+                format!(
+                    "run `hydragent onboard` (or copy {} to {})",
+                    legacy_env.display(),
+                    env_path.display()
+                )
+            } else {
+                "run `hydragent onboard` to create one, or `cp .env.example .env`".to_string()
+            };
             checks.push(Check::fail(
                 ".env file",
                 format!("missing at {}", env_path.display()),
-                "run `hydragent onboard` to create one, or `cp .env.example .env`",
+                &hint,
             ));
         }
     }

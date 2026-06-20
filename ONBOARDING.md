@@ -92,9 +92,9 @@ through four steps:
 3. **Pick a primary model** — same arrow-key menu, with `custom` at the end.
 4. **Verify the connection** — runs `hydragent test-brain` for you.
 
-The wizard writes `.env` at the repo root, preserving any keys you
-already had. Non-interactive flags (for CI) are documented in the
-binary's `--help`:
+The wizard writes `.env` at `~/.hydragent/.env` (top level, not inside
+`data/`), preserving any keys you already had. Non-interactive flags
+(for CI) are documented in the binary's `--help`:
 
 ```powershell
 # Using a preset provider
@@ -160,14 +160,25 @@ After a successful first run, the on-disk layout is:
 
 ```
 hydragent/
-├── .env                       # BRAIN_BASE / BRAIN_KEY / BRAIN_MODEL (gitignored)
 ├── target/
 │   └── debug/
 │       └── hydragent.exe      # the kernel (the only binary you ever run)
-└── data/                      # auto-created on first run
-    ├── sessions.db            # SQLite, WAL mode — page history + audit
-    └── skill_library.sqlite   # skill engine storage (Phase 7)
+├── .hydragent/                # user-data home (auto-created on first run)
+│   ├── .env                   # BRAIN_BASE / BRAIN_KEY / BRAIN_MODEL (gitignored)
+│   └── data/
+│       ├── sessions.db        # SQLite, WAL mode — page history + audit
+│       └── skill_library.sqlite   # skill engine storage (Phase 7)
+└── data/                      # legacy fallback (used only if HYDRAGENT_HOME is set to repo root)
+    ├── sessions.db
+    └── skill_library.sqlite
 ```
+
+> **Layout note**: when you run from a source checkout, Hydragent uses
+> `./.hydragent/` as its home directory (cwd-anchored fallback), so
+> `.env` and `data/` both end up inside that folder rather than
+> alongside `Cargo.toml`. Once you run `install.{ps1,sh}`, the home
+> relocates to `~/.hydragent/`. See [`paths.rs`](crates/hydragent-core/src/paths.rs)
+> for the exact resolution rules.
 
 The `.env` is the **only** thing the user controls. Everything else is
 derived. See §5 for the full key reference and common pitfalls.
