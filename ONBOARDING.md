@@ -97,10 +97,25 @@ already had. Non-interactive flags (for CI) are documented in the
 binary's `--help`:
 
 ```powershell
-.\target\debug\hydragent.exe onboard `
+# Using a preset provider
+hydragent onboard `
     --provider openrouter `
     --api-key "$env:OPENROUTER_API_KEY" `
     --model openai/gpt-4o-mini `
+    --non-interactive --no-verify
+
+# Using any custom OpenAI-compatible endpoint (vLLM, TGI, etc.)
+hydragent onboard `
+    --base-url https://my-api.com/v1 `
+    --api-key sk-my-key `
+    --model my-model `
+    --non-interactive --no-verify
+
+# Or pass the URL directly as --provider
+hydragent onboard `
+    --provider https://my-api.com/v1 `
+    --api-key sk-my-key `
+    --model my-model `
     --non-interactive --no-verify
 ```
 
@@ -246,6 +261,7 @@ intent to the file you actually need to open:
 | Add a built-in skill | `skills/builtin/<your-skill>.yaml` | Nothing else — the skill loader picks up YAML at startup. See `skills/builtin/debug-rust-error.yaml` for the schema. |
 | Add a channel adapter | `adapters/<your>_adapter.py` | The adapter is just a Python script that talks JSON-RPC to `127.0.0.1:5000`. Use `adapters/bus_client.py` as the SDK. |
 | Add a bus RPC method | `crates/hydragent-core/src/main.rs` (router) | Add a handler in the same file, register it in the dispatch table. |
+| Add a CLI subcommand (`hydragent foo`) | `crates/hydragent-core/src/<your_cmd>.rs` | Add the `foo` variant to the `Commands` enum in `main.rs` and wire it into the top-level `match`. Mirror `update.rs` / `uninstall.rs` for the standard `run()` signature + CLI flag shape. |
 | Change the agent's personality | `config/SOUL.md` | Restart `hydragent chat` — no rebuild. |
 | Change your user profile / memory seed | `config/USER.md` | Same — restart REPL. |
 | Tweak model routing | `config/model_council.yaml` | 20+ profiles live here. Restart for changes to take effect. |

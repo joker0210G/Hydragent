@@ -84,3 +84,5 @@ target/*.ps1
 target/test_data/
 target/tmp/
 target/agent_reach_source/
+
+.kimchi

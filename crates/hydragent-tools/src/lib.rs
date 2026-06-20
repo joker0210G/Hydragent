@@ -14,6 +14,7 @@ pub mod schedule_task;
 pub mod rss_subscribe;
 pub mod phase6;
 pub mod agent_reach;
+pub mod url_fetch;
 
 // ── Phase 7 / Track 7.1 — Skill library tools ───────────────────────
 //

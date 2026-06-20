@@ -119,9 +119,9 @@ pub fn run(opts: OnboardOptions) -> i32 {
         println!("------------------------------------------------------------------------");
         println!("  🐉 Welcome to Hydragent — first-time setup");
         println!("------------------------------------------------------------------------");
-        println!("  I'll help you create a `.env` file. You'll need an API key from a");
-        println!("  supported provider (OpenAI, OpenRouter, Together, Groq) or a local");
-        println!("  Ollama / LM Studio server. Press Ctrl-C at any time to abort.");
+        println!("  I'll help you create a `.env` file. You can use any");
+        println!("  OpenAI-compatible endpoint (OpenRouter, vLLM, Ollama, LM Studio,");
+        println!("  or a custom URL). Press Ctrl-C at any time to abort.");
         println!("------------------------------------------------------------------------");
         println!();
     }
@@ -138,22 +138,50 @@ pub fn run(opts: OnboardOptions) -> i32 {
                 return 2;
             }
         },
-        None => match pick_provider() {
-            Some(p) => p,
-            None => {
-                eprintln!("✗ Setup aborted.");
-                return 1;
+        None => {
+            // When --base-url is passed without --provider, auto-select
+            // "custom" so the user doesn't have to type it.
+            if opts.base_url.is_some() {
+                PRESETS.last().unwrap().clone()
+            } else {
+                match pick_provider() {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("✗ Setup aborted.");
+                        return 1;
+                    }
+                }
             }
-        },
+        }
     };
 
     let provider_label = provider.label;
-    let base = if provider.base.is_empty() {
-        // Custom: ask for a URL.
-        if opts.non_interactive {
-            eprintln!("✗ `--provider custom` requires `--base-url` in non-interactive mode.");
-            return 2;
+    let base = if let Some(url) = &opts.base_url {
+        // Explicit --base-url overrides everything (preset or custom).
+        url.trim().trim_end_matches('/').to_string()
+    } else if let Some(name) = &opts.provider {
+        // If the user passed a raw URL as --provider, use it directly.
+        let n = name.trim().to_lowercase();
+        if n.starts_with("http://") || n.starts_with("https://") {
+            name.trim().trim_end_matches('/').to_string()
+        } else if provider.base.is_empty() {
+            // Custom without --base-url: must prompt interactively.
+            if opts.non_interactive {
+                eprintln!("✗ `--provider custom` requires `--base-url` in non-interactive mode.");
+                return 2;
+            }
+            match prompt("Custom base URL (e.g. https://api.together.xyz/v1):") {
+                Some(s) => s.trim().trim_end_matches('/').to_string(),
+                None => {
+                    eprintln!("✗ Setup aborted.");
+                    return 1;
+                }
+            }
+        } else {
+            provider.base.to_string()
         }
+    } else if provider.base.is_empty() {
+        // Interactive custom path (user picked Custom from menu).
         match prompt("Custom base URL (e.g. https://api.together.xyz/v1):") {
             Some(s) => s.trim().trim_end_matches('/').to_string(),
             None => {
@@ -355,12 +383,17 @@ pub struct OnboardOptions {
     pub non_interactive: bool,
     pub no_verify: bool,
     pub force: bool,
+    pub base_url: Option<String>,
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
 
 fn find_preset(name: &str) -> Option<&'static Provider> {
     let n = name.trim().to_lowercase();
+    // If the "name" is actually a full URL, treat it as Custom.
+    if n.starts_with("http://") || n.starts_with("https://") {
+        return PRESETS.iter().find(|p| p.label.starts_with("Custom"));
+    }
     let key = match n.as_str() {
         "openai" | "oai" => "OpenAI",
         "openrouter" | "or" => "OpenRouter",

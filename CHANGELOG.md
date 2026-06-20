@@ -81,6 +81,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and write raw token bytes to stdout (useful for diffing or
     piping into another tool).
 
+- **`hydragent update` subcommand** — self-updates the running
+  binary in place from GitHub Releases. Queries the latest
+  release tag, compares it against the compile-time version stamp
+  (`CARGO_PKG_VERSION`) without downgrading dev builds, downloads
+  the matching platform asset, and replaces the binary without
+  admin elevation or `PATH` mutation.
+  - New module:
+    [`update.rs`](crates/hydragent-core/src/update.rs)
+    (~300 lines). Uses `reqwest` for HTTPS, `tempfile` + `uuid`
+    for staging, and a **3-tier archive extraction chain**:
+    1. System `tar -xf` (Win10+, macOS, Linux).
+    2. Native Rust: `flate2` + `tar::Archive` for `.tar.gz`,
+       `zip::ZipArchive` for `.zip`.
+    3. PowerShell `Expand-Archive` for `.zip` on older Windows
+       where `tar.exe` is missing.
+- **`hydragent uninstall` subcommand** — interactive uninstaller
+  with `-y` / `--yes` for scripted teardown. Removes the install
+  directory, strips the matching `export PATH=…` line from the
+  user's shell rc / PowerShell profile, and refuses to delete a
+  source checkout's `.git/` tree without explicit confirmation.
+  - New module:
+    [`uninstall.rs`](crates/hydragent-core/src/uninstall.rs)
+    (~150 lines).
+
 ### Fixed
 
 - **`test-brain` JSON-RPC double-wrapping on streamed replies** —

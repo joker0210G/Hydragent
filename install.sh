@@ -70,13 +70,13 @@ step()  {
 }
 
 banner() {
-    cat <<'EOF' | sed "s/^/$C_CAN/"
-   _   _                     _
-  | | | |_   _ _ __  _ __ | | __ _  ___ ___
-  | |_| | | | | '_ \| '_ \| |/ _` |/ __/ _ \
-  |  _  | |_| | | | | |_) | | (_| | (_|  __/
-  |_| |_|\__,_|_| |_| .__/|_|\__,_|\___\___|
-                  |_|
+    cat <<'EOF' | sed "s/^/$C_CYAN/"
+██╗  ██╗██╗   ██╗██████╗ ██████╗  █████╗  ██████╗ ███████╗███╗   ██╗████████╗
+██║  ██║╚██╗ ██╔╝██╔══██╗██╔══██╗██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
+███████║ ╚████╔╝ ██║  ██║██████╔╝███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║
+██╔══██║  ╚██╔╝  ██║  ██║██╔══██╗██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║
+██║  ██║   ██║   ██████╔╝██║  ██║██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║
+╚═╝  ╚═╝   ╚═╝   ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝
 EOF
     printf '%bone-command installer%b\n' "$C_DIM" "$C_RESET"
     printf '\n'
@@ -212,6 +212,11 @@ if [[ "\${1:-}" == "install" ]] || [[ ! -x "\$HYDRAGENT_HOME/bin/hydragent" ]]; 
     exec bash "\$(dirname "\${BASH_SOURCE[0]}")/install.sh" "\$@"
 fi
 
+# Pass through update/uninstall directly to the binary.
+if [[ "\${1:-}" == "update" ]] || [[ "\${1:-}" == "uninstall" ]]; then
+    exec "\$HYDRAGENT_HOME/bin/hydragent" "\$@"
+fi
+
 if [[ \$# -eq 0 ]]; then
     if [[ -f "\$HYDRAGENT_DATA_DIR/.env" ]]; then
         set -- serve
@@ -288,7 +293,7 @@ if (( already_installed == 1 )) && [[ "${HYDRAGENT_FORCE:-0}" != "1" ]]; then
     else
         ok "Hydragent already installed at $BIN_DIR/$BIN_NAME"
     fi
-    info "Re-running launcher / PATH steps. Set HYDRAGENT_FORCE=1 to reinstall."
+    info "Run 'hydragent update' to update, 'hydragent uninstall' to remove, or HYDRAGENT_FORCE=1 to reinstall."
     install_launcher
     install_path_entry
     [[ "${HYDRAGENT_SKIP_ONBOARD:-0}" != "1" ]] && run_onboarding

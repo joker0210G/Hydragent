@@ -18,4 +18,6 @@ uuid = { workspace = true }
 hydragent-security = { path = "../hydragent-security" }
 hydragent-vault = { path = "../hydragent-vault" }
 hydragent-skills = { path = "../hydragent-skills" }
+regex = { workspace = true }
+url = "2"
 

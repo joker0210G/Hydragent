@@ -126,13 +126,16 @@ $AnsiMagenta = "$([char]27)[35m"
 
 function Write-Banner {
     if ($Quiet) { return }
+    # Force UTF-8 so the ██╗ etc. block characters render correctly on
+    # legacy Windows consoles. No-op on PowerShell 7+ / Windows Terminal.
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     Write-Host ''
-    Write-Host "$AnsiCyan$AnsiBold   _   _                     _                $AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold  | | | |_   _ _ __  _ __ | | __ _  ___ ___ $AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold  | |_| | | | | '_ \| '_ \| |/ _` |/ __/ _ \$AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold  |  _  | |_| | | | | |_) | | (_| | (_|  __/$AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold  |_| |_|\__,_|_| |_| .__/|_|\__,_|\___\___|$AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold                  |_|                       $AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold██╗  ██╗██╗   ██╗██████╗ ██████╗  █████╗  ██████╗ ███████╗███╗   ██╗████████╗$AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold██║  ██║╚██╗ ██╔╝██╔══██╗██╔══██╗██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝$AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold███████║ ╚████╔╝ ██║  ██║██████╔╝███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   $AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold██╔══██║  ╚██╔╝  ██║  ██║██╔══██╗██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   $AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold██║  ██║   ██║   ██████╔╝██║  ██║██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   $AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold╚═╝  ╚═╝   ╚═╝   ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   $AnsiReset"
     Write-Host "$AnsiDim  one-command installer$AnsiReset"
     Write-Host ''
 }
@@ -295,6 +298,8 @@ if "%HYDRAGENT_HOME%"=="" set "HYDRAGENT_HOME=$InstallRoot"
 set "HYDRAGENT_BIN=%HYDRAGENT_HOME%\bin"
 set "HYDRAGENT_DATA_DIR=$DataDir"
 if /I "%~1"=="install" goto :do_install
+if /I "%~1"=="update" goto :do_update
+if /I "%~1"=="uninstall" goto :do_uninstall
 if not exist "%HYDRAGENT_BIN%\hydragent.exe" goto :do_install
 if "%~1"=="" (
     if exist "%HYDRAGENT_DATA_DIR%\.env" ( set "_CMD=serve" ) else ( set "_CMD=onboard" )
@@ -305,6 +310,12 @@ if "%~1"=="" (
 exit /b %ERRORLEVEL%
 :do_install
 powershell -NoProfile -ExecutionPolicy Bypass -File "%HYDRAGENT_BIN%\install.ps1" %*
+exit /b %ERRORLEVEL%
+:do_update
+"%HYDRAGENT_BIN%\hydragent.exe" update %*
+exit /b %ERRORLEVEL%
+:do_uninstall
+"%HYDRAGENT_BIN%\hydragent.exe" uninstall %*
 exit /b %ERRORLEVEL%
 "@
     Set-Content -Path $LauncherPath -Value $body -Encoding ASCII -Force
@@ -390,7 +401,7 @@ if ($alreadyInstalled -and -not $Force) {
     } else {
         Write-OK "Hydragent is already installed at $(Join-Path $BinDir $BinName)"
     }
-    Write-Info "Pass -Force to reinstall."
+    Write-Info "Pass -Force to reinstall, run 'hydragent update' to update, or 'hydragent uninstall' to remove."
     # Re-run the PATH/launcher steps in case the user nuked them.
     Install-Launcher
     Install-SelfCopy

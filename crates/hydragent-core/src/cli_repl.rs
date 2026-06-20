@@ -13,7 +13,7 @@
 //   /page               Show the current page ID
 //   /pages              List past pages in the SQLite store
 //   /resume <id>        Switch to a past page (resumes its history)
-//   /model              Show the active brain model
+//   /model              Show or switch the active brain model
 //   /brain              Show the active base URL + key mask
 //   /clear              Clear the terminal
 //   /memory list        List stored semantic memories
@@ -180,7 +180,7 @@ pub fn print_banner(brand: &BrandInfo) {
 }
 
 /// Run the REPL. Returns the process exit code.
-pub async fn run(state: ReplState) -> i32 {
+pub async fn run(mut state: ReplState) -> i32 {
     // ── Banner ────────────────────────────────────────────────────────
     print_banner(&state.brand);
     // Print the status bar right under the header so the user
@@ -329,7 +329,7 @@ pub async fn run(state: ReplState) -> i32 {
         // ── slash commands ────────────────────────────────────────────
         if let Some(cmd) = trimmed.strip_prefix('/') {
             let exit_code = handle_slash_command(
-                cmd, &state, &mut paste_mode, &mut paste_buffer, &mut reasoning_history,
+                cmd, &mut state, &mut paste_mode, &mut paste_buffer, &mut reasoning_history,
             ).await;
             match exit_code {
                 SlashExit::Continue => {}
@@ -355,7 +355,7 @@ enum SlashExit {
 
 async fn handle_slash_command(
     raw: &str,
-    state: &ReplState,
+    state: &mut ReplState,
     paste_mode: &mut bool,
     paste_buffer: &mut String,
     reasoning_history: &mut ReasoningHistory,
@@ -471,8 +471,22 @@ async fn handle_slash_command(
             }
         }
         "model" => {
-            println!("  primary   = {}", state.app_config.effective_brain_model());
-            println!("  fallbacks = {:?}", state.app_config.effective_brain_fallbacks());
+            if rest.is_empty() {
+                println!("  primary   = {}", state.app_config.effective_brain_model());
+                println!("  fallbacks = {:?}", state.app_config.effective_brain_fallbacks());
+            } else {
+                // In-session brain switch: updates the router so the
+                // next ReAct turn picks the new model (no .env edit).
+                // We mirror the change into `app_config.brain_model` so
+                // `/model` (no arg), `/debug`, and `/status` reflect the
+                // new value, and into `brand.model` so any future
+                // re-render of the status bar / banner also reflects it.
+                state.model_router.set_primary_model(rest.to_string());
+                state.app_config.brain_model = rest.to_string();
+                state.brand.model = rest.to_string();
+                println!("  ✓ Switched primary model to {}", rest);
+                println!("  (session only — restart hydragent to revert to .env default)");
+            }
         }
         "brain" => {
             let base = state.app_config.effective_brain_base();
@@ -1277,7 +1291,7 @@ fn print_help() {
     println!("    /new                 start a fresh page with a new id");
     println!();
     println!("  Diagnostics:");
-    println!("    /model               Show primary + fallback model names");
+    println!("    /model [name]        Show or switch primary model (no name = show)");
     println!("    /brain               Show base URL + masked key");
     println!("    /tools               List registered tools");
     println!("    /status              Render the Kimi-style status bar");
@@ -1565,8 +1579,14 @@ fn classify_status(display: &str) -> StatusKind {
     // Tool Result: "[Tool Result] Status: Success" or
     // "[Tool Result] Status: Failure" (sometimes wrapped in
     // backticks, sometimes not).
-    if let Some(inner) = strip_brackets(unbackticked, "Tool Result") {
-        let ok = inner.trim().to_ascii_lowercase().contains("success");
+    // NOTE: `strip_brackets` only returns the text *inside* the
+    // brackets (which for "[Tool Result]" is empty). The actual
+    // status word lives outside the brackets, so we must scan the
+    // full unbackticked string rather than `inner`.
+    if strip_brackets(unbackticked, "Tool Result").is_some() {
+        let ok = unbackticked
+            .to_ascii_lowercase()
+            .contains("status: success");
         return StatusKind::ToolResult { ok };
     }
 

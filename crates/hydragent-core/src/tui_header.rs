@@ -375,9 +375,9 @@ pub fn default_tip_box() -> TipBox {
             "```  (or /paste on its own).".to_string(),
         ],
         vec![
-            "Tip: /model shows the active brain; /brain shows the".to_string(),
-            "base URL + masked key. Both are read-only shortcuts".to_string(),
-            "to the same data /debug prints.".to_string(),
+            "Tip: /model [name] switches the active brain for this".to_string(),
+            "session; /brain shows the base URL + masked key. Both".to_string(),
+            "are shortcuts to the same data /debug prints.".to_string(),
         ],
     )
 }

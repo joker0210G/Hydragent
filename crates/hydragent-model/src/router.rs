@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 pub struct ModelRouter {
     provider: Arc<dyn ModelProvider>,
-    primary: String,
+    primary: std::sync::RwLock<String>,
     fallbacks: Vec<String>,
 }
 
@@ -15,9 +15,21 @@ impl ModelRouter {
     pub fn new(provider: Arc<dyn ModelProvider>, primary: String, fallbacks: Vec<String>) -> Self {
         Self {
             provider,
-            primary,
+            primary: std::sync::RwLock::new(primary),
             fallbacks,
         }
+    }
+
+    /// Update the primary model at runtime (e.g. from the REPL `/model` command).
+    pub fn set_primary_model(&self, model: String) {
+        if let Ok(mut guard) = self.primary.write() {
+            *guard = model;
+        }
+    }
+
+    /// Read the current primary model name.
+    pub fn primary_model(&self) -> String {
+        self.primary.read().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// Human-readable name of the underlying provider (e.g. "openrouter",
@@ -66,18 +78,19 @@ impl ModelRouter {
         }
 
         // Primary + fallback path.
-        info!("Attempting primary model: {}", self.primary);
+        let primary = self.primary_model();
+        info!("Attempting primary model: {}", primary);
         let mut request = LLMRequest {
-            model: self.primary.clone(),
+            model: primary.clone(),
             messages: messages.clone(),
             stream: true,
             max_tokens: None,
         };
 
         match self.provider.chat_stream(&request, token_tx.clone()).await {
-            Ok(content) => return Ok((content, self.primary.clone())),
+            Ok(content) => return Ok((content, primary.clone())),
             Err(e) => {
-                warn!("Primary model {} failed: {}. Initiating fallbacks...", self.primary, e);
+                warn!("Primary model {} failed: {}. Initiating fallbacks...", primary, e);
             }
         }
 
@@ -93,7 +106,7 @@ impl ModelRouter {
             }
         }
 
-        anyhow::bail!("All models (primary and fallback) failed to execute completion.")
+        anyhow::bail!("All models (primary: {}, fallbacks: {:?}) failed to execute completion.", primary, self.fallbacks)
     }
 
     /// Non-streaming convenience wrapper.  See [`Self::chat_stream`]

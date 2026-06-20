@@ -15,6 +15,8 @@ pub mod strategy;
 pub mod swarm_runner;
 pub mod skill_induction;
 pub mod tui_header;
+pub mod update;
+pub mod uninstall;
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -23,6 +25,7 @@ use hydragent_memory::SessionStore;
 use hydragent_tools::registry::ToolRegistry;
 use hydragent_tools::echo::EchoTool;
 use hydragent_tools::web_search::WebSearchTool;
+use hydragent_tools::url_fetch::UrlFetchTool;
 use hydragent_tools::agent_reach::AgentReachTool;
 use hydragent_tools::file_read::FileReadTool;
 use hydragent_tools::memory_store::MemoryStoreTool;
@@ -107,6 +110,11 @@ struct Args {
     #[arg(long, global = true)]
     debug: bool,
 
+    /// Alias for --debug. Show verbose diagnostic output including
+    /// full HTTP request/response traces in chat mode.
+    #[arg(long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -122,10 +130,15 @@ enum Commands {
                       optionally runs `test-brain` to verify the connection.\n\n\
                       Non-interactive mode (for CI / scripts):\n\
                       \x20 hydragent onboard --provider openrouter --api-key $KEY \\\n\
-                      \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20 --model openai/gpt-4o-mini --non-interactive --no-verify"
+                      \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20 --model openai/gpt-4o-mini --non-interactive --no-verify\n\n\
+                      Custom endpoint (no preset needed):\n\
+                      \x20 hydragent onboard --base-url https://my-api.com/v1 \\\n\
+                      \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20 --api-key $KEY --model my-model --non-interactive"
     )]
     Onboard {
-        /// Provider preset: openai, openrouter, together, groq, ollama, lmstudio, custom
+        /// Provider preset: openai, openrouter, together, groq, ollama, lmstudio, custom.
+        /// You can also pass a raw URL here (e.g. `https://my-api.com/v1`) and
+        /// Hydragent will treat it as a custom endpoint.
         #[arg(long)]
         provider: Option<String>,
 
@@ -137,7 +150,7 @@ enum Commands {
         #[arg(long)]
         model: Option<String>,
 
-        /// Run without interactive prompts (requires --provider / --api-key / --model)
+        /// Run without interactive prompts (requires --base-url or --provider / --api-key / --model)
         #[arg(long, short = 'y')]
         non_interactive: bool,
 
@@ -148,6 +161,13 @@ enum Commands {
         /// Overwrite an existing .env (default: update in place, prompting)
         #[arg(long)]
         force: bool,
+
+        /// Custom OpenAI-compatible base URL (e.g. https://my-api.com/v1).
+        /// When set, overrides the provider's default URL. Useful with
+        /// --provider custom or when you want to point a known provider
+        /// at a different mirror/proxy.
+        #[arg(long)]
+        base_url: Option<String>,
     },
     /// 🩺 Run diagnostic checks and print a colour-coded report
     #[command(
@@ -309,6 +329,29 @@ enum Commands {
         /// (persists to .env as DREAMING_INTERVAL_SEC=<N>)
         #[arg(long, value_name = "SECS")]
         interval: Option<u64>,
+    },
+    /// 🔄 Update Hydragent to the latest release
+    #[command(
+        long_about = "Checks GitHub Releases for a newer version of Hydragent,\n\
+                      downloads the correct prebuilt binary for your platform,\n\
+                      and replaces the current installation in place.\n\n\
+                      Example:\n\
+                      \x20 hydragent update              ← check and update if needed"
+    )]
+    Update,
+    /// 🗑 Uninstall Hydragent from this device
+    #[command(
+        long_about = "Removes the Hydragent binary, data directory, and PATH\n\
+                      entry from this device. Interactive confirmation is\n\
+                      required unless --yes is passed.\n\n\
+                      Example:\n\
+                      \x20 hydragent uninstall           ← interactive confirmation\n\
+                      \x20 hydragent uninstall --yes     ← non-interactive"
+    )]
+    Uninstall {
+        /// Skip the confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -1186,6 +1229,14 @@ async fn main() {
             cmd_status(&app_config);
             std::process::exit(0);
         }
+        Some(Commands::Update) => {
+            update::run().await;
+            std::process::exit(0);
+        }
+        Some(Commands::Uninstall { yes }) => {
+            uninstall::run(*yes);
+            std::process::exit(0);
+        }
         // Handle `status` BEFORE the config-load failure path above is
         // an issue — but the only way we reach this match is if
         // config loaded, so that's fine.
@@ -1203,7 +1254,7 @@ async fn main() {
     // what the binary thinks the environment is. We force
     // `log_level = "debug"` so the subsequent `init_logger` call picks
     // up DEBUG-level traces from every module.
-    if args.debug {
+    if args.debug || args.verbose {
         app_config.log_level = "debug".to_string();
         debug_dump_env_and_config(&app_config);
     }
@@ -1264,7 +1315,11 @@ async fn main() {
             // surface on screen so a single broken tool doesn't drown
             // the transcript. Override with HYDRAGENT_CHAT_LOG=warn
             // (or info / debug) to bring a level back to stderr.
-            std::env::var("HYDRAGENT_CHAT_LOG").unwrap_or_else(|_| "error".to_string())
+            if args.verbose {
+                "debug".to_string()
+            } else {
+                std::env::var("HYDRAGENT_CHAT_LOG").unwrap_or_else(|_| "error".to_string())
+            }
         }
         _ => app_config.log_level.clone(),
     };
@@ -1281,7 +1336,7 @@ async fn main() {
     // the wizard's optional `test-brain` verification step, so we
     // initialise the logger first.
     if let Some(Commands::Onboard {
-        provider, api_key, model, non_interactive, no_verify, force,
+        provider, api_key, model, non_interactive, no_verify, force, base_url,
     }) = &args.command
     {
         let code = onboard::run(onboard::OnboardOptions {
@@ -1291,6 +1346,7 @@ async fn main() {
             non_interactive: *non_interactive,
             no_verify: *no_verify,
             force: *force,
+            base_url: base_url.clone(),
         });
         std::process::exit(code);
     }
@@ -2346,8 +2402,10 @@ async fn main() {
             | Commands::Examples { .. }
             | Commands::Ps
             | Commands::Stop { .. }
-            | Commands::Status => unreachable!(
-                "Onboard/Doctor/Examples/Dream/Ps/Stop/Status are early-returned before this match; Chat/Serve fall through"
+            | Commands::Status
+            | Commands::Update
+            | Commands::Uninstall { .. } => unreachable!(
+                "Onboard/Doctor/Examples/Dream/Ps/Stop/Status/Update/Uninstall are early-returned before this match; Chat/Serve fall through"
             ),
         }
         if !dispatch_chat {
@@ -2452,6 +2510,7 @@ async fn main() {
         }
     }
 
+    registry.register(UrlFetchTool::new());
     registry.register(WebSearchTool::new());
     // Agent-Reach: structured reads from specific sources (Jina, YouTube,
     // Bilibili, RSS, GitHub). See crates/hydragent-tools/src/agent_reach.rs

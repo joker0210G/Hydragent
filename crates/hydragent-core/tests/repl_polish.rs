@@ -109,9 +109,10 @@ fn slash_only_input_is_silent() {
     // Sanity: the prompt must appear, proving the REPL got past
     // the first banner. We don't grep for the banner text directly
     // because it has ANSI escape codes that make substring matches
-    // fragile; the prompt "hydra [session-id] >" is plain ASCII.
+    // fragile; the Unicode prompt glyph "❯" (U+276F) is plain text
+    // and is rendered after every banner refresh.
     assert!(
-        combined.contains("interactive terminal"),
+        combined.contains('\u{276F}'),
         "REPL banner should appear. Output:\n{}",
         combined,
     );

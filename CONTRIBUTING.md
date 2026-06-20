@@ -46,11 +46,12 @@ hydragent/
 └── .env.example               ← Every supported env var
 ```
 
-**Three rules of thumb** for figuring out where a change belongs:
+**Four rules of thumb** for figuring out where a change belongs:
 
 1. **Does the LLM need to invoke it as a tool?** → Rust tool in `crates/hydragent-tools/`.
 2. **Is it a Telegram/Discord/Slack/… message gateway?** → Python adapter in `adapters/`.
 3. **Is it a prompt the LLM should follow in a known pattern?** → YAML skill in `skills/builtin/`.
+4. **Is it a top-level CLI command (`hydragent foo`)?** → New module `crates/hydragent-core/src/<foo>.rs`, wired into the `Commands` enum in `main.rs`. Mirror `update.rs` / `uninstall.rs` for the standard `run()` signature + CLI flag shape.
 
 Everything else (memory, security, swarm, planner, bus, vault) has a
 single owning crate. Open it, follow the module names, you can't get lost.
@@ -112,6 +113,12 @@ bottom of whatever file you're editing.
 
 # Diagnostics (no network)
 .\target\debug\hydragent.exe doctor
+
+# Self-update to the latest GitHub Release
+.\target\debug\hydragent.exe update
+
+# Uninstall (interactive confirmation; -y skips it)
+.\target\debug\hydragent.exe uninstall
 ```
 
 ---

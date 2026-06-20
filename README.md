@@ -111,6 +111,8 @@ hydragent serve           # gateway in the foreground
 hydragent ps              # list running gateways
 hydragent stop [pid]      # stop a running gateway
 hydragent chat            # interactive REPL
+hydragent update          # ⬆️  self-update to the latest release
+hydragent uninstall       # 🗑️  remove the install + PATH entry (prompts first)
 ```
 
 > Full guide, flags, troubleshooting, offline / air-gapped installs, and
@@ -128,7 +130,7 @@ cargo build --release -p hydragent-core
 ./target/release/hydragent chat         # 💬 interactive terminal REPL
 ```
 
-Other useful commands: `hydragent doctor` (diagnose), `hydragent examples` (starter prompts), `hydragent test-brain` (smoke-test the live brain), `hydragent --help` (full reference). All subcommands have rich `long_about` text — try `hydragent onboard --help` to see it.
+Other useful commands: `hydragent doctor` (diagnose), `hydragent examples` (starter prompts), `hydragent test-brain` (smoke-test the live brain), `hydragent update` (self-update from GitHub Releases), `hydragent uninstall` (remove the install + PATH entry), `hydragent --help` (full reference). All subcommands have rich `long_about` text — try `hydragent onboard --help` to see it.
 
 ## 🌊 What is Hydragent?
 

@@ -692,3 +692,8 @@
 - The user keeps opening messages brief and lowercase, as seen in 'hello from paste'.
 - The user writes their messages in ALL CAPS.
 - The user communicates using terse, command-line style syntax with space-separated tokens and numbered references (e.g., 'VERIFY FIX 1 RETRY 1').
+- The user provides multi-line input without explicit delimiters, expecting the agent to infer structure from context.
+- The user frequently pastes terminal commands without additional commentary or explanation.
+- The user redirects stderr to stdout and pipes output through 'tail' to limit displayed lines.
+- The user uses very brief, truncated sentences when clarifying or correcting.
+- The user does not use punctuation at the end of short statements.

@@ -24,6 +24,7 @@
 12. [Edge & Embedded Deployment](#12-edge--embedded-deployment)
 13. [Evaluation & Observability](#13-evaluation--observability)
 14. [Plugin & Skill Marketplace](#14-plugin--skill-marketplace)
+15. [Lifecycle Management](#15-lifecycle-management)
 
 ---
 
@@ -644,6 +645,40 @@ For enterprise deployments:
 - Administrators can publish internal skills/tools to a private, organization-scoped plugin registry
 - Skills are distributed as portable Markdown+config bundles (no binary dependencies)
 - Access control: Role-based skill visibility (e.g., Finance team sees billing tools, Engineering sees CI/CD tools)
+
+## 15. Lifecycle Management
+
+### 15.1 Self-Update *(new in Unreleased)*
+
+The kernel binary can update itself in place from GitHub Releases:
+
+- Queries the GitHub Releases API for the latest tag.
+- Compares against `CARGO_PKG_VERSION` (the build-time version stamp);
+  refuses to downgrade dev builds.
+- Downloads the matching release asset for the host platform triple
+  (`x86_64-pc-windows-msvc` → `.zip`, everything else → `.tar.gz`).
+- Replaces the running binary without admin elevation or `PATH` mutation.
+
+**Archive extraction** has a **3-tier fallback chain** for portability:
+
+1. **System `tar -xf`** — always tried first; works on Win10+, macOS, Linux.
+2. **Native Rust extraction** via the `tar` + `flate2` crates for `.tar.gz`
+   and the `zip` crate for `.zip` — cross-platform, zero external deps.
+3. **PowerShell `Expand-Archive`** for `.zip` on older Windows where
+   `tar.exe` is missing (Windows 7 / 8).
+
+### 15.2 Uninstall *(new in Unreleased)*
+
+The kernel ships a first-class uninstaller (`hydragent uninstall`):
+
+- Interactive confirmation by default; `-y` / `--yes` flag for scripted
+  teardown.
+- Removes the install directory (`~/.hydragent/`).
+- Strips the matching `export PATH=…` line from the user's shell rc
+  file (bash / zsh / fish / PowerShell profile).
+- Detects and refuses to delete a source checkout's `.git/` tree
+  without explicit confirmation (prevents "I ran uninstall inside my
+  dev repo" data loss).
 
 ---
 

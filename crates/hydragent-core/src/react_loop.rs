@@ -69,6 +69,13 @@ pub async fn run_react_loop(
           \"thought\": \"your final reasoning summary\",\n\
           \"answer\": \"your detailed markdown response to the user\"\n\
         }}\n\n\
+        ReAct Loop Rules (follow strictly):\n\
+        - Trust live tool results over your training knowledge. If search results contradict what you know, believe the search.\n\
+        - Stay STRICTLY on the user's topic. Do NOT rewrite their query into unrelated domains just because the first search is empty.\n\
+        - If a search returns 0 results, say you could not find current information. Do NOT invent alternative queries about related topics.\n\
+        - When search results contain promising URLs, use url_fetch to read the full page content before drawing conclusions.\n\
+        - Do NOT answer from memory if you just ran a search — use what the search returned.\n\
+        - Limit yourself to ONE search per topic unless the user explicitly asks for comparisons.\n\n\
         Available Tools:\n\
         {}\n\n\
         IMPORTANT: Only use the tools listed above. Always output valid JSON.\n\n\
