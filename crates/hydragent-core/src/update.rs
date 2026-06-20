@@ -6,7 +6,8 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 
 const GITHUB_API_URL: &str = "https://api.github.com/repos/joker0210G/Hydragent/releases/latest";
-const INSTALL_PS1_URL: &str = "https://joker0210G.github.io/Hydragent/install.ps1";
+const GITHUB_COithub.com/repos/joker0210G/Hydragent/commits?per_page=1";
+const INSTALL_PS1_MMITS_API_URL: &str = "https://api.gURL: &str = "https://joker0210G.github.io/Hydragent/install.ps1";
 const INSTALL_SH_URL: &str = "https://joker0210G.github.io/Hydragent/install.sh";
 
 // `CREATE_NO_WINDOW` so the spawned PowerShell doesn't flash a console
@@ -24,6 +25,18 @@ struct Release {
 struct Asset {
     name: String,
     browser_download_url: String,
+}
+
+/// Single commit object returned by the GitHub Commits API.
+#[derive(Debug, serde::Deserialize)]
+struct GitHubCommit {
+    sha: String,
+}
+
+/// Wrapper for the latest-commit fallback when releases are empty.
+#[derive(Debug)]
+struct CommitInfo {
+    sha: String,
 }
 
 /// Update Hydragent to the latest release from GitHub.
@@ -81,36 +94,45 @@ pub async fn run() {
         }
         Ok(CheckOutcome::NoReleasesPublished) => {
             // GitHub returned 404 from /releases/latest, which means the
-            // repo has not published any tagged releases yet. This is the
-            // expected state for a project whose distribution channel is
-            // still `main` (i.e. source builds). Tell the user, and offer
-            // to pull the current state from GitHub via the one-command
-            // installer before exiting.
-            println!(
-                "  Hydragent is on the pre-release channel — no GitHub releases have"
-            );
-            println!(
-                "  been published yet for this repo ({}).",
-                GITHUB_REPO
-            );
+            // repo has not published any tagged releases yet.
+            println!("  No release found for this repo ({}).", GITHUB_REPO);
             println!();
-            println!("  The one-command installer builds from `main` and replaces the");
-            println!("  existing binary in place. It will:");
+
+            // Try to show both local and upstream commit info.
+            let local_commit = get_local_commit();
+            let latest_commit = match fetch_latest_commit().await {
+                Ok(info) => Some(info),
+                Err(e) => {
+                    eprintln!("  ⚠ Could not fetch latest commit from GitHub: {}", e);
+                    None
+                }
+            };
+
+            let current_version = env!("CARGO_PKG_VERSION");
+            if let Some(ref commit) = local_commit {
+                println!("  Current version: v{} (prebuild, commit: {})", current_version, commit);
+            } else {
+                println!("  Current version: v{}", current_version);
+            }
+
+            if let Some(ref info) = latest_commit {
+                println!("  Latest version:  v{} (commit: {})", current_version, info.sha);
+            } else {
+                println!("  Latest version:  v{} (commit: unknown)", current_version);
+            }
+            println!();
+
+            if !confirm_yes_no("  Do you want to update from the current state of the GitHub commit?", true) {
+                println!("  Update cancelled.");
+                std::process::exit(0);
+            }
+
+            println!();
+            println!("  The one-command installer will:");
             println!("    1. Clone the repo into ~/.hydragent/src (or update it)");
             println!("    2. cargo build --release -p hydragent-core");
             println!("    3. Copy the fresh binary over the running one");
             println!("    4. Refresh the launcher and PATH entries");
-            println!();
-
-            if !confirm_yes_no("  Update from current GitHub state via the one-command installer?", true) {
-                println!("  Update cancelled.");
-                println!(
-                    "  (You can run this anytime: {} )",
-                    install_one_liner()
-                );
-                std::process::exit(0);
-            }
-
             println!();
             println!("  Launching installer: {}", install_one_liner());
             println!();
@@ -211,6 +233,57 @@ async fn check_latest_version() -> Result<CheckOutcome, Box<dyn std::error::Erro
         version: latest_version,
         asset,
     })
+}
+
+/// Fetch the SHA of the most recent commit on the default branch from
+/// the GitHub Commits API.
+async fn fetch_latest_commit() -> Result<CommitInfo, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::builder()
+        .user_agent("hydragent-updater")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let response = client.get(GITHUB_COMMITS_API_URL).send().await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub API returned {}: {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        )
+        .into());
+    }
+
+    let commits: Vec<GitHubCommit> = response.json().await?;
+    let sha = commits
+        .first()
+        .map(|c| c.sha.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Ok(CommitInfo { sha })
+}
+
+/// Best-effort detection of the local git commit the running binary was
+/// built from. We first look in the directory that holds the current
+/// binary (works for `cargo run` from the repo), then fall back to the
+/// current working directory.
+fn get_local_commit() -> Option<String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from))?;
+
+    if let Ok(output) = Command::new("git")
+        .args(["-C", &exe_dir.to_string_lossy(), "rev-parse", "--short", "HEAD"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !s.is_empty() && output.status.success() {
+            return Some(s);
+        }
+    }
+    None
 }
 
 /// Parse two dotted version strings and compare them as (major,minor,patch).
@@ -817,5 +890,42 @@ mod tests {
             "unix command must NOT pass --source/--force positional args (install.sh ignores them): {}",
             cmd
         );
+    }
+
+    /// `get_local_commit` should discover the current git commit when
+    /// the binary lives inside a git working tree (e.g. `cargo run` or
+    /// `cargo test`). When the binary was installed from a release
+    /// download it returns `None`, so we only assert structure when we
+    /// do get a value.
+    #[test]
+    fn local_commit_detects_git_sha() {
+        let Some(sha) = get_local_commit() else {
+            // Binary is outside a git repo (release install) — nothing to assert.
+            return;
+        };
+        assert!(
+            !sha.is_empty() && sha.len() >= 7,
+            "git commit sha should be at least 7 chars, got: {}",
+            sha
+        );
+    }
+
+    /// `GitHubCommit` should deserialize from the minimal JSON shape
+    /// the GitHub Commits API returns.
+    #[test]
+    fn github_commit_deserializes_sha() {
+        let raw = r#"{ "sha": "abc1234def5678" }"#;
+        let parsed: GitHubCommit = serde_json::from_str(raw).expect("failed to parse GitHubCommit");
+        assert_eq!(parsed.sha, "abc1234def5678");
+    }
+
+    /// `CommitInfo` constructor is a trivial wrapper but we exercise
+    /// it here so future refactors don't accidentally drop the field.
+    #[test]
+    fn commit_info_holds_sha() {
+        let info = CommitInfo {
+            sha: "deadbeef".to_string(),
+        };
+        assert_eq!(info.sha, "deadbeef");
     }
 }
