@@ -6,8 +6,8 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 
 const GITHUB_API_URL: &str = "https://api.github.com/repos/joker0210G/Hydragent/releases/latest";
-const GITHUB_COithub.com/repos/joker0210G/Hydragent/commits?per_page=1";
-const INSTALL_PS1_MMITS_API_URL: &str = "https://api.gURL: &str = "https://joker0210G.github.io/Hydragent/install.ps1";
+const GITHUB_COMMITS_API_URL: &str = "https://api.github.com/repos/joker0210G/Hydragent/commits?per_page=1";
+const INSTALL_PS1_URL: &str = "https://joker0210G.github.io/Hydragent/install.ps1";
 const INSTALL_SH_URL: &str = "https://joker0210G.github.io/Hydragent/install.sh";
 
 // `CREATE_NO_WINDOW` so the spawned PowerShell doesn't flash a console
@@ -531,11 +531,12 @@ async fn replace_binary(new_binary: &Path) -> Result<(), Box<dyn std::error::Err
 // only sees a plain `powershell -File <tmp> -Source -Force` invocation
 // of the canonical `install.ps1` — nothing for AMSI to flag.
 //
-// The script body is still prepended with a UTF-8 BOM so PowerShell
-// 5.1 decodes GitHub Pages' BOM-less UTF-8 correctly (otherwise the
-// box-drawing characters in the banner render as mojibake and cascade
-// into misleading parser errors elsewhere in the script). PowerShell
-// 7+ ignores the BOM.
+// The hosted install.ps1 is intentionally BOM-less so `irm ... | iex`
+// works correctly (a BOM prefix breaks Invoke-Expression when the
+// script starts with a `<#` block comment). The updater prepends the
+// BOM itself before writing the temp file because `powershell -File`
+// reads the file from disk and PowerShell 5.1 uses the BOM to detect
+// UTF-8 encoding. PowerShell 7+ ignores the BOM either way.
 //
 // `-File` (NOT `-Command` + `Invoke-Expression`) is what actually
 // honours the install script's `param()` block, which is the only way
@@ -595,11 +596,12 @@ fn confirm_yes_no(prompt: &str, default_yes: bool) -> bool {
     }
 }
 
-/// UTF-8 byte order mark. PowerShell 5.1 uses the BOM to decide the
-/// script encoding; without it, GitHub Pages' BOM-less UTF-8 script is
-/// decoded as Windows-1252 and the banner's box-drawing characters
-/// turn into mojibake (`â–ˆâ–ˆâ•—`) plus a cascade of misleading parser
-/// errors. PowerShell 7+ ignores the BOM.
+/// UTF-8 byte order mark. The updater prepends this to the temp
+/// install.ps1 before spawning `powershell -File` so PowerShell 5.1
+/// detects UTF-8 encoding when reading the file from disk. The hosted
+/// install.ps1 itself is kept BOM-less because `irm ... | iex` fails
+/// with parser errors when a BOM precedes a `<#` block comment.
+/// PowerShell 7+ ignores the BOM in both paths.
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 /// Build the Unix shell command that pipes the hosted installer into
@@ -617,10 +619,11 @@ fn unix_installer_command() -> String {
 }
 
 /// Download the Windows installer script to a uniquely-named temp file
-/// in `$TEMP` and prepend a UTF-8 BOM so PowerShell 5.1 decodes it
-/// correctly. The temp file is returned alongside a `TempInstaller`
-/// guard that deletes it on drop so we don't leak .ps1 files in %TEMP%
-/// if the spawned PowerShell is killed mid-run.
+/// in `$TEMP` and prepend a UTF-8 BOM so PowerShell 5.1 detects UTF-8
+/// when it reads the file via `powershell -File`. The hosted script
+/// itself is kept BOM-less for `irm | iex` compatibility. The temp
+/// file guard deletes the .ps1 on drop so we don't leak files in
+/// %TEMP% if the spawned PowerShell is killed mid-run.
 ///
 /// Doing the download in Rust (not inside a PowerShell wrapper) is the
 /// critical bit: a `[Guid]::NewGuid()` + `[Net.WebClient]::DownloadData`

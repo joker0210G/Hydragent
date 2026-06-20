@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     One-command installer for Hydragent (Windows).
 
@@ -101,14 +101,15 @@ $ProgressPreference    = 'SilentlyContinue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 try { & chcp.com 65001 > $null 2>&1 } catch { }
 
-# IMPORTANT: this file MUST be saved with a UTF-8 BOM. PowerShell 5.1's
-# parser guesses the encoding from the BOM and falls back to the system
-# codepage (cp1252) when there is none -- which silently re-decodes the
-# UTF-8 box-drawing bytes in Write-Banner as Latin-1 mojibake and then
-# chokes on it as if a string was unterminated. The presence of the BOM
-# tells the parser "this is UTF-8", so the box-drawing characters are
-# decoded correctly and the script parses cleanly. PowerShell 7+
-# ignores the BOM entirely, so this is harmless on modern shells.
+# NOTE: This file is intentionally saved WITHOUT a UTF-8 BOM. A BOM at
+# the start of a script causes `irm ... | iex` (the one-liner install)
+# to fail with parser errors because PowerShell's Invoke-Expression
+# tokenizer mishandles the BOM-prefixed string when it starts with a
+# `<#` block comment. The `irm` cmdlet already receives the raw bytes
+# and decodes them; `iex` then evaluates the decoded string -- no BOM
+# involvement is needed for this path. The UTF-8 box-drawing characters
+# in Write-Banner rely on the console codepage being 65001 (set above
+# with chcp.com), not on a file-encoding BOM.
 
 # ===========================================================================
 # 1. Config & shared variables
