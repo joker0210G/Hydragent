@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     One-command installer for Hydragent (Windows).
 
@@ -87,7 +87,31 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 
 # ===========================================================================
-# 0. Config & shared variables
+# 0. Console encoding setup (must run BEFORE any Write-Host)
+# ===========================================================================
+# Box-drawing characters in Write-Banner (and the bullet in the next-steps
+# section, etc.) need the console OUTPUT codepage to be 65001 / UTF-8.
+# On PowerShell 5.1 running in the legacy Windows conhost, [Console]::OutputEncoding
+# alone is not enough: Write-Host re-encodes its output through the
+# console OUTPUT codepage, which defaults to the OEM codepage (437,
+# 850, etc.). `chcp.com 65001` flips that codepage. We do it at the very
+# top of the script -- before Write-Banner or anything else writes a
+# single byte -- so every Write-Host in the run flows UTF-8.
+# On PowerShell 7+ / Windows Terminal this is a no-op (already UTF-8).
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+try { & chcp.com 65001 > $null 2>&1 } catch { }
+
+# IMPORTANT: this file MUST be saved with a UTF-8 BOM. PowerShell 5.1's
+# parser guesses the encoding from the BOM and falls back to the system
+# codepage (cp1252) when there is none -- which silently re-decodes the
+# UTF-8 box-drawing bytes in Write-Banner as Latin-1 mojibake and then
+# chokes on it as if a string was unterminated. The presence of the BOM
+# tells the parser "this is UTF-8", so the box-drawing characters are
+# decoded correctly and the script parses cleanly. PowerShell 7+
+# ignores the BOM entirely, so this is harmless on modern shells.
+
+# ===========================================================================
+# 1. Config & shared variables
 # ===========================================================================
 $BinName      = 'hydragent.exe'
 $LauncherName = 'Hydragent.cmd'
@@ -97,7 +121,7 @@ $SourceDir    = Join-Path $InstallRoot 'src'
 $LauncherPath = Join-Path $BinDir $LauncherName
 
 # Split $Repo into Org + Name so we can derive all the URLs from it.
-# "joker0210G/Hydragent" -> Org="joker0210G", Name="Hydragent"
+# Example: joker0210G/Hydragent  =>  Org=joker0210G, Name=Hydragent
 $Org  = ($Repo -split '/')[0]
 $Name = ($Repo -split '/')[1]
 
@@ -121,14 +145,14 @@ $AnsiCyan    = "$([char]27)[36m"
 $AnsiMagenta = "$([char]27)[35m"
 
 # ===========================================================================
-# 1. Helper functions (declared first so they're always visible)
+# 1. Helper functions (declared first so they are always visible)
 # ===========================================================================
 
 function Write-Banner {
     if ($Quiet) { return }
-    # Force UTF-8 so the ██╗ etc. block characters render correctly on
-    # legacy Windows consoles. No-op on PowerShell 7+ / Windows Terminal.
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    # Console encoding (UTF-8 / chcp 65001) is set up at the top of the
+    # script, before any Write-Host runs. See section 0 at the top of
+    # this file (Console encoding setup).
     Write-Host ''
     Write-Host "$AnsiCyan$AnsiBold██╗  ██╗██╗   ██╗██████╗ ██████╗  █████╗  ██████╗ ███████╗███╗   ██╗████████╗$AnsiReset"
     Write-Host "$AnsiCyan$AnsiBold██║  ██║╚██╗ ██╔╝██╔══██╗██╔══██╗██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝$AnsiReset"
@@ -381,6 +405,74 @@ function Write-NextSteps {
     Write-Host ''
 }
 
+<#
+Pause the script at the end so a one-liner `irm ... | iex` invocation
+does not flash the window closed before the user can read the result.
+
+Detection rule (all conditions must be true to pause):
+  - $Quiet is not set
+  - Not in a CI environment
+  - stdin  is NOT redirected   (no pipe feeding into the script)
+  - stdout is NOT redirected   (no pipe capturing the script output)
+  - stderr is NOT redirected
+  - $Host.UI.RawUI.WindowTitle is non-empty (we have a real conhost window)
+
+Why so defensive? Because [Console]::ReadKey($true) BLOCKS forever on
+a piped stdin -- there is no key the user can press, the call just
+hangs. So we have to be sure we are in an interactive console before
+calling it.
+
+In practice this means the pause fires when the user runs:
+    irm https://...install.ps1 | iex
+from a fresh conhost window (Start Menu -> Windows PowerShell, or
+Win+R -> "powershell"). It does NOT fire when the script is run from
+a CI runner, piped from another command, or invoked via `-File` from
+within an existing interactive session that itself has output piped.
+#>
+function Pause-IfEphemeral {
+    if ($Quiet) { return }
+
+    # CI runners never have a real console attached, so always skip
+    if ($env:CI -or $env:GITHUB_ACTIONS -or $env:BUILD_NUMBER -or
+        $env:TF_BUILD   -or $env:JENKINS_URL) {
+        return
+    }
+
+    # If any of stdin/stdout/stderr are redirected, there is either
+    # no input device for the user to press a key on, or no console
+    # output device for `Press any key to close this window...` to
+    # render meaningfully. Skip in that case.
+    try {
+        if ([Console]::IsInputRedirected)  { return }
+        if ([Console]::IsOutputRedirected) { return }
+        if ([Console]::IsErrorRedirected)  { return }
+    } catch {
+        # If the redirect probes fail for any reason, bail to safe behaviour
+        return
+    }
+
+    # Finally, confirm we have a real conhost window by checking that
+    # RawUI can give us a non-empty window title. This is the strongest
+    # signal that we are running inside an actual interactive console.
+    try {
+        $ui = $Host.UI.RawUI
+        if ($null -eq $ui) { return }
+        if ([string]::IsNullOrEmpty($ui.WindowTitle)) { return }
+    } catch {
+        return
+    }
+
+    Write-Host ''
+    Write-Host "$AnsiDim  Press any key to close this window...$AnsiReset"
+    # ReadKey($true) returns without echoing the key. If the user
+    # closes the window mid-pause, ReadKey throws -- swallow it.
+    try {
+        $null = [Console]::ReadKey($true)
+    } catch {
+        # Best-effort; exit 0 either way.
+    }
+}
+
 # ===========================================================================
 # 3. Main flow
 # ===========================================================================
@@ -410,6 +502,7 @@ if ($alreadyInstalled -and -not $Force) {
     Install-PathEntry
     if (-not $SkipOnboard) { Invoke-Onboarding }
     Write-NextSteps
+    Pause-IfEphemeral
     return
 }
 
@@ -436,3 +529,4 @@ Write-OK "PATH updated (new shells will pick this up)"
 
 if (-not $SkipOnboard) { Invoke-Onboarding }
 Write-NextSteps
+Pause-IfEphemeral
