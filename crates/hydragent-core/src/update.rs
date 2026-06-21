@@ -748,49 +748,59 @@ impl Drop for TempInstallerGuard {
 /// from-source rebuild and overwrite the existing binary. Returns the
 /// installer's `ExitStatus` so the caller can propagate its exit code.
 ///
-/// Async because the Windows branch fetches the installer with the
-/// shared `reqwest` client (Rust-side download, not PowerShell-side,
-/// to dodge Defender AMSI).
+/// Platform-specific helpers below keep `#[cfg]` at the function level
+/// so the Linux build never sees `creation_flags` or the Windows-only
+/// helpers; previously `cfg!` inside the function body caused the
+/// compiler to type-check both branches on every platform.
 async fn launch_source_installer() -> io::Result<std::process::ExitStatus> {
-    if cfg!(target_os = "windows") {
-        let (tmp_path, _guard) = match download_windows_installer_to_temp(INSTALL_PS1_URL).await {
-            Ok(pair) => pair,
-            Err(e) => {
-                return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
-            }
-        };
-        let tmp_arg = tmp_path.to_string_lossy().to_string();
-        let mut cmd = Command::new("powershell");
-        cmd.args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-NonInteractive",
-            "-File",
-            &tmp_arg,
-            "-Source",
-            "-Force",
-        ]);
-        // Don't pop a new console window on top of the user's terminal.
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        // Inherit our stdio so the installer's own output (banner,
-        // progress, errors) is visible to the user instead of being
-        // swallowed by the hidden window. Disable stdin so the
-        // installer can't accidentally block on a prompt it didn't
-        // expect from us.
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::inherit());
-        cmd.stderr(std::process::Stdio::inherit());
-        let result = cmd.status();
-        // Guard drops here and removes the temp .ps1.
-        result
-    } else {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", &unix_installer_command()]);
-        // Let the installer talk to the user (it might prompt for
-        // confirmations, sudo password, etc.).
-        cmd.status()
-    }
+    #[cfg(target_os = "windows")]
+    return launch_source_installer_windows().await;
+    #[cfg(not(target_os = "windows"))]
+    return launch_source_installer_unix().await;
+}
+
+#[cfg(target_os = "windows")]
+async fn launch_source_installer_windows() -> io::Result<std::process::ExitStatus> {
+    let (tmp_path, _guard) = match download_windows_installer_to_temp(INSTALL_PS1_URL).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+        }
+    };
+    let tmp_arg = tmp_path.to_string_lossy().to_string();
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-NonInteractive",
+        "-File",
+        &tmp_arg,
+        "-Source",
+        "-Force",
+    ]);
+    // Don't pop a new console window on top of the user's terminal.
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    // Inherit our stdio so the installer's own output (banner,
+    // progress, errors) is visible to the user instead of being
+    // swallowed by the hidden window. Disable stdin so the
+    // installer can't accidentally block on a prompt it didn't
+    // expect from us.
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(std::process::Stdio::inherit());
+    let result = cmd.status();
+    // Guard drops here and removes the temp .ps1.
+    result
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn launch_source_installer_unix() -> io::Result<std::process::ExitStatus> {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", &unix_installer_command()]);
+    // Let the installer talk to the user (it might prompt for
+    // confirmations, sudo password, etc.).
+    cmd.status()
 }
 
 #[cfg(test)]
