@@ -7,13 +7,16 @@ use std::os::windows::process::CommandExt;
 
 const GITHUB_API_URL: &str = "https://api.github.com/repos/joker0210G/Hydragent/releases/latest";
 const GITHUB_COMMITS_API_URL: &str = "https://api.github.com/repos/joker0210G/Hydragent/commits?per_page=1";
+#[cfg(target_os = "windows")]
 const INSTALL_PS1_URL: &str = "https://joker0210G.github.io/Hydragent/install.ps1";
+#[cfg(not(target_os = "windows"))]
 const INSTALL_SH_URL: &str = "https://joker0210G.github.io/Hydragent/install.sh";
 
-// `CREATE_NO_WINDOW` so the spawned PowerShell doesn't flash a console
-// window on top of the user's terminal.
+// Windows process creation flags used by the updater.
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(target_os = "windows")]
+const DETACHED_PROCESS: u32 = 0x0000_0008;
 
 #[derive(Debug, serde::Deserialize)]
 struct Release {
@@ -41,8 +44,11 @@ struct CommitInfo {
 
 /// GitHub Compare API response for commit-distance checks.
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct CompareResponse {
     status: String,
+    // `ahead_by` is deserialized but not used directly; kept for
+    // completeness so the API shape is fully represented.
     ahead_by: i64,
     behind_by: i64,
 }
@@ -318,24 +324,47 @@ async fn fetch_commits_behind(
 }
 
 /// Best-effort detection of the local git commit the running binary was
-/// built from. We first look in the directory that holds the current
-/// binary (works for `cargo run` from the repo), then fall back to the
-/// current working directory.
+/// built from.
+///
+/// We check, in order:
+///   1. The directory holding the current binary (works for `cargo run`).
+///   2. The standard source checkout path used by the installer
+///      (`~/.hydragent/src` or `%USERPROFILE%\.hydragent\src`).
+///   3. The current working directory (last-ditch fallback).
 fn get_local_commit() -> Option<String> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(PathBuf::from))?;
+    let mut dirs: Vec<PathBuf> = Vec::new();
 
-    if let Ok(output) = Command::new("git")
-        .args(["-C", &exe_dir.to_string_lossy(), "rev-parse", "HEAD"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !s.is_empty() && output.status.success() {
-            return Some(s);
+    // 1. Directory that holds the binary.
+    if let Some(p) = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)) {
+        dirs.push(p);
+    }
+
+    // 2. Installer source checkout directory.
+    #[cfg(target_os = "windows")]
+    let src_dir = std::env::var("USERPROFILE").ok().map(|p| PathBuf::from(p).join(".hydragent").join("src"));
+    #[cfg(not(target_os = "windows"))]
+    let src_dir = std::env::var("HOME").ok().map(|p| PathBuf::from(p).join(".hydragent").join("src"));
+    if let Some(p) = src_dir {
+        dirs.push(p);
+    }
+
+    // 3. Current working directory.
+    if let Ok(p) = std::env::current_dir() {
+        dirs.push(p);
+    }
+
+    for dir in dirs {
+        if let Ok(output) = Command::new("git")
+            .args(["-C", &dir.to_string_lossy(), "rev-parse", "HEAD"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+        {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !s.is_empty() && output.status.success() {
+                return Some(s);
+            }
         }
     }
     None
@@ -547,7 +576,7 @@ async fn replace_binary(new_binary: &Path) -> Result<(), Box<dyn std::error::Err
         );
         let _ = Command::new("cmd")
             .args(["/C", &cmd_str])
-            .creation_flags(0x08000008) // DETACHED_PROCESS | CREATE_NO_WINDOW
+            .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
             .spawn();
     }
 
@@ -657,6 +686,7 @@ fn confirm_yes_no(prompt: &str, default_yes: bool) -> bool {
 /// install.ps1 itself is kept BOM-less because `irm ... | iex` fails
 /// with parser errors when a BOM precedes a `<#` block comment.
 /// PowerShell 7+ ignores the BOM in both paths.
+#[cfg(target_os = "windows")]
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 /// Build the Unix shell command that pipes the hosted installer into
@@ -666,6 +696,7 @@ const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 /// decide whether to skip the early-exit and force a from-source
 /// rebuild. Shell assignment-prefix sets the env vars on `sh`'s own
 /// environment so the script sees them.
+#[cfg(not(target_os = "windows"))]
 fn unix_installer_command() -> String {
     format!(
         "curl -fsSL {url} | HYDRAGENT_SOURCE=1 HYDRAGENT_FORCE=1 sh",
@@ -917,6 +948,7 @@ mod tests {
     /// (e.g. someone "fixes" it to a UTF-16 LE BOM, which would also
     /// "work" on Win10+ but break on older PowerShell hosts), the
     /// install banner will turn into mojibake again.
+    #[cfg(target_os = "windows")]
     #[test]
     fn utf8_bom_is_exact_three_bytes() {
         assert_eq!(UTF8_BOM, [0xEF, 0xBB, 0xBF]);

@@ -311,7 +311,17 @@ function Build-Source {
         if (-not (Test-Path $built)) {
             Write-Err "Build reported success but $built not found."
         }
-        Copy-Item $built (Join-Path $BinDir $BinName) -Force
+        $dest = Join-Path $BinDir $BinName
+        # On Windows the running .exe is locked, so we can't overwrite
+        # it directly. We rename the old binary to .old first, then
+        # copy the new one into place. This mirrors the behaviour of
+        # hydragent-core/src/update.rs::replace_binary.
+        if (Test-Path $dest) {
+            $oldDest = $dest + ".old"
+            Remove-Item $oldDest -Force -ErrorAction SilentlyContinue
+            Rename-Item $dest $oldDest -Force
+        }
+        Copy-Item $built $dest -Force
         Write-OK "Built and installed $BinName"
     } finally {
         Pop-Location
