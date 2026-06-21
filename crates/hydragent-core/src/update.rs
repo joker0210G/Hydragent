@@ -39,6 +39,14 @@ struct CommitInfo {
     sha: String,
 }
 
+/// GitHub Compare API response for commit-distance checks.
+#[derive(Debug, serde::Deserialize)]
+struct CompareResponse {
+    status: String,
+    ahead_by: i64,
+    behind_by: i64,
+}
+
 /// Update Hydragent to the latest release from GitHub.
 ///
 /// Checks the GitHub Releases API for a newer version, downloads the
@@ -109,14 +117,29 @@ pub async fn run() {
             };
 
             let current_version = env!("CARGO_PKG_VERSION");
+
+            // Try to compute how far behind the local build is.
+            let commits_behind = match (&local_commit, &latest_commit) {
+                (Some(local), Some(latest)) => fetch_commits_behind(local, &latest.sha).await,
+                _ => None,
+            };
+
             if let Some(ref commit) = local_commit {
-                println!("  Current version: v{} (prebuild, commit: {})", current_version, commit);
+                if let Some(behind) = commits_behind {
+                    if behind == 0 {
+                        println!("  Current version: v{} (prebuild, commit: {}) — up to date", current_version, &commit[..8.min(commit.len())]);
+                    } else {
+                        println!("  Current version: v{} (prebuild, commit: {}, {} commits behind)", current_version, &commit[..8.min(commit.len())], behind);
+                    }
+                } else {
+                    println!("  Current version: v{} (prebuild, commit: {})", current_version, &commit[..8.min(commit.len())]);
+                }
             } else {
                 println!("  Current version: v{}", current_version);
             }
 
             if let Some(ref info) = latest_commit {
-                println!("  Latest version:  v{} (commit: {})", current_version, info.sha);
+                println!("  Latest version:  v{} (commit: {})", current_version, &info.sha[..8.min(info.sha.len())]);
             } else {
                 println!("  Latest version:  v{} (commit: unknown)", current_version);
             }
@@ -262,6 +285,38 @@ async fn fetch_latest_commit() -> Result<CommitInfo, Box<dyn std::error::Error>>
     Ok(CommitInfo { sha })
 }
 
+/// Query the GitHub Compare API to see how many commits `local_sha` is
+/// behind `latest_sha`. Returns the count on success, or None on any
+/// error so the UI can silently omit the distance line.
+async fn fetch_commits_behind(
+    local_sha: &str,
+    latest_sha: &str,
+) -> Option<i64> {
+    let url = format!(
+        "https://api.github.com/repos/joker0210G/Hydragent/compare/{}...{}",
+        local_sha,
+        latest_sha,
+    );
+    let client = match reqwest::Client::builder()
+        .user_agent("hydragent-updater")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    match client.get(&url).send().await {
+        Ok(response) if response.status().is_success() => {
+            match response.json::<CompareResponse>().await {
+                Ok(data) if data.status == "identical" => Some(0),
+                Ok(data) if data.status == "ahead" || data.status == "diverged" => Some(data.behind_by.max(0)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Best-effort detection of the local git commit the running binary was
 /// built from. We first look in the directory that holds the current
 /// binary (works for `cargo run` from the repo), then fall back to the
@@ -272,7 +327,7 @@ fn get_local_commit() -> Option<String> {
         .and_then(|p| p.parent().map(PathBuf::from))?;
 
     if let Ok(output) = Command::new("git")
-        .args(["-C", &exe_dir.to_string_lossy(), "rev-parse", "--short", "HEAD"])
+        .args(["-C", &exe_dir.to_string_lossy(), "rev-parse", "HEAD"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
