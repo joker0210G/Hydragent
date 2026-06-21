@@ -559,8 +559,15 @@ async fn replace_binary(new_binary: &Path) -> Result<(), Box<dyn std::error::Err
         // Rename the running binary (Windows allows renaming a running exe).
         std::fs::rename(&current_exe, &old_exe)?;
 
-        // Move the new binary into place.
-        std::fs::rename(new_binary, &current_exe)?;
+        // Move the new binary into place. If this fails, restore the old
+        // binary immediately so the user isn't left stranded.
+        if let Err(e) = std::fs::rename(new_binary, &current_exe) {
+            let _ = std::fs::rename(&old_exe, &current_exe);
+            return Err(format!(
+                "Failed to install new binary (restored old one): {}", e
+            )
+            .into());
+        }
 
         // Try to clean up the .old file. This usually fails because the
         // process is still running, so we ignore errors. The `.old` file

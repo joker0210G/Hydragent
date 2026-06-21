@@ -312,17 +312,40 @@ function Build-Source {
             Write-Err "Build reported success but $built not found."
         }
         $dest = Join-Path $BinDir $BinName
+        $oldDest = $dest + ".old"
+        $didRename = $false
+
         # On Windows the running .exe is locked, so we can't overwrite
         # it directly. We rename the old binary to .old first, then
         # copy the new one into place. This mirrors the behaviour of
         # hydragent-core/src/update.rs::replace_binary.
         if (Test-Path $dest) {
-            $oldDest = $dest + ".old"
             Remove-Item $oldDest -Force -ErrorAction SilentlyContinue
             Rename-Item $dest $oldDest -Force
+            $didRename = $true
         }
-        Copy-Item $built $dest -Force
-        Write-OK "Built and installed $BinName"
+
+        try {
+            Copy-Item $built $dest -Force
+            Write-OK "Built and installed $BinName"
+            # Best-effort: clean up the .old backup on success.
+            if (Test-Path $oldDest) {
+                Remove-Item $oldDest -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+            # If the copy failed (e.g. the binary is still locked or
+            # the destination directory is read-only), restore the old
+            # binary so the user isn't left stranded without a working
+            # hydragent.exe.
+            if ($didRename) {
+                if (Test-Path $dest) {
+                    Remove-Item $dest -Force -ErrorAction SilentlyContinue
+                }
+                Rename-Item $oldDest $dest -Force
+                Write-Warn "Install failed -- restored previous $BinName"
+            }
+            throw
+        }
     } finally {
         Pop-Location
     }
