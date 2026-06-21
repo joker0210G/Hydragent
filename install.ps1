@@ -298,6 +298,11 @@ function Build-Source {
     Write-Step 'A3' "Building hydragent-core (release)"
     Push-Location $SourceDir
     try {
+        # Give cargo a generous HTTP timeout (120s instead of 30s) so
+        # slow networks or transient crates.io stalls don't kill the
+        # install. This is a one-time build; waiting an extra minute
+        # is preferable to failing and forcing the user to retry.
+        $env:CARGO_HTTP_TIMEOUT = '120'
         & cargo build --release -p hydragent-core
         if ($LASTEXITCODE -ne 0) {
             Write-Err "cargo build failed (exit $LASTEXITCODE). See output above."

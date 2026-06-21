@@ -779,13 +779,10 @@ async fn launch_source_installer_windows() -> io::Result<std::process::ExitStatu
         "-Source",
         "-Force",
     ]);
-    // Don't pop a new console window on top of the user's terminal.
-    cmd.creation_flags(CREATE_NO_WINDOW);
     // Inherit our stdio so the installer's own output (banner,
     // progress, errors) is visible to the user instead of being
-    // swallowed by the hidden window. Disable stdin so the
-    // installer can't accidentally block on a prompt it didn't
-    // expect from us.
+    // swallowed. Disable stdin so the installer can't accidentally
+    // block on a prompt it didn't expect from us.
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
