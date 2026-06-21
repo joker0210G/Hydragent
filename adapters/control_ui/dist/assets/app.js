@@ -115,7 +115,7 @@
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(e); }
       autosize();
     });
-    $("#chat-clear").addEventListener("click", () => { $("#chat-stream").innerHTML = ""; });
+    $("#chat-clear-btn").addEventListener("click", () => { $("#chat-stream").innerHTML = ""; });
     $("#chat-new").addEventListener("click", () => {
       state.pageId = "ctrl-" + Math.random().toString(36).slice(2, 10);
       localStorage.setItem("hydra.pageId", state.pageId);
@@ -126,12 +126,32 @@
       addSystemMsg("New page: " + state.pageId);
     });
     // Memory
-    $("#memory-refresh").addEventListener("click", () => refreshMemory());
+    $("#memory-refresh-btn").addEventListener("click", () => refreshMemory());
     $("#memory-search").addEventListener("input", debounce(refreshMemory, 200));
-    $("#memory-clear-all").addEventListener("click", clearAllMemory);
+    $("#memory-clear-all-btn").addEventListener("click", clearAllMemory);
     // Library
-    $("#library-refresh").addEventListener("click", () => refreshLibrary());
-    $("#library-search").addEventListener("input", debounce(refreshLibrary, 200));
+    $("#library-refresh-btn").addEventListener("click", () => refreshLibrary());
+    $("#library-search").addEventListener("input", debounce(() => { libState.q = $("#library-search").value.trim(); renderLibraryList(); if (libState.view === "graph") renderLibraryGraph(); }, 200));
+    // Type filter chips
+    $$(".library-filters .chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        $$(".library-filters .chip").forEach((c) => c.classList.remove("active"));
+        chip.classList.add("active");
+        libState.filter = chip.dataset.filter;
+        renderLibraryList();
+        if (libState.view === "graph") renderLibraryGraph();
+      });
+    });
+    // View toggle
+    $$(".library-view-toggle .chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        $$(".library-view-toggle .chip").forEach((c) => c.classList.remove("active"));
+        chip.classList.add("active");
+        libState.view = chip.dataset.view;
+        $$(".library-view").forEach((v) => v.hidden = v.dataset.view !== libState.view);
+        if (libState.view === "graph") renderLibraryGraph();
+      });
+    });
     // Skills
     $("#skill-refresh").addEventListener("click", () => refreshSkills());
     $("#skill-search").addEventListener("input", debounce(refreshSkills, 200));
@@ -308,6 +328,8 @@
   }
 
   function addMsg(role, text) {
+    const empty = $("#chat-empty");
+    if (empty) empty.remove();
     const div = document.createElement("div");
     div.className = "msg " + role;
     div.textContent = text;
@@ -417,28 +439,263 @@
     catch (e) { alert("clear failed: " + e.message); }
   }
 
+  // -------------------------------------------------------------------
+  // Library — knowledge graph: Shelves → Books → Pages, cross-referenced
+  // -------------------------------------------------------------------
+  const libState = {
+    nodes: [],          // all nodes from library.list_nodes
+    links: [],          // cross-references (if available)
+    filter: "all",      // all | shelf | book | page
+    view: "list",       // list | graph
+    q: "",              // search query
+  };
+
   async function refreshLibrary() {
-    const list = $("#library-list");
+    libState.q = $("#library-search").value.trim();
+    try {
+      // Fetch all nodes in one call (no type filter = all types)
+      const res = await adminRpc("library.list_nodes", {});
+      const raw = res?.result?.items || res?.result || [];
+      libState.nodes = Array.isArray(raw) ? raw : [];
+      // Links may come back as a separate field; try to extract them
+      libState.links = (res?.result?.links || res?.links || []);
+    } catch (e) {
+      libState.nodes = [];
+      libState.links = [];
+    }
+    renderLibraryStats();
+    renderLibraryList();
+    if (libState.view === "graph") renderLibraryGraph();
+  }
+
+  function renderLibraryStats() {
+    const counts = { shelf: 0, book: 0, page: 0 };
+    for (const n of libState.nodes) {
+      const t = (n.type || "").toLowerCase();
+      if (counts[t] !== undefined) counts[t]++;
+    }
+    $("#library-stat-shelves").textContent = counts.shelf;
+    $("#library-stat-books").textContent   = counts.book;
+    $("#library-stat-pages").textContent   = counts.page;
+    $("#library-stat-links").textContent   = libState.links.length;
+    $("#library-count-shelves").textContent = counts.shelf;
+    $("#library-count-books").textContent   = counts.book;
+    $("#library-count-pages").textContent   = counts.page;
+  }
+
+  function libraryFiltered() {
+    const q = libState.q.toLowerCase();
+    return libState.nodes.filter((n) => {
+      if (libState.filter !== "all" && (n.type || "").toLowerCase() !== libState.filter) return false;
+      if (q) {
+        const hay = ((n.label || n.title || n.name || "") + " " + (n.id || "")).toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderLibraryList() {
+    const items = libraryFiltered();
+    const groups = { shelf: [], book: [], page: [] };
+    for (const n of items) {
+      const t = (n.type || "").toLowerCase();
+      if (groups[t]) groups[t].push(n);
+    }
+    renderLibrarySection("#library-list-shelves", groups.shelf, "shelf",
+      "No shelves yet. Create one to organize your knowledge.");
+    renderLibrarySection("#library-list-books", groups.book, "book",
+      "No books yet.");
+    renderLibrarySection("#library-list-pages", groups.page, "page",
+      "No pages yet. Start a conversation to create one.");
+  }
+
+  function renderLibrarySection(sel, items, type, emptyMsg) {
+    const list = $(sel);
     list.setAttribute("aria-busy", "true");
     list.innerHTML = "";
-    try {
-      const q = $("#library-search").value.trim();
-      const res = await adminRpc(q ? "library.search" : "library.list_nodes", { q });
-      const items = res?.result?.items || res?.result || [];
-      if (!items.length) { list.innerHTML = "<li class='muted'>Library empty.</li>"; return; }
-      for (const it of items) {
-        const li = document.createElement("li");
-        li.innerHTML = `
-          <div>
-            <div class="title">${escapeHtml(it.title || it.name || it.id)}</div>
-            <div class="excerpt">${escapeHtml((it.summary || it.text || "").slice(0, 240))}</div>
-          </div>
-          <div class="meta">${escapeHtml(it.kind || "")}</div>
-        `;
-        list.appendChild(li);
+    if (!items.length) {
+      const li = document.createElement("li");
+      li.className = "lib-empty";
+      li.textContent = emptyMsg;
+      list.appendChild(li);
+      list.removeAttribute("aria-busy");
+      return;
+    }
+    for (const n of items) {
+      const li = document.createElement("li");
+      li.className = "lib-item lib-item-" + type;
+      li.dataset.id = n.id || "";
+      li.dataset.type = type;
+
+      // Active page highlight
+      if (type === "page" && state.pageId && n.id === state.pageId) {
+        li.classList.add("lib-item-active");
       }
-    } catch (e) { list.innerHTML = "<li class='muted'>" + escapeHtml(e.message) + "</li>"; }
-    finally { list.removeAttribute("aria-busy"); }
+
+      const label = n.label || n.title || n.name || n.id || "(untitled)";
+      const idShort = (n.id || "").replace(/^telegram-page-/, "").substring(0, 8);
+
+      li.innerHTML = `
+        <span class="lib-item-icon" aria-hidden="true">${
+          type === "shelf" ? "🟣" : type === "book" ? "🔵" : "🟢"
+        }</span>
+        <div class="lib-item-body">
+          <div class="lib-item-title">${escapeHtml(label)}</div>
+          <div class="lib-item-id">${escapeHtml(type)} · ${escapeHtml(idShort || "—")}</div>
+        </div>
+        ${type === "page" && state.pageId && n.id === state.pageId
+          ? '<span class="lib-item-badge" data-i18n="ui.library.active">Active</span>'
+          : ""}
+      `;
+
+      // Click handler
+      if (type === "page") {
+        li.addEventListener("click", () => activatePage(n.id));
+      } else {
+        li.addEventListener("click", () => {
+          // For shelves/books: filter to show only items linked to this one
+          if (libState.filter === "all" || libState.filter === type) {
+            libState.filter = type;
+            $$(".library-filters .chip").forEach((c) => c.classList.toggle("active", c.dataset.filter === type));
+            renderLibraryList();
+          }
+        });
+      }
+
+      list.appendChild(li);
+    }
+    list.removeAttribute("aria-busy");
+  }
+
+  function activatePage(pageId) {
+    if (!pageId) return;
+    state.pageId = pageId;
+    localStorage.setItem("hydra.pageId", state.pageId);
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ set_page_id: state.pageId }));
+    }
+    addSystemMsg("Switched to page: " + pageId);
+    renderLibraryList(); // re-render to update active highlight
+  }
+
+  // -------------------------------------------------------------------
+  // Library graph view — D3.js force-directed knowledge graph
+  // -------------------------------------------------------------------
+  let libGraphSim = null;
+
+  function renderLibraryGraph() {
+    const container = $("#library-graph");
+    if (!container) return;
+    container.innerHTML = "";
+
+    const items = libraryFiltered();
+    if (!items.length) {
+      const empty = document.createElement("p");
+      empty.className = "lib-graph-empty";
+      empty.textContent = "No library items to visualize.";
+      container.appendChild(empty);
+      return;
+    }
+
+    // D3 not loaded (CDN blocked) — fallback message
+    if (typeof d3 === "undefined") {
+      const fallback = document.createElement("div");
+      fallback.className = "lib-graph-fallback";
+      fallback.innerHTML = `
+        <p class="muted">Graph view requires D3.js (CDN blocked?).</p>
+        <p class="muted">Use the list view to browse ${items.length} item${items.length === 1 ? "" : "s"}.</p>
+      `;
+      container.appendChild(fallback);
+      return;
+    }
+
+    const width = container.clientWidth || 800;
+    const height = Math.max(400, container.clientHeight || 500);
+
+    const colorMap = { shelf: "#9d4edd", book: "#4cc9f0", page: "#4caf50" };
+    const sizeMap  = { shelf: 22,          book: 16,          page: 10 };
+
+    // Build nodes (clone so D3 can mutate positions)
+    const nodes = items.map((n) => ({
+      id: n.id,
+      type: (n.type || "").toLowerCase(),
+      label: n.label || n.title || n.name || n.id,
+      properties: n.properties || {},
+    }));
+
+    // Build links: try to match by id; if no links from backend, skip
+    const validIds = new Set(nodes.map((n) => n.id));
+    const links = (libState.links || [])
+      .filter((l) => validIds.has(l.source) && validIds.has(l.target))
+      .map((l) => ({ source: l.source, target: l.target, type: l.type || "ref" }));
+
+    const svg = d3.select(container)
+      .append("svg")
+      .attr("width", width)
+      .attr("height", height)
+      .attr("viewBox", [0, 0, width, height]);
+
+    // Zoom & pan
+    const g = svg.append("g");
+    svg.call(d3.zoom().scaleExtent([0.3, 3]).on("zoom", (e) => g.attr("transform", e.transform)));
+
+    // Force simulation
+    if (libGraphSim) libGraphSim.stop();
+    libGraphSim = d3.forceSimulation(nodes)
+      .force("link", d3.forceLink(links).id((d) => d.id).distance(100))
+      .force("charge", d3.forceManyBody().strength(-300))
+      .force("center", d3.forceCenter(width / 2, height / 2))
+      .force("collision", d3.forceCollide().radius((d) => sizeMap[d.type] + 6));
+
+    // Links
+    const link = g.append("g")
+      .selectAll("line")
+      .data(links)
+      .enter().append("line")
+      .attr("class", "lib-graph-link");
+
+    // Nodes
+    const node = g.append("g")
+      .selectAll("circle")
+      .data(nodes)
+      .enter().append("circle")
+      .attr("class", "lib-graph-node")
+      .attr("r", (d) => sizeMap[d.type] || 10)
+      .attr("fill", (d) => colorMap[d.type] || "#888")
+      .attr("stroke", (d) => d.type === "page" && d.id === state.pageId ? "#fff" : "none")
+      .attr("stroke-width", (d) => d.type === "page" && d.id === state.pageId ? 3 : 0)
+      .call(d3.drag()
+        .on("start", (e, d) => { if (!e.active) libGraphSim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on("drag",  (e, d) => { d.fx = e.x; d.fy = e.y; })
+        .on("end",   (e, d) => { if (!e.active) libGraphSim.alphaTarget(0); d.fx = null; d.fy = null; }))
+      .on("click", (e, d) => {
+        if (d.type === "page") activatePage(d.id);
+      });
+
+    // Labels
+    const label = g.append("g")
+      .selectAll("text")
+      .data(nodes)
+      .enter().append("text")
+      .attr("class", "lib-graph-label")
+      .attr("dx", (d) => sizeMap[d.type] + 4)
+      .attr("dy", ".35em")
+      .text((d) => d.label);
+
+    libGraphSim.on("tick", () => {
+      link
+        .attr("x1", (d) => d.source.x)
+        .attr("y1", (d) => d.source.y)
+        .attr("x2", (d) => d.target.x)
+        .attr("y2", (d) => d.target.y);
+      node
+        .attr("cx", (d) => d.x)
+        .attr("cy", (d) => d.y);
+      label
+        .attr("x", (d) => d.x)
+        .attr("y", (d) => d.y);
+    });
   }
 
   async function refreshSkills() {

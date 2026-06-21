@@ -6,33 +6,39 @@
     <meta name="color-scheme" content="dark light" />
     <title>Hydragent — Control UI</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <meta name="theme-color" content="#0a0e14" />
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='52' font-size='52'>🐙</text></svg>" />
+    <meta name="theme-color" content="#070b12" />
+    <meta name="description" content="Browser control panel for the Hydragent unified AI agent runtime." />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='52' font-size='52'>🐉</text></svg>" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="./assets/style.css" />
+    <script src="https://d3js.org/d3.v7.min.js" defer></script>
   </head>
   <body>
     <noscript>This Control UI requires JavaScript.</noscript>
 
     <header class="topbar" role="banner">
       <div class="brand">
-        <span class="logo" aria-hidden="true">🐙</span>
-        <span class="name">Hydragent</span>
-        <span class="channel">Control UI</span>
+        <span class="logo" aria-hidden="true">�</span>
+        <div class="brand-text">
+          <span class="name">Hydragent</span>
+          <span class="tagline" data-i18n="ui.brand.tagline">The Unified AI Agent</span>
+        </div>
+        <span class="channel" data-i18n="ui.brand.channel">Control UI</span>
       </div>
-      <nav class="tabs" id="tabs" role="tablist" aria-label="Panels">
-        <button class="tab" role="tab" data-tab="chat" aria-selected="true">Chat</button>
-        <button class="tab" role="tab" data-tab="memory">Memory</button>
-        <button class="tab" role="tab" data-tab="library">Library</button>
-        <button class="tab" role="tab" data-tab="skills">Skills</button>
-        <button class="tab" role="tab" data-tab="dreams">Dreams</button>
-        <button class="tab" role="tab" data-tab="cron">Cron</button>
-        <button class="tab" role="tab" data-tab="pages">Pages</button>
-        <button class="tab" role="tab" data-tab="config">Config</button>
-      </nav>
       <div class="topbar-right">
-        <label class="sr-only" for="theme-select">Theme</label>
+        <span id="health-pill" class="pill" data-tone="ok" hidden>
+          <span class="dot" aria-hidden="true"></span>
+          <span class="label" data-i18n="ui.health.label">Health</span>
+        </span>
+        <span id="version-pill" class="pill" data-tone="accent" hidden>
+          <span class="dot" aria-hidden="true"></span>
+          <span class="label">v…</span>
+        </span>
+        <label class="sr-only" for="theme-select" data-i18n="ui.theme.label">Theme</label>
         <select id="theme-select" class="select" aria-label="Theme"></select>
-        <label class="sr-only" for="lang-select">Language</label>
+        <label class="sr-only" for="lang-select" data-i18n="ui.lang.label">Language</label>
         <select id="lang-select" class="select" aria-label="Language">
           <option value="en">English</option>
           <option value="zh-CN">简体中文</option>
@@ -46,73 +52,367 @@
           <span class="dot" aria-hidden="true"></span>
           <span class="label">offline</span>
         </span>
-        <button id="install-pwa" class="btn ghost" hidden>Install</button>
+        <button id="install-pwa" class="btn ghost" hidden data-i18n="ui.pwa.install">Install</button>
       </div>
     </header>
 
-    <main id="panels" class="panels" role="main">
+    <!-- Update banner (hidden by default; shown when a new version is detected) -->
+    <div id="update-banner" class="update-banner" hidden role="status">
+      <span class="pill" data-tone="warn"><span class="dot" aria-hidden="true"></span><span data-i18n="ui.update.label">Update</span></span>
+      <span class="msg" id="update-banner-msg" data-i18n="ui.update.msg">A new version of Hydragent is available.</span>
+      <span class="actions">
+        <button type="button" class="btn ghost" id="update-dismiss" data-i18n="ui.update.dismiss">Dismiss</button>
+      </span>
+    </div>
+
+    <div class="layout">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <!-- Top action: New Chat (full-width pill button) -->
+        <div class="sidebar-action">
+          <button class="btn-new" id="btn-new-chat" type="button" data-i18n-title="ui.sidebar.new_chat.title" title="Start a new chat">
+            <span class="icon-plus" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+            </span>
+            <span class="label" data-i18n="ui.sidebar.new_chat">New Chat</span>
+            <span class="kbd" aria-hidden="true">Ctrl N</span>
+          </button>
+        </div>
+
+        <nav class="side-nav" id="tabs" role="tablist" aria-label="Panels">
+          <div class="nav-section">
+            <div class="nav-section-head">
+              <span class="nav-section-title" data-i18n="ui.nav.section.live">Live</span>
+            </div>
+            <button class="tab nav-item" role="tab" data-tab="chat" aria-selected="true">
+              <span class="nav-icon" aria-hidden="true">💬</span>
+              <span class="nav-label" data-i18n="ui.tab.chat">Chat</span>
+              <span class="nav-meta" aria-hidden="true">1</span>
+            </button>
+          </div>
+          <div class="nav-section">
+            <div class="nav-section-head">
+              <span class="nav-section-title" data-i18n="ui.nav.section.knowledge">Knowledge</span>
+              <button class="nav-section-action" id="nav-action-search" type="button" data-i18n-title="ui.nav.action.search" title="Search knowledge" aria-label="Search knowledge">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              </button>
+            </div>
+            <button class="tab nav-item" role="tab" data-tab="memory">
+              <span class="nav-icon" aria-hidden="true">🧠</span>
+              <span class="nav-label" data-i18n="ui.tab.memory">Memory</span>
+              <span class="nav-count" id="nav-count-memory" data-count="memory">0</span>
+            </button>
+            <button class="tab nav-item" role="tab" data-tab="library">
+              <span class="nav-icon" aria-hidden="true">📚</span>
+              <span class="nav-label" data-i18n="ui.tab.library">Library</span>
+              <span class="nav-count" id="nav-count-library" data-count="library">0</span>
+            </button>
+            <button class="tab nav-item" role="tab" data-tab="pages">
+              <span class="nav-icon" aria-hidden="true">📄</span>
+              <span class="nav-label" data-i18n="ui.tab.pages">Pages</span>
+              <span class="nav-count" id="nav-count-pages" data-count="pages">0</span>
+            </button>
+          </div>
+          <div class="nav-section">
+            <div class="nav-section-head">
+              <span class="nav-section-title" data-i18n="ui.nav.section.agent">Agent</span>
+              <button class="nav-section-action" id="nav-action-refresh" type="button" data-i18n-title="ui.nav.action.refresh" title="Refresh agent data" aria-label="Refresh agent data">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M8 16H3v5"/></svg>
+              </button>
+            </div>
+            <button class="tab nav-item" role="tab" data-tab="skills">
+              <span class="nav-icon" aria-hidden="true">🛠</span>
+              <span class="nav-label" data-i18n="ui.tab.skills">Skills</span>
+              <span class="nav-count" id="nav-count-skills" data-count="skills">0</span>
+            </button>
+            <button class="tab nav-item" role="tab" data-tab="dreams">
+              <span class="nav-icon" aria-hidden="true">💭</span>
+              <span class="nav-label" data-i18n="ui.tab.dreams">Dreams</span>
+            </button>
+            <button class="tab nav-item" role="tab" data-tab="cron">
+              <span class="nav-icon" aria-hidden="true">⏰</span>
+              <span class="nav-label" data-i18n="ui.tab.cron">Cron</span>
+              <span class="nav-count" id="nav-count-cron" data-count="cron">0</span>
+            </button>
+          </div>
+          <div class="nav-section">
+            <div class="nav-section-head">
+              <span class="nav-section-title" data-i18n="ui.nav.section.system">System</span>
+            </div>
+            <button class="tab nav-item" role="tab" data-tab="config">
+              <span class="nav-icon" aria-hidden="true">⚙️</span>
+              <span class="nav-label" data-i18n="ui.tab.config">Config</span>
+            </button>
+          </div>
+        </nav>
+
+        <!-- Bottom: settings + status pinned to bottom -->
+        <div class="sidebar-bottom">
+          <button class="bottom-item" id="btn-settings" type="button" data-tab="config">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </span>
+            <span class="label" data-i18n="ui.sidebar.settings">Settings</span>
+            <span class="kbd" aria-hidden="true">,</span>
+          </button>
+          <div class="sidebar-status">
+            <span class="dot dot-ok" aria-hidden="true"></span>
+            <span class="label" data-i18n="ui.sidebar.status">Runtime online</span>
+            <span class="kbd" data-i18n="ui.sidebar.stack">Rust · Python · Zig</span>
+          </div>
+        </div>
+      </aside>
+
+      <main id="panels" class="panels" role="main">
       <!-- CHAT ------------------------------------------------------------ -->
       <section class="panel" data-panel="chat" role="tabpanel" aria-label="Chat">
-        <div class="chat-stream" id="chat-stream" aria-live="polite"></div>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title" data-i18n="ui.tab.chat">Chat</h2>
+            <p class="panel-sub" data-i18n="ui.chat.sub">Direct gateway session for quick interventions.</p>
+          </div>
+          <div class="panel-actions">
+            <span id="chat-session-pill" class="pill" data-tone="accent" title="Active session">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="label" data-i18n="ui.chat.session">Main session</span>
+            </span>
+            <button type="button" class="icon-btn" id="chat-refresh" title="Refresh" data-i18n-attr="title:ui.action.refresh" aria-label="Refresh">↻</button>
+            <button type="button" class="icon-btn" id="chat-clear-btn" title="Clear" data-i18n-attr="title:ui.action.clear" aria-label="Clear">⌫</button>
+            <button type="button" class="icon-btn" id="chat-fullscreen" title="Fullscreen" data-i18n-attr="title:ui.action.fullscreen" aria-label="Fullscreen">⛶</button>
+          </div>
+        </div>
+        <div class="chat-stream" id="chat-stream" aria-live="polite">
+          <div class="chat-empty" id="chat-empty">
+            <div class="chat-empty-logo" aria-hidden="true">🐉</div>
+            <h2>Hydragent</h2>
+            <p data-i18n="ui.chat.welcome">The agent that grows, remembers, executes, and protects. Ask anything.</p>
+            <div class="quick-actions" role="group" aria-label="Quick actions">
+              <button type="button" class="quick-action" data-q="Summarize the last 5 memories">
+                <span class="qa-icon" aria-hidden="true">🧠</span>
+                <span data-i18n="ui.chat.qa.summarize">Summarize recent memory</span>
+              </button>
+              <button type="button" class="quick-action" data-q="What skills are available?">
+                <span class="qa-icon" aria-hidden="true">🛠</span>
+                <span data-i18n="ui.chat.qa.skills">List available skills</span>
+              </button>
+              <button type="button" class="quick-action" data-q="Run a dream consolidation cycle">
+                <span class="qa-icon" aria-hidden="true">💭</span>
+                <span data-i18n="ui.chat.qa.dream">Run a dream cycle</span>
+              </button>
+              <button type="button" class="quick-action" data-q="Show me the current system status">
+                <span class="qa-icon" aria-hidden="true">📊</span>
+                <span data-i18n="ui.chat.qa.status">Show system status</span>
+              </button>
+            </div>
+          </div>
+        </div>
         <form id="chat-form" class="chat-form" autocomplete="off">
           <textarea id="chat-input"
                     rows="1"
                     placeholder="Talk to Hydragent…"
+                    data-i18n-attr="placeholder:ui.chat.placeholder"
                     aria-label="Message"></textarea>
-          <button type="submit" class="btn primary" id="chat-send">Send</button>
-          <button type="button" class="btn ghost" id="chat-cancel" hidden>Stop</button>
+          <button type="button" class="btn ghost" id="chat-new" data-i18n="ui.chat.new">New page</button>
+          <button type="submit" class="btn primary" id="chat-send" data-i18n="ui.chat.send">Send</button>
+          <button type="button" class="btn ghost" id="chat-cancel" hidden data-i18n="ui.chat.stop">Stop</button>
         </form>
-        <div class="chat-actions">
-          <button class="btn ghost" id="chat-clear">Clear</button>
-          <button class="btn ghost" id="chat-new">New page</button>
-        </div>
       </section>
 
       <!-- MEMORY ---------------------------------------------------------- -->
       <section class="panel" data-panel="memory" role="tabpanel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title" data-i18n="ui.tab.memory">Memory</h2>
+            <p class="panel-sub" data-i18n="ui.memory.sub">Hierarchical, addressable memory — the ocean your knowledge lives in.</p>
+          </div>
+          <div class="panel-actions">
+            <button type="button" class="icon-btn" id="memory-refresh-btn" title="Refresh" data-i18n-attr="title:ui.action.refresh" aria-label="Refresh">↻</button>
+            <button type="button" class="icon-btn" id="memory-export" title="Export" data-i18n-attr="title:ui.action.export" aria-label="Export">⇩</button>
+            <button type="button" class="icon-btn danger" id="memory-clear-all-btn" title="Clear all" data-i18n-attr="title:ui.action.clear_all" aria-label="Clear all">⌫</button>
+          </div>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-icon" data-tone="accent" aria-hidden="true">🧠</span>
+            <div>
+              <div class="stat-num" id="memory-stat-total">—</div>
+              <div class="stat-label" data-i18n="ui.memory.stat.total">Total memories</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-icon" data-tone="ok" aria-hidden="true">⏱</span>
+            <div>
+              <div class="stat-num" id="memory-stat-24h">—</div>
+              <div class="stat-label" data-i18n="ui.memory.stat.recent">Last 24h</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-icon" aria-hidden="true">🏷</span>
+            <div>
+              <div class="stat-num" id="memory-stat-tags">—</div>
+              <div class="stat-label" data-i18n="ui.memory.stat.tags">Distinct tags</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-icon" aria-hidden="true">💾</span>
+            <div>
+              <div class="stat-num" id="memory-stat-size">—</div>
+              <div class="stat-label" data-i18n="ui.memory.stat.size">On disk</div>
+            </div>
+          </div>
+        </div>
         <div class="row">
-          <input id="memory-search" class="input" placeholder="Search memory…" />
-          <button class="btn" id="memory-refresh">Refresh</button>
+          <input id="memory-search" class="input" placeholder="Search memory…" data-i18n-attr="placeholder:ui.memory.search" />
         </div>
         <ul id="memory-list" class="list" aria-busy="true"></ul>
-        <div class="footer">
-          <button class="btn danger" id="memory-clear-all">Clear all</button>
-        </div>
       </section>
 
       <!-- LIBRARY --------------------------------------------------------- -->
-      <section class="panel" data-panel="library" role="tabpanel" hidden>
-        <div class="row">
-          <input id="library-search" class="input" placeholder="Search library…" />
-          <button class="btn" id="library-refresh">Refresh</button>
+      <!-- Knowledge graph: Shelves → Books → Pages, cross-referenced in a web -->
+      <section class="panel panel-library" data-panel="library" role="tabpanel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title" data-i18n="ui.tab.library">Library</h2>
+            <p class="panel-sub" data-i18n="ui.library.sub">Shelves, books, and pages — your navigable knowledge graph.</p>
+          </div>
+          <div class="panel-actions">
+            <button type="button" class="icon-btn" id="library-refresh-btn" title="Refresh" data-i18n-attr="title:ui.action.refresh" aria-label="Refresh">↻</button>
+          </div>
         </div>
-        <ul id="library-list" class="list" aria-busy="true"></ul>
+
+        <div class="stats-grid library-stats">
+          <div class="stat-card library-stat" data-tone="shelf">
+            <span class="stat-icon" aria-hidden="true">🟣</span>
+            <div>
+              <div class="stat-num" id="library-stat-shelves">—</div>
+              <div class="stat-label" data-i18n="ui.library.stat.shelves">Shelves</div>
+            </div>
+          </div>
+          <div class="stat-card library-stat" data-tone="book">
+            <span class="stat-icon" aria-hidden="true">🔵</span>
+            <div>
+              <div class="stat-num" id="library-stat-books">—</div>
+              <div class="stat-label" data-i18n="ui.library.stat.books">Books</div>
+            </div>
+          </div>
+          <div class="stat-card library-stat" data-tone="page">
+            <span class="stat-icon" aria-hidden="true">🟢</span>
+            <div>
+              <div class="stat-num" id="library-stat-pages">—</div>
+              <div class="stat-label" data-i18n="ui.library.stat.pages">Pages</div>
+            </div>
+          </div>
+          <div class="stat-card library-stat" data-tone="link">
+            <span class="stat-icon" aria-hidden="true">🔗</span>
+            <div>
+              <div class="stat-num" id="library-stat-links">—</div>
+              <div class="stat-label" data-i18n="ui.library.links">Cross-references</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="library-toolbar">
+          <input id="library-search" class="input" type="text" autocomplete="off"
+                 placeholder="Search shelves, books, pages…"
+                 data-i18n-attr="placeholder:ui.library.search" />
+          <div class="library-filters" role="tablist" aria-label="Filter by type">
+            <button class="chip active" data-filter="all"   data-i18n="ui.library.type.all">All</button>
+            <button class="chip chip-shelf"  data-filter="shelf" data-i18n="ui.library.type.shelves">Shelves</button>
+            <button class="chip chip-book"   data-filter="book"  data-i18n="ui.library.type.books">Books</button>
+            <button class="chip chip-page"   data-filter="page"  data-i18n="ui.library.type.pages">Pages</button>
+          </div>
+          <div class="library-view-toggle" role="tablist" aria-label="View mode">
+            <button class="chip active" data-view="list"  data-i18n="ui.library.view.list">List</button>
+            <button class="chip"        data-view="graph" data-i18n="ui.library.view.graph">Graph</button>
+          </div>
+        </div>
+
+        <!-- List view: three type-themed sections -->
+        <div class="library-view library-view-list" data-view="list">
+          <section class="lib-section lib-section-shelf">
+            <header class="lib-section-head">
+              <span class="lib-section-icon" aria-hidden="true">🟣</span>
+              <h3 class="lib-section-title" data-i18n="ui.library.section.shelves">Shelves — Genres &amp; Categories</h3>
+              <span class="lib-section-count" id="library-count-shelves">0</span>
+            </header>
+            <ul class="lib-list" id="library-list-shelves" aria-busy="true"></ul>
+          </section>
+
+          <section class="lib-section lib-section-book">
+            <header class="lib-section-head">
+              <span class="lib-section-icon" aria-hidden="true">🔵</span>
+              <h3 class="lib-section-title" data-i18n="ui.library.section.books">Books — Projects &amp; Contexts</h3>
+              <span class="lib-section-count" id="library-count-books">0</span>
+            </header>
+            <ul class="lib-list" id="library-list-books" aria-busy="true"></ul>
+          </section>
+
+          <section class="lib-section lib-section-page">
+            <header class="lib-section-head">
+              <span class="lib-section-icon" aria-hidden="true">🟢</span>
+              <h3 class="lib-section-title" data-i18n="ui.library.section.pages">Pages — Conversations &amp; Threads</h3>
+              <span class="lib-section-count" id="library-count-pages">0</span>
+            </header>
+            <ul class="lib-list" id="library-list-pages" aria-busy="true"></ul>
+          </section>
+        </div>
+
+        <!-- Graph view: D3.js force-directed knowledge graph -->
+        <div class="library-view library-view-graph" data-view="graph" hidden>
+          <div class="lib-graph-toolbar">
+            <span class="lib-graph-hint" data-i18n="ui.library.graph.hint">Click a node to explore. Drag to rearrange.</span>
+            <div class="lib-graph-legend">
+              <span class="lib-legend-item"><span class="lib-legend-dot" style="background:#9d4edd"></span><span data-i18n="ui.library.type.shelves">Shelves</span></span>
+              <span class="lib-legend-item"><span class="lib-legend-dot" style="background:#4cc9f0"></span><span data-i18n="ui.library.type.books">Books</span></span>
+              <span class="lib-legend-item"><span class="lib-legend-dot" style="background:#4caf50"></span><span data-i18n="ui.library.type.pages">Pages</span></span>
+            </div>
+          </div>
+          <div class="lib-graph-container" id="library-graph">
+            <p class="lib-graph-empty" id="library-graph-empty" data-i18n="ui.library.graph.empty">No library items to visualize.</p>
+          </div>
+        </div>
       </section>
 
       <!-- SKILLS ---------------------------------------------------------- -->
       <section class="panel" data-panel="skills" role="tabpanel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title" data-i18n="ui.tab.skills">Skills</h2>
+            <p class="panel-sub" data-i18n="ui.skill.sub">Self-authored skills — cut one, two grow back.</p>
+          </div>
+        </div>
         <div class="row">
-          <input id="skill-search" class="input" placeholder="Search skills…" />
-          <button class="btn" id="skill-refresh">Refresh</button>
+          <input id="skill-search" class="input" placeholder="Search skills…" data-i18n-attr="placeholder:ui.skill.search" />
+          <button class="btn" id="skill-refresh" data-i18n="ui.skill.refresh">Refresh</button>
         </div>
         <ul id="skill-list" class="list" aria-busy="true"></ul>
       </section>
 
       <!-- DREAMS ---------------------------------------------------------- -->
       <section class="panel" data-panel="dreams" role="tabpanel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title" data-i18n="ui.tab.dreams">Dreams</h2>
+            <p class="panel-sub" data-i18n="ui.dreams.sub">Reflective consolidation cycles that distill memory into insight.</p>
+          </div>
+        </div>
         <div class="row">
-          <span class="muted">Dreams are reflective consolidation cycles.</span>
-          <button class="btn" id="dream-status">Status</button>
-          <button class="btn primary" id="dream-run">Run now</button>
+          <button class="btn" id="dream-status" data-i18n="ui.dreams.status">Status</button>
+          <button class="btn primary" id="dream-run" data-i18n="ui.dreams.run">Run now</button>
         </div>
         <pre id="dream-output" class="output" aria-live="polite"></pre>
       </section>
 
       <!-- CRON ------------------------------------------------------------ -->
       <section class="panel" data-panel="cron" role="tabpanel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title" data-i18n="ui.tab.cron">Cron</h2>
+            <p class="panel-sub" data-i18n="ui.cron.sub">Scheduled intents — Hydragent runs them on the bus, on time.</p>
+          </div>
+        </div>
         <div class="row">
-          <button class="btn" id="cron-refresh">Refresh</button>
-          <button class="btn primary" id="cron-add">Add job…</button>
+          <button class="btn" id="cron-refresh" data-i18n="ui.cron.refresh">Refresh</button>
+          <button class="btn primary" id="cron-add" data-i18n="ui.cron.add">Add job…</button>
         </div>
         <table class="table" id="cron-table">
           <thead>
@@ -124,43 +424,66 @@
 
       <!-- PAGES ----------------------------------------------------------- -->
       <section class="panel" data-panel="pages" role="tabpanel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title" data-i18n="ui.tab.pages">Pages</h2>
+            <p class="panel-sub" data-i18n="ui.pages.sub">Conversation pages — the unit of memory and context.</p>
+          </div>
+        </div>
         <div class="row">
-          <button class="btn" id="page-refresh">Refresh</button>
-          <button class="btn ghost" id="page-compact">Compact current</button>
+          <button class="btn" id="page-refresh" data-i18n="ui.pages.refresh">Refresh</button>
+          <button class="btn ghost" id="page-compact" data-i18n="ui.pages.compact">Compact current</button>
         </div>
         <ul id="page-list" class="list"></ul>
       </section>
 
       <!-- CONFIG ---------------------------------------------------------- -->
       <section class="panel" data-panel="config" role="tabpanel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title" data-i18n="ui.tab.config">Config</h2>
+            <p class="panel-sub" data-i18n="ui.config.sub">Runtime configuration served by the gateway.</p>
+          </div>
+        </div>
         <pre id="config-output" class="output" aria-live="polite"></pre>
         <div class="footer">
-          <button class="btn" id="config-reload">Reload</button>
+          <button class="btn" id="config-reload" data-i18n="ui.config.reload">Reload</button>
         </div>
       </section>
-    </main>
+      </main>
+    </div>
+
+    <footer class="app-footer" role="contentinfo">
+      <span class="footer-brand">🐉 Hydragent</span>
+      <span class="footer-sep" aria-hidden="true">·</span>
+      <span data-i18n="ui.footer.tagline">The agent that grows, remembers, executes, and protects.</span>
+      <span class="footer-sep" aria-hidden="true">·</span>
+      <span class="footer-stack">Rust + Python + Zig</span>
+    </footer>
 
     <!-- Permission modal -------------------------------------------------- -->
     <dialog id="perm-modal" class="modal">
       <form method="dialog">
-        <h2 id="perm-title">Permission requested</h2>
+        <h2 id="perm-title" data-i18n="ui.permission.title">Permission requested</h2>
         <p id="perm-summary" class="muted"></p>
         <div class="row">
-          <button class="btn" value="once" id="perm-once">Allow once</button>
-          <button class="btn primary" value="session" id="perm-session">Allow for session</button>
-          <button class="btn ghost" value="deny" id="perm-deny">Deny</button>
+          <button class="btn" value="once" id="perm-once" data-i18n="ui.permission.allow_once">Allow once</button>
+          <button class="btn primary" value="session" id="perm-session" data-i18n="ui.permission.allow_session">Allow for session</button>
+          <button class="btn ghost" value="deny" id="perm-deny" data-i18n="ui.permission.deny">Deny</button>
         </div>
       </form>
     </dialog>
 
     <!-- Auth / pairing banner -------------------------------------------- -->
     <div id="auth-banner" class="auth-banner" hidden>
-      <span class="msg">🔒 Auth required</span>
-      <input id="auth-token" class="input" type="password" placeholder="Token / Password" />
-      <button class="btn primary" id="auth-submit">Unlock</button>
-      <button class="btn ghost" id="auth-dismiss">Dismiss</button>
+      <span class="msg" data-i18n="ui.auth.banner">🔒 Auth required</span>
+      <input id="auth-token" class="input" type="password" placeholder="Token / Password" data-i18n-attr="placeholder:ui.auth.token.placeholder" />
+      <button class="btn primary" id="auth-submit" data-i18n="ui.auth.submit">Unlock</button>
+      <button class="btn ghost" id="auth-dismiss" data-i18n="ui.auth.dismiss">Dismiss</button>
     </div>
 
+    <!-- Inline English i18n fallback: keeps translations working on file:// where fetch is blocked -->
+    <script type="application/json" id="i18n-fallback-en">{"$schema":"https://hydragent.ai/schemas/control-ui/i18n.json","ui.title":"Hydragent — Control UI","ui.brand.channel":"Control UI","ui.brand.tagline":"The Unified AI Agent","ui.tab.chat":"Chat","ui.tab.memory":"Memory","ui.tab.library":"Library","ui.tab.skills":"Skills","ui.tab.dreams":"Dreams","ui.tab.cron":"Cron","ui.tab.pages":"Pages","ui.tab.config":"Config","ui.nav.section.live":"Live","ui.nav.section.knowledge":"Knowledge","ui.nav.section.agent":"Agent","ui.nav.section.system":"System","ui.sidebar.status":"Runtime online","ui.sidebar.stack":"Rust · Python · Zig","ui.theme.label":"Theme","ui.lang.label":"Language","ui.pwa.install":"Install","ui.chat.welcome":"The agent that grows, remembers, executes, and protects. Ask anything.","ui.chat.placeholder":"Talk to Hydragent…","ui.chat.send":"Send","ui.chat.stop":"Stop","ui.chat.clear":"Clear","ui.chat.new":"New page","ui.memory.sub":"Hierarchical, addressable memory — the ocean your knowledge lives in.","ui.memory.search":"Search memory…","ui.memory.refresh":"Refresh","ui.memory.clear_all":"Clear all","ui.memory.empty":"No memories yet.","ui.library.sub":"Shelves, books, and pages — your navigable knowledge graph.","ui.library.search":"Search library…","ui.library.refresh":"Refresh","ui.library.empty":"Library is empty.","ui.library.type.all":"All","ui.library.type.shelves":"Shelves","ui.library.type.books":"Books","ui.library.type.pages":"Pages","ui.library.view.list":"List","ui.library.view.graph":"Graph","ui.library.section.shelves":"Shelves — Genres \u0026 Categories","ui.library.section.books":"Books — Projects \u0026 Contexts","ui.library.section.pages":"Pages — Conversations \u0026 Threads","ui.library.active":"Active","ui.library.links":"Cross-references","ui.library.empty.shelves":"No shelves yet. Create one to organize your knowledge.","ui.library.empty.books":"No books yet.","ui.library.empty.pages":"No pages yet. Start a conversation to create one.","ui.library.graph.empty":"No library items to visualize.","ui.library.graph.hint":"Click a node to explore. Drag to rearrange.","ui.skill.sub":"Self-authored skills — cut one, two grow back.","ui.skill.search":"Search skills…","ui.skill.refresh":"Refresh","ui.skill.empty":"No skills installed.","ui.skill.run":"Run","ui.dreams.sub":"Reflective consolidation cycles that distill memory into insight.","ui.dreams.status":"Status","ui.dreams.run":"Run now","ui.cron.sub":"Scheduled intents — Hydragent runs them on the bus, on time.","ui.cron.refresh":"Refresh","ui.cron.add":"Add job…","ui.pages.sub":"Conversation pages — the unit of memory and context.","ui.pages.refresh":"Refresh","ui.pages.compact":"Compact current","ui.config.sub":"Runtime configuration served by the gateway.","ui.config.reload":"Reload","ui.permission.title":"Permission requested","ui.permission.allow_once":"Allow once","ui.permission.allow_session":"Allow for session","ui.permission.deny":"Deny","ui.auth.banner":"🔒 Auth required","ui.auth.token.placeholder":"Token / Password","ui.auth.submit":"Unlock","ui.auth.dismiss":"Dismiss","ui.conn.online":"connected","ui.conn.offline":"offline","ui.conn.connecting":"connecting…","ui.conn.error":"error","ui.error.invalid_json":"invalid JSON from server","ui.error.not_connected":"WebSocket is offline. Retrying…","ui.footer.tagline":"The agent that grows, remembers, executes, and protects.","ui.health.label":"Health","ui.action.refresh":"Refresh","ui.action.clear":"Clear","ui.action.clear_all":"Clear all","ui.action.export":"Export","ui.action.fullscreen":"Fullscreen","ui.action.expand":"Expand","ui.nav.action.search":"Search","ui.nav.action.refresh":"Refresh","ui.sidebar.new_chat":"New Chat","ui.sidebar.new_chat.title":"New chat (Ctrl N)","ui.sidebar.settings":"Settings","ui.chat.sub":"Talk to the agent — it grows, remembers, executes, and protects.","ui.chat.session":"Active session","ui.chat.qa.summarize":"Summarize last 5","ui.chat.qa.skills":"List skills","ui.chat.qa.dream":"Run dream cycle","ui.chat.qa.status":"System status","ui.memory.stat.total":"Total memories","ui.memory.stat.recent":"Last 24h","ui.memory.stat.tags":"Distinct tags","ui.memory.stat.size":"On disk","ui.library.stat.shelves":"Shelves","ui.library.stat.books":"Books","ui.library.stat.pages":"Pages","ui.update.label":"Update available","ui.update.msg":"A new version of Hydragent is ready to install.","ui.update.dismiss":"Dismiss"}</script>
     <script src="./assets/i18n.js"></script>
     <script src="./assets/app.js"></script>
     <script>

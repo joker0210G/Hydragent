@@ -24,9 +24,22 @@
       if (!res.ok) throw new Error(res.statusText);
       const data = await res.json();
       cache.set(locale, data);
+      if (locale === FALLBACK) cache.set(FALLBACK, data);
       return data;
     } catch (e) {
       console.warn("i18n: failed to load", locale, e);
+      // Fallback: try inline JSON embedded in the page (works on file:// where fetch is blocked)
+      if (locale === FALLBACK) {
+        const inline = document.getElementById("i18n-fallback-en");
+        if (inline) {
+          try {
+            const data = JSON.parse(inline.textContent);
+            cache.set(locale, data);
+            cache.set(FALLBACK, data);
+            return data;
+          } catch (_) { /* fall through to empty */ }
+        }
+      }
       cache.set(locale, {});
       return {};
     }
@@ -70,6 +83,9 @@
   window.HydraI18n = {
     init: async function () {
       const target = detect();
+      // Always ensure fallback English is available so t() can resolve keys
+      // even when the target locale's fetch fails.
+      await load(FALLBACK);
       await setLocale(target);
       return current;
     },
