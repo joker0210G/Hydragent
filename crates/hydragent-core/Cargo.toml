@@ -23,6 +23,8 @@ hydragent-swarm  = { path = "../hydragent-swarm" }
 hydragent-security = { path = "../hydragent-security" }
 hydragent-skills  = { path = "../hydragent-skills" }
 tokio            = { workspace = true }
+rand             = { workspace = true }
+hex              = { workspace = true }
 clap             = { workspace = true }
 tracing          = { workspace = true }
 tracing-subscriber = { workspace = true }

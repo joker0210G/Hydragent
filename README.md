@@ -74,7 +74,7 @@ Hydragent is **shipped, not aspirational**. The numbers below are audited by
 | **Model Council** | **20+ model profiles** in `config/model_council.yaml`, 8 task types |
 | **Skill library** | 3 builtins shipped; FTS5 + tag retrieval; 7-day Curator active |
 | **Eval harness** | SKILL-BENCH v1 (**80 tasks**) + Golden Set v1 (**30 pairs**) |
-| **Security** | 16-layer pipeline live; 79 vault tests pass; SQLCipher deferred post-MVP |
+| **Security** | 16-layer pipeline live; Upgraded V2 Dual-Slot Vault (Passphrase PIN & Admin Key File); PBKDF2 challenge-response remote administration; SQLCipher deferred post-MVP |
 | **Phase 5 status** | Tracks 5.1–5.2 ✅; 5.3 (DagEngine) + 5.4 (self-healing) pending |
 | **Edge binary** | 🐉 Stubbed — Zig workspace present, not yet compiling |
 | **Full changelog** | [CHANGELOG.md](CHANGELOG.md) · [RELEASE_NOTES_v0.7.0.md](doc/releases/RELEASE_NOTES_v0.7.0.md) |

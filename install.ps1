@@ -120,6 +120,7 @@ $BinDir       = Join-Path $InstallRoot 'bin'
 $DataDir      = Join-Path $InstallRoot 'data'
 $SourceDir    = Join-Path $InstallRoot 'src'
 $LauncherPath = Join-Path $BinDir $LauncherName
+$CargoCmd     = 'cargo'
 
 # Split $Repo into Org + Name so we can derive all the URLs from it.
 # Example: joker0210G/Hydragent  =>  Org=joker0210G, Name=Hydragent
@@ -165,10 +166,10 @@ function Write-Banner {
     Write-Host ''
 }
 
-function Write-OK    { param($m) Write-Host "$AnsiGreen  ok$AnsiReset  $m" }
-function Write-Info  { param($m) Write-Host "$AnsiCyan  ..$AnsiReset  $m" }
-function Write-Warn  { param($m) Write-Host "$AnsiYellow  !!$AnsiReset  $m" }
-function Write-Err   { param($m) Write-Host "$AnsiRed  ERR$AnsiReset $m" ; exit 1 }
+function Write-OK            { param($m) Write-Host "$AnsiGreen  ok$AnsiReset  $m" }
+function Write-Info          { param($m) Write-Host "$AnsiCyan  ..$AnsiReset  $m" }
+function Write-WarningMessage { param($m) Write-Host "$AnsiYellow  !!$AnsiReset  $m" }
+function Write-Err           { param($m) Write-Host "$AnsiRed  ERR$AnsiReset $m" ; exit 1 }
 function Write-Step  {
     param($n, $m)
     if ($Quiet) { return }
@@ -248,9 +249,20 @@ function Install-FromSource {
 }
 
 function Install-RustIfMissing {
+    $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+    $cargoExe = Join-Path $cargoBin 'cargo.exe'
+
     if (Test-Command cargo) {
+        $script:CargoCmd = 'cargo'
         $cv = (& cargo --version) -replace "`r`n", ''
         Write-OK "Rust already installed: $cv"
+        return
+    }
+
+    if (Test-Path $cargoExe) {
+        $script:CargoCmd = $cargoExe
+        $cv = (& $cargoExe --version) -replace "`r`n", ''
+        Write-OK "Rust already installed (found at $cargoExe): $cv"
         return
     }
 
@@ -262,12 +274,18 @@ function Install-RustIfMissing {
     Write-Info "Running rustup-init -y (stable, minimal profile)"
     & $tmp -y --default-toolchain stable --profile minimal --no-modify-path | Out-Null
     Remove-Item $tmp -Force
-    $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
-    if (Test-Path $cargoBin) { $env:Path = "$cargoBin;$env:Path" }
-    if (-not (Test-Command cargo)) {
-        Write-Err "Rust installation reported success but cargo is not on PATH. Restart your shell and retry."
+    
+    if (Test-Path $cargoBin) { 
+        $env:Path = "$cargoBin;$env:Path" 
     }
-    Write-OK "Rust installed: $((& cargo --version) -replace "`r`n", '')"
+    
+    if (Test-Path $cargoExe) {
+        $script:CargoCmd = $cargoExe
+        $cv = (& $cargoExe --version) -replace "`r`n", ''
+        Write-OK "Rust installed successfully: $cv"
+    } else {
+        Write-Err "Rust installation reported success but cargo was not found at $cargoExe. Install Rust manually and retry."
+    }
 }
 
 function Install-SourceCheckout {
@@ -297,58 +315,59 @@ function Install-SourceCheckout {
 function Build-Source {
     Write-Step 'A3' "Building hydragent-core (release)"
     Push-Location $SourceDir
-    try {
-        # Give cargo a generous HTTP timeout (120s instead of 30s) so
-        # slow networks or transient crates.io stalls don't kill the
-        # install. This is a one-time build; waiting an extra minute
-        # is preferable to failing and forcing the user to retry.
-        $env:CARGO_HTTP_TIMEOUT = '120'
-        & cargo build --release -p hydragent-core
-        if ($LASTEXITCODE -ne 0) {
-            Write-Err "cargo build failed (exit $LASTEXITCODE). See output above."
-        }
-        $built = Join-Path $SourceDir "target\release\$BinName"
-        if (-not (Test-Path $built)) {
-            Write-Err "Build reported success but $built not found."
-        }
-        $dest = Join-Path $BinDir $BinName
-        $oldDest = $dest + ".old"
-        $didRename = $false
 
-        # On Windows the running .exe is locked, so we can't overwrite
-        # it directly. We rename the old binary to .old first, then
-        # copy the new one into place. This mirrors the behaviour of
-        # hydragent-core/src/update.rs::replace_binary.
-        if (Test-Path $dest) {
-            Remove-Item $oldDest -Force -ErrorAction SilentlyContinue
-            Rename-Item $dest $oldDest -Force
-            $didRename = $true
-        }
-
-        try {
-            Copy-Item $built $dest -Force
-            Write-OK "Built and installed $BinName"
-            # Best-effort: clean up the .old backup on success.
-            if (Test-Path $oldDest) {
-                Remove-Item $oldDest -Force -ErrorAction SilentlyContinue
-            }
-        } catch {
-            # If the copy failed (e.g. the binary is still locked or
-            # the destination directory is read-only), restore the old
-            # binary so the user isn't left stranded without a working
-            # hydragent.exe.
-            if ($didRename) {
-                if (Test-Path $dest) {
-                    Remove-Item $dest -Force -ErrorAction SilentlyContinue
-                }
-                Rename-Item $oldDest $dest -Force
-                Write-Warn "Install failed -- restored previous $BinName"
-            }
-            throw
-        }
-    } finally {
+    # Give cargo a generous HTTP timeout (120s instead of 30s) so
+    # slow networks or transient crates.io stalls don't kill the
+    # install. This is a one-time build; waiting an extra minute
+    # is preferable to failing and forcing the user to retry.
+    $env:CARGO_HTTP_TIMEOUT = '120'
+    & $CargoCmd build --release -p hydragent-core
+    if ($LASTEXITCODE -ne 0) {
         Pop-Location
+        Write-Err "cargo build failed (exit $LASTEXITCODE). See output above."
     }
+    $built = Join-Path $SourceDir "target\release\$BinName"
+    if (-not (Test-Path $built)) {
+        Pop-Location
+        Write-Err "Build reported success but $built not found."
+    }
+    $dest = Join-Path $BinDir $BinName
+    $oldDest = $dest + ".old"
+    $didRename = $false
+
+    # On Windows the running .exe is locked, so we can't overwrite
+    # it directly. We rename the old binary to .old first, then
+    # copy the new one into place. This mirrors the behaviour of
+    # hydragent-core/src/update.rs::replace_binary.
+    if (Test-Path $dest) {
+        Remove-Item $oldDest -Force -ErrorAction SilentlyContinue
+        Rename-Item $dest $oldDest -Force
+        $didRename = $true
+    }
+
+    try {
+        Copy-Item $built $dest -Force
+        Write-OK "Built and installed $BinName"
+        # Best-effort: clean up the .old backup on success.
+        if (Test-Path $oldDest) {
+            Remove-Item $oldDest -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # If the copy failed (e.g. the binary is still locked or
+        # the destination directory is read-only), restore the old
+        # binary so the user isn't left stranded without a working
+        # hydragent.exe.
+        if ($didRename) {
+            if (Test-Path $dest) {
+                Remove-Item $dest -Force -ErrorAction SilentlyContinue
+            }
+            Rename-Item $oldDest $dest -Force
+            Write-WarningMessage "Install failed -- restored previous $BinName"
+        }
+        Pop-Location
+        throw
+    }
+    Pop-Location
 }
 
 function Install-Launcher {
@@ -403,8 +422,8 @@ function Install-SelfCopy {
         Copy-Item -LiteralPath $scriptPath -Destination $selfDest -Force -ErrorAction Stop
         Write-OK "Installer copied to $selfDest"
     } catch {
-        Write-Warn "Could not copy installer to $selfDest ($($_.Exception.Message))."
-        Write-Warn "Hydragent install will re-download install.ps1 from the canonical URL."
+        Write-WarningMessage "Could not copy installer to $selfDest ($($_.Exception.Message))."
+        Write-WarningMessage "Hydragent install will re-download install.ps1 from the canonical URL."
     }
 }
 
@@ -551,8 +570,8 @@ if ($Source) {
     try {
         Install-FromRelease -Ver $Version
     } catch {
-        Write-Warn "Prebuilt release unavailable: $_"
-        Write-Warn "Falling back to building from source (will install Rust if needed)..."
+        Write-WarningMessage "Prebuilt release unavailable: $_"
+        Write-WarningMessage "Falling back to building from source (will install Rust if needed)..."
         Install-FromSource
     }
 }

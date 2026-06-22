@@ -697,3 +697,10 @@
 - The user redirects stderr to stdout and pipes output through 'tail' to limit displayed lines.
 - The user uses very brief, truncated sentences when clarifying or correcting.
 - The user does not use punctuation at the end of short statements.
+- The user opens conversations with a brief, enthusiastic greeting followed by a single concise self-introduction sentence.
+- The user uses exclamation marks to convey enthusiasm in introductory statements.
+- The user capitalizes key conceptual terms (e.g., 'Clean') for emphasis.
+- The user frames design requests collaboratively using phrasing like 'Let's design...'.
+- The user opens their messages with an enthusiastic greeting using an exclamation mark.
+- The user writes in a concise, polite, and technically direct style, opening follow-ups with brief acknowledgements such as 'Excellent.' before drilling into a specific design constraint.
+- The user prefers multi-paragraph technical responses with code blocks, comparison tables, and explicit 'why' rationale for each decision over narrative prose.

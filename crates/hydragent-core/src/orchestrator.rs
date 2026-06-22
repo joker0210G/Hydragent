@@ -73,12 +73,11 @@ impl MethodHandler for IntentSubmitHandler {
             };
         }
 
-        // Create or verify page and log user query
+        // Create or verify page meta entry (does not write the Draft Paper yet —
+        // per design spec, the ongoing conversation stays in-memory as "Draft Paper"
+        // and is only committed to persistent SQLite tables after the session ends).
         if let Err(e) = self.store.create_page(&intent.page_id).await {
             error!("Failed to create/load page meta: {}", e);
-        }
-        if let Err(e) = self.store.append_message(&intent.page_id, MessageRole::User, &intent.content).await {
-            error!("Failed to append user query: {}", e);
         }
 
         // Append an audit event for inbound user activity.
@@ -123,8 +122,8 @@ impl MethodHandler for IntentSubmitHandler {
                 history_count = history_messages.len() + recent_count;
                 info!("Loaded {} history messages for page {}", history_count, intent.page_id);
                 
-                // If there's previous messages (excluding the query we just appended), notify the client
-                if history_count > 1 {
+                // If there's previous messages in persistent history, notify the client
+                if history_count > 0 {
                     history_recalled = true;
                 }
                 history_messages.extend(history);
@@ -363,9 +362,15 @@ impl MethodHandler for IntentSubmitHandler {
         });
         let _ = response_tx.send(serde_json::to_string(&completion).unwrap()).await;
 
-        // Save assistant reply to SQLite memory
+        // ── Draft Paper → Persistent Storage ──────────────────────────────────
+        // Per design spec: the Draft Paper (ephemeral in-memory conversation)
+        // is written to persistent SQLite tables only AFTER the session ends.
+        // Both the user query and the assistant reply are committed together here.
+        if let Err(e) = self.store.append_message(&intent.page_id, MessageRole::User, &intent.content).await {
+            error!("Failed to persist user query to Draft Paper store: {}", e);
+        }
         if let Err(e) = self.store.append_message(&intent.page_id, MessageRole::Assistant, &reply_text).await {
-            error!("Failed to save assistant response: {}", e);
+            error!("Failed to persist assistant reply to Draft Paper store: {}", e);
         }
 
         // Auto Compaction Trigger Check
@@ -699,7 +704,7 @@ impl MethodHandler for GatewayRegisterHandler {
 
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
-            result: Some(serde_json::json!({"status": "registered"})),
+            result: Some(serde_json::json!({"status": "ok"})),
             error: None,
             id: request.id,
         }
@@ -1417,6 +1422,327 @@ fn looks_like_clarification_answer(msg: &str) -> bool {
         return false;
     }
     true
+}
+
+pub struct VaultChallengeHandler {
+    pub challenges: Arc<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>>,
+}
+
+#[async_trait]
+impl MethodHandler for VaultChallengeHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        let challenge_id = request.params.get("challenge_id")
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let mut bytes = [0u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+        let challenge = hex::encode(bytes);
+
+        self.challenges.lock().unwrap().insert(
+            challenge_id.clone(),
+            (challenge.clone(), std::time::Instant::now() + std::time::Duration::from_secs(60)),
+        );
+
+        let salt = if let Ok(content) = std::fs::read_to_string("config/security/admin_auth.hash") {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                val.get("salt").and_then(|s| s.as_str()).unwrap_or("").to_string()
+            } else {
+                "".to_string()
+            }
+        } else {
+            "".to_string()
+        };
+
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::json!({
+                "challenge_id": challenge_id,
+                "challenge": challenge,
+                "salt": salt,
+                "timestamp": chrono::Utc::now().timestamp_millis(),
+            })),
+            error: None,
+            id: request.id,
+        }
+    }
+}
+
+fn verify_vault_signature(
+    challenges: &Arc<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>>,
+    challenge_id: &str,
+    signature: &str,
+) -> anyhow::Result<()> {
+    let mut challenges_guard = challenges.lock().unwrap();
+    let (challenge, expiry) = challenges_guard.get(challenge_id)
+        .ok_or_else(|| anyhow::anyhow!("Challenge ID not found"))?;
+
+    if std::time::Instant::now() > *expiry {
+        challenges_guard.remove(challenge_id);
+        return Err(anyhow::anyhow!("Challenge expired"));
+    }
+
+    let hash_path = std::path::Path::new("config/security/admin_auth.hash");
+    if !hash_path.exists() {
+        return Err(anyhow::anyhow!("Vault admin authentication has not been initialized."));
+    }
+
+    let file_content = std::fs::read_to_string(hash_path)?;
+    let parsed: serde_json::Value = serde_json::from_str(&file_content)?;
+    let stored_hash_hex = parsed.get("hash").and_then(|h| h.as_str()).ok_or_else(|| anyhow::anyhow!("Missing hash in admin_auth.hash"))?;
+    let stored_hash = hex::decode(stored_hash_hex)?;
+
+    let expected_sig_bytes = hydragent_vault::hmac_sha256(&stored_hash, challenge.as_bytes());
+    let expected_sig = hex::encode(expected_sig_bytes);
+
+    if signature != expected_sig {
+        return Err(anyhow::anyhow!("Invalid signature"));
+    }
+
+    Ok(())
+}
+
+pub struct VaultSetHandler {
+    pub challenges: Arc<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>>,
+}
+
+#[async_trait]
+impl MethodHandler for VaultSetHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        let challenge_id = request.params.get("challenge_id").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let signature = request.params.get("signature").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        let scope = request.params.get("scope").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        let value = request.params.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+        if let Err(e) = verify_vault_signature(&self.challenges, &challenge_id, &signature) {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_CONSENT_DENIED,
+                    message: format!("Authentication failed: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+
+        let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+        if passphrase.is_empty() {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: "Vault passphrase not configured in daemon environment".to_string(),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+
+        let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+        let vault = hydragent_vault::Vault::new(vault_path);
+        let mut secrets = match vault.load(&passphrase) {
+            Ok(s) => s,
+            Err(e) => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: None,
+                    error: Some(hydragent_bus::message::JsonRpcError {
+                        code: hydragent_bus::message::ERR_INTERNAL,
+                        message: format!("Failed to load vault: {}", e),
+                        data: None,
+                    }),
+                    id: request.id,
+                };
+            }
+        };
+
+        secrets.insert(scope.clone(), hydragent_vault::TaintedString::credential(value));
+        if let Err(e) = vault.save(&passphrase, &secrets) {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: format!("Failed to save vault: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::json!({"status": "ok"})),
+            error: None,
+            id: request.id,
+        }
+    }
+}
+
+pub struct VaultListHandler {
+    pub challenges: Arc<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>>,
+}
+
+#[async_trait]
+impl MethodHandler for VaultListHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        let challenge_id = request.params.get("challenge_id").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let signature = request.params.get("signature").and_then(|s| s.as_str()).unwrap_or("").to_string();
+
+        if let Err(e) = verify_vault_signature(&self.challenges, &challenge_id, &signature) {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_CONSENT_DENIED,
+                    message: format!("Authentication failed: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+
+        let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+        if passphrase.is_empty() {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: "Vault passphrase not configured in daemon environment".to_string(),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+
+        let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+        let vault = hydragent_vault::Vault::new(vault_path);
+        let secrets = match vault.load(&passphrase) {
+            Ok(s) => s,
+            Err(e) => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: None,
+                    error: Some(hydragent_bus::message::JsonRpcError {
+                        code: hydragent_bus::message::ERR_INTERNAL,
+                        message: format!("Failed to load vault: {}", e),
+                        data: None,
+                    }),
+                    id: request.id,
+                };
+            }
+        };
+
+        let scopes: Vec<String> = secrets.keys().cloned().collect();
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::json!({ "scopes": scopes })),
+            error: None,
+            id: request.id,
+        }
+    }
+}
+
+pub struct VaultDeleteHandler {
+    pub challenges: Arc<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>>,
+}
+
+#[async_trait]
+impl MethodHandler for VaultDeleteHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        let challenge_id = request.params.get("challenge_id").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let signature = request.params.get("signature").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        let scope = request.params.get("scope").and_then(|s| s.as_str()).unwrap_or("").to_string();
+
+        if let Err(e) = verify_vault_signature(&self.challenges, &challenge_id, &signature) {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_CONSENT_DENIED,
+                    message: format!("Authentication failed: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+
+        let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+        if passphrase.is_empty() {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: "Vault passphrase not configured in daemon environment".to_string(),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+
+        let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+        let vault = hydragent_vault::Vault::new(vault_path);
+        let mut secrets = match vault.load(&passphrase) {
+            Ok(s) => s,
+            Err(e) => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: None,
+                    error: Some(hydragent_bus::message::JsonRpcError {
+                        code: hydragent_bus::message::ERR_INTERNAL,
+                        message: format!("Failed to load vault: {}", e),
+                        data: None,
+                    }),
+                    id: request.id,
+                };
+            }
+        };
+
+        secrets.remove(&scope);
+        if let Err(e) = vault.save(&passphrase, &secrets) {
+            return JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(hydragent_bus::message::JsonRpcError {
+                    code: hydragent_bus::message::ERR_INTERNAL,
+                    message: format!("Failed to save vault: {}", e),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::json!({"status": "ok"})),
+            error: None,
+            id: request.id,
+        }
+    }
+}
+
+pub struct VaultGetHandler;
+
+#[async_trait]
+impl MethodHandler for VaultGetHandler {
+    async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: None,
+            error: Some(hydragent_bus::message::JsonRpcError {
+                code: hydragent_bus::message::ERR_CONSENT_DENIED,
+                message: "vault.get is disabled on remote ports".to_string(),
+                data: None,
+            }),
+            id: request.id,
+        }
+    }
 }
 
 #[cfg(test)]

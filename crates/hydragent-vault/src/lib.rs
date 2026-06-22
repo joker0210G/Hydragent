@@ -8,7 +8,7 @@ pub mod taint;
 pub mod vault;
 
 pub use column_cipher::{ColumnCipher, ColumnCipherError};
-pub use crypto::{decrypt, derive_key, encrypt};
+pub use crypto::{decrypt, derive_key, encrypt, hmac_sha256, pbkdf2_hmac_sha256};
 pub use injector::{inject_str, inject_value, KeyInjector};
 pub use mlock::{is_mlock_available, mlock, munlock, MlockError};
 pub use rotator::{Rotator, RotationError, RotationReport};
@@ -205,4 +205,42 @@ mod tests {
         assert!(!dbg.contains("abc"), "Debug leaked raw secret: {}", dbg);
         assert!(dbg.contains("credential"), "Debug missing taint label: {}", dbg);
     }
+
+    #[test]
+    fn test_vault_slot_1_admin_key() {
+        let temp_dir = std::env::temp_dir();
+        let vault_path = temp_dir.join("test_vault_slot1.hvlt");
+        if vault_path.exists() {
+            let _ = std::fs::remove_file(&vault_path);
+        }
+
+        let vault = Vault::new(vault_path.clone());
+        let passphrase = "my_passphrase_pin";
+        vault.init(passphrase).unwrap();
+
+        // Create a fake admin key file
+        let admin_key_path = temp_dir.join("admin_key.pem");
+        std::fs::write(&admin_key_path, b"super_secret_physical_key_file_contents").unwrap();
+
+        // Set Slot 1 using the admin key file
+        vault.set_admin_key(passphrase, admin_key_path.clone()).unwrap();
+
+        // Load the secrets map using Slot 0 (passphrase pin)
+        let loaded_slot0 = vault.load(passphrase).unwrap();
+        assert!(loaded_slot0.is_empty());
+
+        // Save a new secret using Slot 0
+        let mut secrets = loaded_slot0;
+        secrets.insert("test_key".to_string(), TaintedString::credential("test_val".to_string()));
+        vault.save(passphrase, &secrets).unwrap();
+
+        // Load secrets map using Slot 1 (Admin Key File) via explicit path
+        let loaded_slot1 = vault.load(&format!("admin_key_file:{}", admin_key_path.to_str().unwrap())).unwrap();
+        assert_eq!(loaded_slot1.get("test_key").unwrap().expose_secret(), "test_val");
+
+        // Clean up
+        let _ = std::fs::remove_file(&vault_path);
+        let _ = std::fs::remove_file(&admin_key_path);
+    }
 }
+

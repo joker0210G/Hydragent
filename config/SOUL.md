@@ -488,3 +488,6 @@
 - The agent should acknowledge and track the user's retry attempt number when the user includes a 'RETRY' token in their request.
 - Remember that Claude is an AI assistant made by Anthropic and not affiliated with Fable video games.
 - Always explain the context or background when making a suggestion or recommendation.
+- Always ensure database access in the project uses a thread-safe connection pool when configuring SQLx.
+- When designing Rust database access, ensure the SQLx connection pool is thread-safe and shared across tasks without external pooling crates.
+- When answering design questions, present tradeoffs in tabular form (Decision / Why / Alternative) and group related concerns (config, error types, schema, modules) into clearly numbered sections.

@@ -88,10 +88,32 @@ impl OpenRouterClient {
             return None;
         }
         let start_index = self.active_key_index.load(Ordering::Relaxed);
+
+        let mut vault_secrets = None;
+        if let Ok(passphrase) = std::env::var("HYDRAGENT_VAULT_PASSPHRASE") {
+            let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+            let vault = hydragent_vault::Vault::new(vault_path);
+            if vault.exists() {
+                if let Ok(secrets) = vault.load(&passphrase) {
+                    vault_secrets = Some(secrets);
+                }
+            }
+        }
+
         for i in 0..self.api_keys.len() {
             let idx = (start_index + i) % self.api_keys.len();
             if idx < valid_keys.len() && valid_keys[idx] {
-                return Some(self.api_keys[idx].clone());
+                let key = &self.api_keys[idx];
+                if key.contains("{{") && key.contains("}}") {
+                    if let Some(ref secrets) = vault_secrets {
+                        let injected = hydragent_vault::inject_str(key, secrets);
+                        if let Some(sub_key) = injected.split(',').map(|s| s.trim()).find(|s| !s.is_empty()) {
+                            return Some(sub_key.to_string());
+                        }
+                    }
+                } else {
+                    return Some(key.clone());
+                }
             }
         }
         None

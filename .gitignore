@@ -31,6 +31,9 @@ zig-out/
 data/
 db/
 
+# Bundled model weights and tokenizers (90 MB safetensors; download on demand)
+models/
+
 # IDE files
 .vscode/
 .idea/
@@ -51,10 +54,12 @@ logs/
 
 # Scratch & transient dev artifacts (installer-test sandbox, one-off helpers)
 scratch/
+testing_todo.md
 
 # Diagnostic stdout captures from manual `cargo build` / `cargo test` runs
 out*.txt
 out_*.txt
+test_output*.txt
 
 # Diagnostic dumps accidentally written into target/ during build/test
 # sessions (kept here for reference, even though target/ is already

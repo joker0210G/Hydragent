@@ -110,7 +110,7 @@ impl StatusState {
 /// trailing newline so the caller's `println!` doesn't have to.
 ///
 /// Layout (with the dot as a separator):
-///   <phase> → shift+tab · <model_tag> → ctrl+p · <ctx bar> <pct>% ctx · ↑<in> ↓<out> · <slash_hint>
+///   <mode> → shift+tab · <model_tag> → ctrl+p · <ctx bar> <pct>% ctx · ↑<in> ↓<out> · <slash_hint>
 ///
 /// where `<model_tag>` is either `model (kimi-k2.6)` (single
 /// model) or `multi-model (kimi-k2.6)` (multi-model routing).
@@ -124,8 +124,8 @@ pub fn render_status_bar(s: &StatusState) -> String {
     // value whose lifetime extends to the end of the function
     // (rather than just the let-statement). Without this, the
     // borrow checker sees the temporary drop too early.
-    let phase_text = s.mode.as_str().to_owned();
-    let phase_str = phase_text.if_supports_color(Stdout, |p| p.style(bold_cyan));
+    let mode_text = s.mode.as_str().to_owned();
+    let mode_str = mode_text.if_supports_color(Stdout, |p| p.style(bold_cyan));
     let model_tag = if s.multi_model {
         format!("multi-model ({})", s.model)
     } else {
@@ -157,7 +157,7 @@ pub fn render_status_bar(s: &StatusState) -> String {
     let sep = "·".if_supports_color(Stdout, |s| s.style(dim));
 
     format!(
-        "  {phase_str} → shift+tab {sep} {model_str} → ctrl+p {sep} {bar_str} {pct_str} {sep} {tokens_str} {sep} {slash}\n"
+        "  {mode_str} → shift+tab {sep} {model_str} → ctrl+p {sep} {bar_str} {pct_str} {sep} {tokens_str} {sep} {slash}\n"
     )
 }
 
@@ -258,8 +258,8 @@ mod tests {
         let s = state();
         let out = render_status_bar(&s);
         let stripped = strip_ansi(&out);
-        // Phase
-        assert!(stripped.contains("normal"), "missing phase: {stripped}");
+        // Mode
+        assert!(stripped.contains("normal"), "missing mode: {stripped}");
         // Model
         assert!(stripped.contains("kimi-k2.6"), "missing model: {stripped}");
         // Percentage

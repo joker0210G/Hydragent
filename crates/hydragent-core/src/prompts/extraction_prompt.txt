@@ -1,19 +1,22 @@
 You are a knowledge and style extraction pipeline. Analyze the conversation log below and
-extract three categories of information:
+extract four categories of information:
 
-1. Long-term factual memories (extracted_facts): Core facts that are useful to remember indefinitely.
-2. User communication style habits (style_habits): Distinct habits, notation choices, emoji choices, or punctuation styles (such as using parentheses for side-thoughts, meta-commentary, or style quirks).
-3. Agent behavioral guidelines or rules (behavior_rules): Any specific instructions or rules the user wants the agent to follow (e.g. "always explain code in detail").
+1. Page Summary (summary): A concise, self-contained summary of the session's key insights, decisions, and outcomes. This compresses the ephemeral Draft Paper into a permanent Page node for the Library.
+2. Long-term factual memories (extracted_facts): Core facts that are useful to remember indefinitely.
+3. User communication style habits (style_habits): Distinct habits, notation choices, emoji choices, or punctuation styles (such as using parentheses for side-thoughts, meta-commentary, or style quirks).
+4. Agent behavioral guidelines or rules (behavior_rules): Any specific instructions or rules the user wants the agent to follow (e.g. "always explain code in detail").
 
 EXTRACTION RULES:
 1. Extract ONLY explicit, factual statements or clear style/rule habits. Do NOT guess or infer.
 2. Write each element as a single, complete, self-contained sentence.
 3. Skip generic pleasantries or temporary chat noise.
 4. For facts, assign importance_1_to_10.
+5. For the summary, keep it under 200 words and make it standalone — it will be used as a Page node label in the Library knowledge graph.
 
 OUTPUT FORMAT: Valid JSON only. No markdown, no backticks, no explanation.
 
 {
+  "summary": "Session focused on implementing a Rust memory retrieval system with FTS5 hybrid search. Key decision: use RRF scoring to merge keyword and vector results. User prefers Tokio async patterns.",
   "extracted_facts": [
     {
       "fact": "User's primary programming language is Rust.",

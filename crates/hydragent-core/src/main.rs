@@ -468,14 +468,16 @@ enum SecurityAction {
     /// Rotate the vault's master passphrase. The new passphrase is
     /// supplied via `--new-passphrase`; the current passphrase is read
     /// from `HYDRAGENT_VAULT_PASSPHRASE` or prompted for.
-    VaultRotatePassphrase {
+    #[command(name = "vault-rotate-pass")]
+    VaultRotatePass {
         #[arg(long)]
         new_passphrase: String,
     },
     /// Rotate the AES column key. The current passphrase is read from
     /// `HYDRAGENT_VAULT_PASSPHRASE` or prompted for. **Warning**: this
     /// invalidates all previously column-encrypted data.
-    VaultRotateColumnKey,
+    #[command(name = "vault-rotate-col")]
+    VaultRotateCol,
 }
 
 /// Built-in prompt-injection patterns used as a fallback when
@@ -2067,7 +2069,7 @@ async fn main() {
                 }
                 return;
             }
-            SecurityAction::VaultRotatePassphrase { new_passphrase } => {
+            SecurityAction::VaultRotatePass { new_passphrase } => {
                 if !vault_file.exists() {
                     eprintln!("Vault not found at {}. Run `vault init` first.", vault_file.display());
                     std::process::exit(1);
@@ -2090,7 +2092,7 @@ async fn main() {
                     }
                 }
             }
-            SecurityAction::VaultRotateColumnKey => {
+            SecurityAction::VaultRotateCol => {
                 if !vault_file.exists() {
                     eprintln!("Vault not found at {}. Run `vault init` first.", vault_file.display());
                     std::process::exit(1);
@@ -2891,8 +2893,27 @@ async fn main() {
         std::collections::HashMap::<String, hydragent_types::PendingClarification>::new(),
     ));
 
+    let vault_challenges = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashMap::<String, (String, std::time::Instant)>::new(),
+    ));
+
     // Initialize Event Bus Router and register handlers
     let mut router = hydragent_bus::router::Router::new();
+
+    router.register("vault.challenge", orchestrator::VaultChallengeHandler {
+        challenges: vault_challenges.clone(),
+    });
+    router.register("vault.set", orchestrator::VaultSetHandler {
+        challenges: vault_challenges.clone(),
+    });
+    router.register("vault.list", orchestrator::VaultListHandler {
+        challenges: vault_challenges.clone(),
+    });
+    router.register("vault.delete", orchestrator::VaultDeleteHandler {
+        challenges: vault_challenges.clone(),
+    });
+    router.register("vault.get", orchestrator::VaultGetHandler);
+
     router.register("intent.submit", orchestrator::IntentSubmitHandler {
         store: store.clone(),
         model_router: model_router.clone(),

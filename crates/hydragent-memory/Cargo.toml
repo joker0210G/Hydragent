@@ -15,6 +15,11 @@ hydragent-embed = { path = "../hydragent-embed" }
 bincode = "1.3"
 tiktoken-rs = "0.12"
 tracing = { workspace = true }
+# Used by the Library clusterer to mint deterministic book/shelf IDs.
+uuid = { version = "1", features = ["v4"] }
+# Async traits for the Librarian's pluggable collaborators
+# (LlmSummariser / FactSink / PersonalitySink).
+async-trait = { workspace = true }
 # HNSW approximate-nearest-neighbor index. Replaces the prior O(N) linear
 # scan over `HashMap<String, Vec<f32>>` so semantic search scales
 # sub-linearly. Pinned to the 0.3 series — versioned hnsw_rs has had

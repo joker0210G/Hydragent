@@ -37,6 +37,26 @@ Hydragent synthesizes six architectural principles, each derived from a differen
 | **Pluggable components** | OpenClaw / ZeroClaw | Models, channels, tools, and memory backends swap without recompilation via vtable interfaces |
 | **Human primacy** | Microsoft Scout / Devin | No state-mutating action executes without passing through a permission gate |
 
+### 1.1 Conceptual Mapping (Library Analogy)
+
+Hydragent operates based on the Library Analogy conceptual architecture (informed by the Hermes Self-Improving Agent model):
+
+| Library Concept | Self-Improving Representation | Implementation Layer |
+|---|---|---|
+| **The Desk** | Active execution workspace (commands, skills, search, tool calls) | `react_loop.rs` |
+| **Draft Paper** | Ephemeral context of the ongoing conversation | In-memory message list (committed only after the session ends) |
+| **Page** | Condensed knowledgeable insights + User's personality/habit traits extracted from the session | `nodes` table (type = `"page"`) + `USER.md`/`SOUL.md` |
+| **Book** | Topic clusters compiling related pages (e.g. "Aerospace", "AI", "Rust") | `nodes` table (type = `"book"`) |
+| **Shelf** | Domain categorization clusters (e.g. "User's Area of Interest", "Way of Thinking") | `nodes` table (type = `"shelf"`) |
+| **Web Connections** | Dynamic relationships mapping books to shelves, pages to books, and cross-references | `edges` table (generated/updated via `graphify`) |
+| **Librarian** | The Hydragent core, performing actions, dreaming, and managing the library | `dream.rs` / `main.rs` |
+
+### 1.2 Ingestion Loop & Hybrid Query Bridge
+
+To minimize LLM extraction costs, Hydragent implements a hybrid ingestion and search pipeline:
+- **75% Graphify / 25% LLM Ingestion**: Summarization and personality habit extraction (updating `USER.md` and `SOUL.md` under character caps) are computed by the LLM (25% weight). The remaining graph nodes (Pages, Books, Shelves), local file AST dependencies, and community organizing (Louvain clustering) are run locally by `graphify` (75% weight) without LLM overhead.
+- **Unified Hybrid Query Bridge**: Located in `retrieval.rs`, this runs keyword indexes (SQLite FTS5) and local Graphify AST/network traversal in parallel using async tokio joins (`< 10ms`) to compile context without redundant LLM searches.
+
 ---
 
 ## 2. Runtime Stack & Footprint
@@ -612,28 +632,45 @@ For long sessions, Hydragent uses a multi-strategy context management system:
 ### 6.2 Vault Implementation
 
 ```
-Vault file: secrets.json.enc
+Vault file: .hydravault
 
-Structure (before encryption):
+Upgraded V2 Vault Structure:
+The vault file is serialized via bincode as `VaultMetadataV2` containing two decryption slots (similar to LUKS):
+- Slot 0 (Passphrase PIN): Unlocks the master key using the user-memorable PIN.
+- Slot 1 (Admin Key File): Unlocks the master key using a local physical cryptographic private key file (e.g. Ed25519).
+
+Metadata (Serialized V2 Format):
 {
-  "version": 1,
-  "entries": {
-    "GITHUB_TOKEN":      { "value": "ghp_...", "scopes": ["tool:git"], "expires": null },
-    "TELEGRAM_BOT_TOKEN": { "value": "...", "scopes": ["channel:telegram"], "expires": null },
-    "OPENROUTER_API_KEY": { "value": "sk-or-...", "scopes": ["model:router"], "expires": null }
-  }
+  "magic": [72, 86, 76, 84], // "HVLT"
+  "version": 2,
+  "master_key_nonce": [u8; 24],
+  "slot_0": {
+    "active": bool,
+    "salt": [u8; 32],
+    "nonce": [u8; 24],
+    "encrypted_master_key": Vec<u8>
+  },
+  "slot_1": {
+    "active": bool,
+    "salt": [u8; 32],
+    "nonce": [u8; 24],
+    "encrypted_master_key": Vec<u8>
+  },
+  "encrypted_payload": Vec<u8> // HashMap<String, String> of secrets encrypted by master_key
 }
 
 Encryption:
-  KDF:        Argon2id (memory=65536 KB, iterations=3, parallelism=4)
-  Passphrase: User-provided at startup (never stored)
-  Cipher:     XChaCha20-Poly1305 (96-bit nonce, 256-bit key)
-  
-Process isolation:
-  - Vault runs as a separate OS process (vault_daemon)
-  - Orchestrator communicates via Unix domain socket
-  - Capability tokens required for each key access request
-  - Decrypted values exist in memory for < 100 ms (zeroized after network call)
+  Master Key KDF: Argon2id (memory=65536 KB, iterations=3, parallelism=4)
+  Passphrase:     Passphrase PIN (Slot 0) or Admin Key File bytes (Slot 1)
+  Cipher:         XChaCha20-Poly1305 (96-bit nonce, 256-bit key)
+
+Remote Administrative Auth:
+  To bypass LLM vision/context completely and support out-of-band updates,
+  vault commands execute over JSON-RPC (port 5000) using a challenge-response protocol:
+  1. Server stores PBKDF2-HMAC-SHA256(Passphrase PIN, Salt) in `config/security/admin_auth.hash`.
+  2. Remote client requests a challenge nonce.
+  3. Client signs the challenge via signature = HMAC_SHA256(PBKDF2_derived_key, challenge).
+  4. Server verifies signature using the stored PBKDF2 hash, enabling authorized vault writes.
 ```
 
 ### 6.3 Merkle Audit Log

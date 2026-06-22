@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use hydragent_memory::SessionStore;
+use hydragent_memory::library::{Library, NodeKind};
 use hydragent_model::router::ModelRouter;
 use hydragent_model::openrouter::ChatMessage;
 use hydragent_skills::library::SkillLibrary;
@@ -11,6 +12,7 @@ use tracing::{info, error, warn, debug};
 
 #[derive(Debug, Deserialize)]
 struct ExtractionResponse {
+    summary: Option<String>,
     extracted_facts: Option<Vec<ExtractedFact>>,
     style_habits: Option<Vec<String>>,
     behavior_rules: Option<Vec<String>>,
@@ -30,6 +32,26 @@ pub struct DreamStats {
     pub facts_skipped: usize,
     pub style_habits_stored: usize,
     pub behavior_rules_stored: usize,
+    /// Number of Page nodes successfully upserted into the Library
+    /// graph this cycle. Distinct from `messages_processed` — a page
+    /// only emits one Page node even if it consolidates many messages.
+    /// This is the 25% / LLM-side emission counter that pairs with
+    /// `LibrarianStats.llm_ops` to compute the design-spec 25/75 split.
+    pub pages_emitted: usize,
+    /// Number of Pages clustered into Books this cycle. Set by the
+    /// cycle-level Graphify pass, not per-page tasks. This is the
+    /// 75% / local-ops emission counter that pairs with
+    /// `LibrarianStats.local_ops` to compute the design-spec 25/75 split.
+    /// Stored as `u64` to match `LibraryStats::pages_clustered` — we
+    /// copy values directly between the two structs and a
+    /// usize/u64 mismatch would force a lossy cast.
+    pub pages_clustered: u64,
+    /// Number of Books placed onto Shelves this cycle.
+    pub books_organized: u64,
+    /// Total local Graphify operations performed this cycle (clustering,
+    /// edge writes, label lookups). This is `LibrarianStats.local_ops`
+    /// expressed at the cycle level so operators can spot drift.
+    pub local_graphify_ops: u64,
 }
 
 impl DreamStats {
@@ -42,6 +64,12 @@ impl DreamStats {
         self.facts_skipped += other.facts_skipped;
         self.style_habits_stored += other.style_habits_stored;
         self.behavior_rules_stored += other.behavior_rules_stored;
+        self.pages_emitted += other.pages_emitted;
+        // The clustering pass runs once at the cycle level, not per-page,
+        // so it doesn't participate in `merge()`. Cycle-level
+        // `pages_clustered` / `books_organized` / `local_graphify_ops`
+        // are set in-place on `stats` by `run_dream_cycle` after the
+        // per-page tasks complete.
     }
 }
 
@@ -140,6 +168,45 @@ pub async fn run_dream_cycle(
         }
     }
 
+    // ── 75% Graphify: cluster pages into Books and Books onto Shelves ──────
+    // Per-page tasks have already upserted Page nodes with their tag
+    // edges. Now we run a single clustering pass over the whole
+    // library. This is the 75% side of the 25/75 split from
+    // design spec §2 — pure local work, no LLM call.
+    //
+    // We do this *after* the per-page fan-out rather than inside each
+    // task because the clusterer reads `belongs_to` / `sits_on` edges
+    // and the pages would race for the same book ids otherwise. One
+    // serial pass at the end keeps the per-page work isolated and
+    // the clusterer deterministic.
+    let library = Library::new(&store);
+    match library.run_clustering_pass().await {
+        Ok(lib_stats) => {
+            // Surface the 75% / Graphify-side emission totals on the
+            // cycle-level `DreamStats` so operators reading a single
+            // log line can verify the 25/75 split is in range. The
+            // per-page `pages_emitted` is set inside `process_page`
+            // and accumulated via `merge()`; the clustering numbers
+            // are added here because the clusterer runs once for the
+            // whole cycle, not per-page.
+            stats.pages_clustered = lib_stats.pages_clustered;
+            stats.books_organized = lib_stats.books_organized;
+            stats.local_graphify_ops = lib_stats.local_ops();
+            info!(
+                pages_clustered = lib_stats.pages_clustered,
+                books_organized = lib_stats.books_organized,
+                local_ops       = lib_stats.local_ops(),
+                "Dream cycle: Graphify clustering pass complete"
+            );
+        }
+        Err(e) => {
+            // A failed clustering pass is non-fatal — the next dream
+            // cycle will retry it. Log at warn so the operator can
+            // spot persistent failures.
+            warn!(error = %e, "Dream cycle: Graphify clustering pass failed (will retry next cycle)");
+        }
+    }
+
     info!(?stats, "Dream cycle: completed all pages");
     Ok(stats)
 }
@@ -226,6 +293,25 @@ async fn process_page(
         }
     };
 
+    // Snapshot the fact categories *before* the facts loop below
+    // moves `extraction.extracted_facts`. The page-upsert block at
+    // the end of this function needs the same tag list (deduped,
+    // lowercased) to write the on-graph `tag` edges the clusterer
+    // reads. Computing it once and reusing it keeps the two
+    // consumers consistent: a Page always carries exactly the tags
+    // derived from its facts.
+    let page_tags: Vec<String> = extraction
+        .extracted_facts
+        .as_ref()
+        .map(|facts| {
+            let mut seen: HashSet<String> = HashSet::new();
+            facts.iter()
+                .map(|f| f.category.to_lowercase())
+                .filter(|c| seen.insert(c.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
     // Store extracted facts. Each fact is dedup-checked against the
     // current store (C3 fix: dream worker previously re-stored facts
     // that had been deleted or were paraphrases of an existing fact).
@@ -284,6 +370,59 @@ async fn process_page(
                 error!(page_id = %page_id, error = %e, "Dream cycle: failed to write rules to SOUL.md");
             } else {
                 stats.behavior_rules_stored += rules.len();
+            }
+        }
+    }
+
+    // ── LLM Role (25%): Compress Draft Paper → Page Node ────────────────────
+    // The session summary extracted by the LLM becomes a Page node in the
+    // Library's `nodes` table, ready for Graphify clustering into Books/Shelves.
+    //
+    // We use the typed `Library::upsert_node` (not the raw `create_node`)
+    // because it (a) records the on-graph `tag` edges the clusterer needs
+    // to organise Pages into Books, and (b) uses the typed `NodeKind` enum
+    // so this string is checked at compile time, not discovered by a bug
+    // report. Tags are derived from the fact categories (deduped) so a
+    // page with multiple `preference` facts still only contributes one
+    // `preference` tag edge.
+    if let Some(ref summary_text) = extraction.summary {
+        if !summary_text.trim().is_empty() {
+            // Update page_meta summary for compaction context
+            if let Err(e) = store.update_page_summary(&page_id, summary_text).await {
+                error!(page_id = %page_id, error = %e, "Dream cycle: failed to update page_meta summary");
+            }
+            // Upsert the Page as a node in the Library graph nodes table
+            // so Graphify clustering can discover it as a first-class Page node.
+            // `page_tags` was computed above from the same `extracted_facts`
+            // list we're about to consume, so it reflects the same deduped
+            // lowercased categories the clusterer will read.
+            let properties = serde_json::json!({
+                "source": "dream",
+                "page_id": page_id,
+            });
+            let library = Library::new(&store);
+            match library
+                .upsert_node(
+                    &page_id,
+                    NodeKind::Page,
+                    summary_text,
+                    &page_tags,
+                    Some(&properties),
+                )
+                .await
+            {
+                Ok(()) => {
+                    info!(
+                        page_id = %page_id,
+                        summary_len = summary_text.len(),
+                        tag_count = page_tags.len(),
+                        "Dream cycle: upserted Page node into Library graph"
+                    );
+                    stats.pages_emitted += 1;
+                }
+                Err(e) => {
+                    error!(page_id = %page_id, error = %e, "Dream cycle: failed to upsert page node in library graph");
+                }
             }
         }
     }
