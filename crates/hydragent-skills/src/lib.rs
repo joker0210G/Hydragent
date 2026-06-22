@@ -47,7 +47,7 @@ pub mod similarity;
 pub mod tools;
 
 pub use library::SkillLibrary;
-pub use extractor::SkillExtractor;
+pub use extractor::{LlmClient, SkillExtractor, SkillCandidate, Trajectory, TrajectoryTurn};
 pub use executor::{SkillExecutor, SkillRenderResult};
 pub use curator::SevenDayCurator;
 pub use composer::SkillComposer;

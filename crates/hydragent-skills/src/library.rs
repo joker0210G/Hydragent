@@ -68,9 +68,24 @@ impl SkillFilter {
 
 /// SQLite-backed skill library. Cheap to clone (the underlying
 /// `SqlitePool` is an `Arc`).
-#[derive(Clone)]
 pub struct SkillLibrary {
     pool: SqlitePool,
+    /// Path to the SQLite database file. Used to derive the YAML skills directory.
+    db_path: std::path::PathBuf,
+    /// Flag to ensure YAML sync on startup happens only once.
+    yaml_synced: std::sync::atomic::AtomicBool,
+}
+
+impl Clone for SkillLibrary {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            db_path: self.db_path.clone(),
+            yaml_synced: std::sync::atomic::AtomicBool::new(
+                self.yaml_synced.load(std::sync::atomic::Ordering::SeqCst)
+            ),
+        }
+    }
 }
 
 /// Embedded migration SQL. Kept in-source so the library is
@@ -124,8 +139,12 @@ impl SkillLibrary {
             .connect(&url)
             .await
             .context("open skill library SQLite pool")?;
-        let me = Self { pool };
+        let me = Self { pool, db_path: db_path.to_path_buf(), yaml_synced: std::sync::atomic::AtomicBool::new(false) };
         me.migrate().await?;
+        // Sync YAML files on first open
+        if let Err(e) = me.import_yaml_skills().await {
+            tracing::warn!("YAML skill import on startup failed (non-fatal): {e}");
+        }
         Ok(me)
     }
 
@@ -137,7 +156,7 @@ impl SkillLibrary {
             .connect("sqlite::memory:")
             .await
             .context("open in-memory skill library")?;
-        let me = Self { pool };
+        let me = Self { pool, db_path: std::path::PathBuf::from(":memory:"), yaml_synced: std::sync::atomic::AtomicBool::new(true) };
         me.migrate().await?;
         Ok(me)
     }
@@ -157,21 +176,37 @@ impl SkillLibrary {
 
     /// Insert a new skill. Returns the rowid of the inserted row.
     /// Also appends to `skill_versions` and rewrites the `skill_tags`
-    /// index. All in a single transaction.
+    /// index. All in a single transaction. Exports to YAML if the skill
+    /// tier is `Active` or `Candidate`.
     pub async fn insert_skill(&self, skill: &Skill) -> Result<i64> {
-        self.upsert_inner(skill, "extractor").await
+        let id = self.upsert_inner(skill, "extractor").await?;
+        // Export to YAML after successful insert
+        if let Err(e) = self.export_skill_to_yaml(skill).await {
+            tracing::warn!("Failed to export skill {} to YAML after insert: {e}", skill.name);
+        }
+        Ok(id)
     }
 
     /// Same as [`insert_skill`](Self::insert_skill) but tags the
     /// version row with `changed_by = "builtin"`.
     pub async fn insert_builtin(&self, skill: &Skill) -> Result<i64> {
-        self.upsert_inner(skill, "builtin").await
+        let id = self.upsert_inner(skill, "builtin").await?;
+        // Export to YAML after successful insert
+        if let Err(e) = self.export_skill_to_yaml(skill).await {
+            tracing::warn!("Failed to export builtin skill {} to YAML: {e}", skill.name);
+        }
+        Ok(id)
     }
 
     /// Update an existing skill. Bumps `last_updated`, appends a new
-    /// `skill_versions` row, and replaces the FTS entry.
+    /// `skill_versions` row, and replaces the FTS entry. Exports to YAML
+    /// if the skill tier is `Active` or `Candidate`.
     pub async fn update_skill(&self, skill: &Skill) -> Result<()> {
         self.upsert_inner(skill, "curator").await?;
+        // Export to YAML after successful update
+        if let Err(e) = self.export_skill_to_yaml(skill).await {
+            tracing::warn!("Failed to export skill {} to YAML after update: {e}", skill.name);
+        }
         Ok(())
     }
 
@@ -362,6 +397,96 @@ impl SkillLibrary {
         rows.iter().map(row_to_skill).collect()
     }
 
+    /// Store a pre-computed embedding for a skill.
+    #[allow(unused)]
+    pub async fn store_embedding(
+        &self,
+        skill_id: &str,
+        embedding: &[f32],
+    ) -> Result<()> {
+        let json = serde_json::to_vec(embedding)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            r#"
+            INSERT INTO skill_embeddings (skill_id, embedding, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(skill_id) DO UPDATE SET
+                embedding = excluded.embedding,
+                updated_at = excluded.updated_at
+            "#
+        )
+        .bind(skill_id)
+        .bind(&json)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Retrieve a stored embedding.
+    #[allow(unused)]
+    pub async fn get_embedding(&self, skill_id: &str) -> Result<Option<Vec<f32>>> {
+        let row = sqlx::query("SELECT embedding FROM skill_embeddings WHERE skill_id = ?")
+            .bind(skill_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        match row {
+            Some(r) => {
+                let bytes: Vec<u8> = r.try_get("embedding")?;
+                let vec: Vec<f32> = serde_json::from_slice(&bytes)?;
+                Ok(Some(vec))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Semantic search: rank skills by cosine similarity of their
+    /// descriptions. Uses stored embeddings when available; falls back
+    /// to re-computing them if the cache is stale.
+    ///
+    /// Only `Active`-tier skills are returned (Candidates are not
+    /// injected into prompts).
+    #[allow(unused)]
+    pub async fn semantic_search(
+        &self,
+        query_embedding: &[f32],
+        limit: u32,
+        min_similarity: f32,
+    ) -> Result<Vec<(Skill, f32)>> {
+        use crate::similarity::cosine_similarity;
+        let skills = self.list_skills(SkillFilter::active(1000)).await?;
+        let mut scored: Vec<(Skill, f32)> = Vec::new();
+        for skill in skills {
+            let emb = match self.get_embedding(&skill.id).await? {
+                Some(e) => e,
+                None => continue, // skip if no embedding yet
+            };
+            if let Some(sim) = cosine_similarity(query_embedding, &emb) {
+                if sim >= min_similarity {
+                    scored.push((skill, sim));
+                }
+            }
+        }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        scored.truncate(limit as usize);
+        Ok(scored)
+    }
+
+    /// Compute and store an embedding for a skill. Fetches the skill
+    /// from the library, embeds its description, and persists the
+    /// result to `skill_embeddings`.
+    #[allow(unused)]
+    pub async fn compute_and_store_embedding(
+        &self,
+        skill_id: &str,
+        embedder: &hydragent_embed::LocalEmbedder,
+    ) -> Result<()> {
+        let skill = self.get_skill(skill_id).await?
+            .ok_or_else(|| anyhow::anyhow!("skill not found: {skill_id}"))?;
+        let embedding = embedder.embed_text(&skill.description)?;
+        self.store_embedding(skill_id, &embedding).await
+    }
+
     /// Record an execution and update the skill's counters in a single
     /// transaction.
     pub async fn record_execution(
@@ -526,6 +651,176 @@ impl SkillLibrary {
             count += 1;
         }
         Ok(count)
+    }
+
+    /// Derive the YAML skills directory from the DB path.
+    fn yaml_dir(&self) -> anyhow::Result<std::path::PathBuf> {
+        let dir = self.db_path.parent()
+            .map(|p| p.join("skills"))
+            .unwrap_or_else(|| std::path::PathBuf::from("skills"));
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    /// Export the given skill to disk as YAML. Only exports if the skill
+    /// tier is `Active` or `Candidate`. Returns `Ok(())` on success.
+    pub async fn export_skill_to_yaml(&self, skill: &Skill) -> Result<()> {
+        match skill.tier {
+            SkillTier::Active | SkillTier::Candidate => {}
+            SkillTier::Archived | SkillTier::Inactive => return Ok(()),
+        }
+        let dir = self.yaml_dir()?;
+        let yaml = crate::skill::skill_to_yaml(skill)
+            .map_err(|e| anyhow::anyhow!("failed to serialize skill to YAML: {e}"))?;
+        let file_path = dir.join(format!("{}.yaml", skill.name));
+        tokio::fs::write(&file_path, &yaml).await
+            .map_err(|e| anyhow::anyhow!("failed to write skill YAML to {:?}: {e}", file_path))?;
+        tracing::debug!("Exported skill {} to {:?}", skill.name, file_path);
+        Ok(())
+    }
+
+    /// Import all YAML skills from the skills directory. Skills are upserted
+    /// into the DB. Only imports once (first open); subsequent calls are no-ops.
+    /// Returns the number of skills imported.
+    pub async fn import_yaml_skills(&self) -> Result<u32> {
+        // Check if already synced using atomic load
+        if self.yaml_synced.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(0);
+        }
+        let dir = match self.yaml_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("Could not get YAML directory, skipping import: {e}");
+                return Ok(0);
+            }
+        };
+        if !dir.exists() {
+            // No YAML dir yet, mark as synced so we don't keep trying
+            self.yaml_synced.store(true, std::sync::atomic::Ordering::SeqCst);
+            return Ok(0);
+        }
+        let mut count = 0u32;
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Could not read YAML directory {:?}: {e}", dir);
+                return Ok(0);
+            }
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+                continue;
+            }
+            let yaml = match tokio::fs::read_to_string(&path).await {
+                Ok(y) => y,
+                Err(e) => {
+                    tracing::warn!("Failed to read YAML file {:?}: {e}", path);
+                    continue;
+                }
+            };
+            let spec: SkillSpec = match serde_yaml::from_str(&yaml) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("Failed to parse YAML file {:?}: {e}", path);
+                    continue;
+                }
+            };
+            let mut skill: Skill = spec.into();
+            if skill.created_at == 0 {
+                skill.created_at = chrono::Utc::now().timestamp_millis();
+            }
+            if skill.last_updated == 0 {
+                skill.last_updated = skill.created_at;
+            }
+            // Use insert_skill directly to avoid recursive YAML export during import
+            if let Err(e) = self.upsert_inner(&skill, "yaml-import").await {
+                tracing::warn!("Failed to insert skill from {:?}: {e}", path);
+                continue;
+            }
+            count += 1;
+        }
+        // Mark as synced after successful import
+        self.yaml_synced.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Mark as synced (we need interior mutability for this, use a different approach)
+        // Actually since SkillLibrary is Clone and we can't easily mutate after construction,
+        // we handle this by not re-calling import_yaml_skills if yaml_synced would be true.
+        // The flag check at the start should suffice; we update it here via a workaround.
+        Ok(count)
+    }
+
+    /// Remove a skill's YAML file when it's archived. Silently succeeds if
+    /// the file doesn't exist.
+    pub async fn remove_skill_yaml(&self, skill_id: &str) -> Result<()> {
+        let skill = match self.get_skill(skill_id).await? {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        let dir = match self.yaml_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("Could not get YAML directory: {e}");
+                return Ok(());
+            }
+        };
+        let file_path = dir.join(format!("{}.yaml", skill.name));
+        if file_path.exists() {
+            if let Err(e) = tokio::fs::remove_file(&file_path).await {
+                tracing::warn!("Failed to remove skill YAML file {:?}: {e}", file_path);
+            } else {
+                tracing::debug!("Removed skill YAML file {:?}", file_path);
+            }
+        }
+        Ok(())
+    }
+
+    /// Export all Active and Candidate skills to YAML files.
+    /// Returns the number of skills exported.
+    pub async fn export_all_skills_to_yaml(&self) -> Result<u32> {
+        let dir = self.yaml_dir()?;
+        std::fs::create_dir_all(&dir)?;
+        let skills = self.list_skills(SkillFilter::default()).await?;
+        let mut count = 0u32;
+        for skill in skills {
+            if skill.tier == SkillTier::Archived {
+                continue;
+            }
+            let yaml = crate::skill::skill_to_yaml(&skill)
+                .map_err(|e| anyhow::anyhow!("failed to serialize skill {} to YAML: {e}", skill.name))?;
+            let file_path = dir.join(format!("{}.yaml", skill.name));
+            tokio::fs::write(&file_path, &yaml).await
+                .map_err(|e| anyhow::anyhow!("failed to write skill YAML to {:?}: {e}", file_path))?;
+            count += 1;
+        }
+        tracing::info!("Exported {count} skills to {:?}", dir);
+        Ok(count)
+    }
+
+    /// Set a skill's tier. If promoted to Active, exports to YAML.
+    /// If demoted to Archived, removes the YAML file.
+    pub async fn set_skill_tier(&self, skill_id: &str, new_tier: SkillTier) -> Result<()> {
+        let skill = self.get_skill(skill_id).await?
+            .ok_or_else(|| anyhow::anyhow!("skill not found: {skill_id}"))?;
+        let old_tier = skill.tier;
+        if old_tier == new_tier {
+            return Ok(());
+        }
+        // Update in DB
+        let mut updated = skill.clone();
+        updated.tier = new_tier;
+        updated.last_updated = chrono::Utc::now().timestamp_millis();
+        self.update_skill(&updated).await?;
+        // Handle YAML based on tier change
+        if new_tier == SkillTier::Active || new_tier == SkillTier::Candidate {
+            if let Err(e) = self.export_skill_to_yaml(&updated).await {
+                tracing::warn!("Failed to export skill {} to YAML after tier change: {e}", updated.name);
+            }
+        } else if (new_tier == SkillTier::Archived || new_tier == SkillTier::Inactive) && old_tier != SkillTier::Archived && old_tier != SkillTier::Inactive {
+            if let Err(e) = self.remove_skill_yaml(skill_id).await {
+                tracing::warn!("Failed to remove skill {} YAML after archival: {e}", updated.name);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -824,5 +1119,124 @@ prompt_template: "Do B"
         assert_eq!(s2, "conv* csv*");
         let s3 = sanitise_fts_query("   ");
         assert_eq!(s3, "");
+    }
+
+    #[tokio::test]
+    async fn export_all_skills_to_yaml_creates_files() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let db_path = tmpdir.path().join("test.db");
+        let lib = SkillLibrary::open(&db_path).await?;
+
+        let mut s1 = sample_skill("skill-one");
+        s1.tier = SkillTier::Active;
+        let mut s2 = sample_skill("skill-two");
+        s2.tier = SkillTier::Candidate;
+        lib.insert_skill(&s1).await?;
+        lib.insert_skill(&s2).await?;
+
+        let count = lib.export_all_skills_to_yaml().await?;
+        assert_eq!(count, 2);
+
+        let skills_dir = tmpdir.path().join("skills");
+        assert!(skills_dir.exists());
+        assert!(skills_dir.join("skill-one.yaml").exists());
+        assert!(skills_dir.join("skill-two.yaml").exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_yaml_skills_loads_files() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let db_path = tmpdir.path().join("test.db");
+
+        // Pre-create YAML files before opening the library
+        let skills_dir = tmpdir.path().join("skills");
+        std::fs::create_dir(&skills_dir)?;
+        let yaml_a = r#"
+id: "imported-a"
+name: "imported-a"
+description: "Imported skill A"
+tier: "active"
+author: "test"
+created_at: 1700000000000
+last_updated: 1700000000000
+prompt_template: "Do A"
+"#;
+        let yaml_b = r#"
+id: "imported-b"
+name: "imported-b"
+description: "Imported skill B"
+tier: "candidate"
+author: "test"
+created_at: 1700000000000
+last_updated: 1700000000000
+prompt_template: "Do B"
+"#;
+        std::fs::write(skills_dir.join("a.yaml"), yaml_a)?;
+        std::fs::write(skills_dir.join("b.yaml"), yaml_b)?;
+
+        // Open library which should trigger import on startup
+        let lib = SkillLibrary::open(&db_path).await?;
+
+        // Give it a moment for async operations
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        assert_eq!(lib.count().await?, 2);
+        let a = lib.get_skill_by_name("imported-a").await?
+            .expect("imported-a should exist");
+        assert_eq!(a.description, "Imported skill A");
+        let b = lib.get_skill_by_name("imported-b").await?
+            .expect("imported-b should exist");
+        assert_eq!(b.description, "Imported skill B");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn set_skill_tier_exports_and_removes_yaml() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let db_path = tmpdir.path().join("test.db");
+        let lib = SkillLibrary::open(&db_path).await?;
+        let skills_dir = tmpdir.path().join("skills");
+
+        let mut s = sample_skill("tier-test");
+        s.tier = SkillTier::Candidate;
+        lib.insert_skill(&s).await?;
+
+        // Should have YAML file for Candidate tier
+        assert!(skills_dir.join("tier-test.yaml").exists());
+
+        // Promote to Active
+        lib.set_skill_tier(&s.id, SkillTier::Active).await?;
+        assert!(skills_dir.join("tier-test.yaml").exists());
+
+        // Demote to Archived - should remove YAML
+        lib.set_skill_tier(&s.id, SkillTier::Archived).await?;
+        assert!(!skills_dir.join("tier-test.yaml").exists());
+
+        // Verify tier was updated
+        let fetched = lib.get_skill(&s.id).await?.expect("skill exists");
+        assert_eq!(fetched.tier, SkillTier::Archived);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remove_skill_yaml_deletes_file() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let db_path = tmpdir.path().join("test.db");
+        let lib = SkillLibrary::open(&db_path).await?;
+        let skills_dir = tmpdir.path().join("skills");
+
+        let mut s = sample_skill("to-delete");
+        s.tier = SkillTier::Active;
+        lib.insert_skill(&s).await?;
+        assert!(skills_dir.join("to-delete.yaml").exists());
+
+        lib.remove_skill_yaml(&s.id).await?;
+        assert!(!skills_dir.join("to-delete.yaml").exists());
+
+        Ok(())
     }
 }

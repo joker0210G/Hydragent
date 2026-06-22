@@ -44,6 +44,10 @@ fn chat_with_bytes(input: &[u8], timeout: Duration) -> std::process::Output {
     // never reads the user's real `~/.hydragent/.env` and never
     // collides with parallel runs.
     let home = tempdir_home("repl_polish");
+    let home_path = std::path::PathBuf::from(&home);
+    let _ = std::fs::create_dir_all(&home_path);
+    let _ = std::fs::write(home_path.join(".env"), "BRAIN_BASE=http://localhost:11434/v1\n");
+
     let mut child = Command::new(bin())
         .arg("chat")
         .env("HYDRAGENT_HOME", &home)

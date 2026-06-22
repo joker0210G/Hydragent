@@ -62,6 +62,31 @@ impl SessionStore {
         Ok(store)
     }
 
+    /// Run an `ALTER TABLE … ADD COLUMN` while tolerating "duplicate column"
+    /// errors. Used for idempotent schema migrations: on a fresh DB the
+    /// `CREATE TABLE IF NOT EXISTS` ran with the column already, and on an
+    /// upgraded DB the column already exists from a previous boot.
+    async fn try_alter(pool: &SqlitePool, sql: &str) {
+        match sqlx::query(sql).execute(pool).await {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("duplicate column") || msg.contains("already exists") {
+                    // Expected when upgrading an already-migrated DB.
+                } else {
+                    tracing::warn!("migration step `{}` failed: {}", sql, e);
+                }
+            }
+        }
+    }
+
+    /// Create an index, tolerating "already exists".
+    async fn try_index(pool: &SqlitePool, sql: &str) {
+        if let Err(e) = sqlx::query(sql).execute(pool).await {
+            tracing::warn!("index step `{}` failed: {}", sql, e);
+        }
+    }
+
     pub async fn get_embedder(&self) -> Result<&LocalEmbedder> {
         self.embedder.get_or_try_init(|| async {
             let paths = ensure_model_downloaded(&self.data_dir).await?;
@@ -186,14 +211,41 @@ impl SessionStore {
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS work_iq_feeds (
-                url             TEXT    PRIMARY KEY,
-                name            TEXT    NOT NULL,
-                keywords        TEXT    NOT NULL,
-                digest_channel  TEXT    NOT NULL,
-                digest_cron     TEXT    NOT NULL,
-                last_seen_id    TEXT
+                url                     TEXT    PRIMARY KEY,
+                name                    TEXT    NOT NULL,
+                keywords                TEXT    NOT NULL,
+                digest_channel          TEXT    NOT NULL,
+                digest_cron             TEXT    NOT NULL,
+                last_seen_id            TEXT
             );"
         ).execute(&self.pool).await?;
+
+        // ---- Work IQ schema migrations (idempotent) ----
+        // Older DBs (pre-v2) have a leaner schema. We add columns one at a time
+        // and tolerate "duplicate column" errors so existing installs keep working.
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_feeds ADD COLUMN keywords_json TEXT").await;
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_feeds ADD COLUMN backfill_policy TEXT NOT NULL DEFAULT 'none'").await;
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_feeds ADD COLUMN backfill_n INTEGER NOT NULL DEFAULT 10").await;
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_feeds ADD COLUMN etag TEXT").await;
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_feeds ADD COLUMN last_modified TEXT").await;
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_feeds ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1").await;
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_feeds ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0").await;
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_feeds ADD COLUMN last_polled_at INTEGER").await;
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_feeds ADD COLUMN last_seen_published_at INTEGER").await;
+        // Index for the "un-digested entries per feed" query and TTL sweeps.
+        Self::try_index(&self.pool,
+            "CREATE INDEX IF NOT EXISTS idx_work_iq_entries_feed_digested ON work_iq_entries(feed_url, digested)").await;
+        Self::try_index(&self.pool,
+            "CREATE INDEX IF NOT EXISTS idx_work_iq_entries_fetched_at ON work_iq_entries(fetched_at)").await;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS work_iq_entries (
@@ -203,10 +255,17 @@ impl SessionStore {
                 summary         TEXT    NOT NULL,
                 url             TEXT    NOT NULL,
                 fetched_at      INTEGER NOT NULL,
+                published_at    INTEGER,
                 digested        BOOLEAN NOT NULL DEFAULT 0,
+                score           REAL    NOT NULL DEFAULT 0,
                 FOREIGN KEY(feed_url) REFERENCES work_iq_feeds(url) ON DELETE CASCADE
             );"
         ).execute(&self.pool).await?;
+        // published_at / score may be missing on old installs.
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_entries ADD COLUMN published_at INTEGER").await;
+        Self::try_alter(&self.pool,
+            "ALTER TABLE work_iq_entries ADD COLUMN score REAL NOT NULL DEFAULT 0").await;
 
 
         sqlx::query(

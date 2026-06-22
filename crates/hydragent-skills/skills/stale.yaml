@@ -1,0 +1,16 @@
+id: s3
+name: stale
+version: 1
+description: test
+tier: active
+capability_tags:
+- test
+params: []
+prompt_template: do {{x}}
+required_tools: []
+success_examples: []
+author: test
+created_at: 1778187814108
+last_updated: 1778187814108
+success_rate: 0.0
+execution_count: 0

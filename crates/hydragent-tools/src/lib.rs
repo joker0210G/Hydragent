@@ -12,16 +12,15 @@ pub mod user_profile;
 pub mod send_message;
 pub mod schedule_task;
 pub mod rss_subscribe;
-pub mod phase6;
+pub mod security;
 pub mod agent_reach;
 pub mod url_fetch;
 
-// ── Phase 7 / Track 7.1 — Skill library tools ───────────────────────
+// ── Skill library tools ───────────────────────
 //
 // These expose the persistent `SkillLibrary` (hydragent_skills) to the
 // chat LLM so it can discover, search, and render skills via the tool
-// registry. Each tool opens its own `SkillLibrary` handle per call,
-// mirroring the AuditQueryTool pattern.
+// registry. Each tool opens its own `SkillLibrary` handle per call.
 pub mod skill_list;
 pub mod skill_search;
 pub mod skill_run;

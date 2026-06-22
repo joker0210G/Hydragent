@@ -53,6 +53,7 @@ pub async fn run_react_loop(
     max_steps: u8,
     response_tx: mpsc::Sender<String>,
     active_permissions: crate::orchestrator::ActivePermissions,
+    skill_library: Option<Arc<hydragent_skills::SkillLibrary>>,
 ) -> anyhow::Result<(String, Vec<ToolResult>)> {
     let mut system_prompt = format!(
         "You are Hydra, an advanced agentic AI assistant. You solve problems step-by-step using a ReAct loop.\n\
@@ -106,6 +107,17 @@ pub async fn run_react_loop(
                 user, system_prompt
             );
         }
+    }
+
+    // ── Proactive skill injection ───────────────────────────────────────
+    let skill_context = if let Some(ref lib) = skill_library {
+        inject_skill_context(lib, user_query, 3).await.unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if !skill_context.is_empty() {
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(&skill_context);
     }
 
     // Apply persistent memory context injection if available
@@ -366,4 +378,76 @@ fn parse_react_response(raw: &str) -> anyhow::Result<ReActStepResponse> {
 
     let parsed: ReActStepResponse = serde_json::from_str(json_sub)?;
     Ok(parsed)
+}
+
+/// Retrieve up to `max_skills` Active skills whose descriptions are
+/// semantically similar to the user query, and format them as a
+/// system-prompt block.
+#[allow(dead_code)]
+async fn inject_skill_context(
+    library: &hydragent_skills::SkillLibrary,
+    user_query: &str,
+    max_skills: usize,
+) -> anyhow::Result<String> {
+    // Compute embedding for the user query
+    let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data".to_string());
+    let paths = match hydragent_embed::ensure_model_downloaded(&data_dir).await {
+        Ok(p) => p,
+        Err(_) => return Ok(String::new()),
+    };
+    let embedder = match hydragent_embed::LocalEmbedder::new(&paths.model_path, &paths.tokenizer_path) {
+        Ok(e) => e,
+        Err(_) => return Ok(String::new()),
+    };
+    let query_emb = match embedder.embed_text(user_query) {
+        Ok(v) => v,
+        Err(_) => return Ok(String::new()),
+    };
+
+    // Search for Active-tier skills by keyword fallback, then filter by embedding similarity
+    let candidates = library.search_by_keyword(user_query, max_skills as u32 * 3).await?;
+    let active: Vec<_> = candidates
+        .into_iter()
+        .filter(|s| s.tier == hydragent_types::SkillTier::Active)
+        .collect();
+
+    if active.is_empty() {
+        return Ok(String::new());
+    }
+
+    // Compute similarity for each candidate and take top `max_skills`
+    let mut scored: Vec<(&hydragent_types::Skill, f32)> = Vec::new();
+    for skill in &active {
+        // Simple keyword/tag similarity as proxy for embedding match
+        // (full embedding similarity requires per-skill embedding storage)
+        let tag_sim = hydragent_skills::similarity::jaccard(
+            &skill.capability_tags,
+            &user_query.split_whitespace().map(String::from).collect::<Vec<_>>(),
+        );
+        let sim = if tag_sim > 0.0 { tag_sim } else { 0.3 };
+        if sim >= 0.25 {
+            scored.push((skill, sim));
+        }
+    }
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let hits: Vec<_> = scored.into_iter().take(max_skills).collect();
+
+    if hits.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut ctx = String::from("# Relevant Skills\n\n");
+    for (skill, sim) in hits {
+        ctx.push_str(&format!(
+            "## {} (relevance: {:.0}%)\n{}\n",
+            skill.name,
+            sim * 100.0,
+            skill.description
+        ));
+        ctx.push_str(&format!("Template: {}\n", skill.prompt_template));
+        ctx.push_str(&format!("Tags: {}\n", skill.capability_tags.join(", ")));
+        ctx.push('\n');
+    }
+    Ok(ctx)
 }

@@ -4,22 +4,51 @@
 //
 // At the end of a successful dream cycle (one or more user/assistant
 // turns have been consolidated), we re-collect the same turns into a
-// [`hydragent_skills::extractor::Trajectory`] and run the heuristic
-// skill extractor over it. If a candidate is produced and isn't a
+// [`hydragent_skills::extractor::Trajectory`] and run the skill
+// extractor over it. If a candidate is produced and isn't a
 // near-duplicate of an existing skill, we insert it at the
 // `Candidate` tier so the 7-day curator can later promote / archive
 // it.
+//
+// ## LLM-based extraction
+//
+// When a [`ModelRouter`] is available (via [`ModelRouterLlmClient`]),
+// we first attempt [`SkillExtractor::propose_with_llm`] which uses the
+// LLM to propose a refined skill candidate. If that returns `None`
+// (quality gate failed or JSON parse error), we fall back to the
+// deterministic [`SkillExtractor::extract`].
 
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use hydragent_skills::extractor::{SkillExtractor, Trajectory, TrajectoryTurn};
+use async_trait::async_trait;
+use hydragent_model::openrouter::ChatMessage;
+use hydragent_model::router::ModelRouter;
+use hydragent_skills::extractor::{LlmClient, SkillExtractor, Trajectory, TrajectoryTurn};
 use hydragent_skills::library::SkillLibrary;
 use hydragent_types::Skill;
 use sqlx::SqlitePool;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+
+/// Adapter that makes a [`ModelRouter`] implement the [`LlmClient`]
+/// trait used by [`SkillExtractor::propose_with_llm`].
+struct ModelRouterLlmClient(Arc<ModelRouter>);
+
+#[async_trait]
+impl LlmClient for ModelRouterLlmClient {
+    async fn generate(&self, prompt: &str) -> anyhow::Result<String> {
+        let (tx, _rx) = mpsc::channel::<String>(100);
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: prompt.to_string(),
+        }];
+        let (content, _) = self.0.chat_stream(messages, tx, None).await?;
+        Ok(content)
+    }
+}
 
 /// Result of one dream-cycle -> skill induction pass.
 #[derive(Debug, Default, Clone, Copy)]
@@ -132,10 +161,36 @@ pub async fn induce_skill_from_page(
 /// pages. The library is cheap to clone (it's a `SqlitePool` /
 /// `Arc`-shaped internally) so we can hand the same handle to every
 /// fan-out task the dream worker creates.
+///
+/// If a [`ModelRouter`] is supplied (via
+/// [`induce_skill_from_page_with_router`]), this function first
+/// attempts LLM-based skill proposal via
+/// [`SkillExtractor::propose_with_llm`], falling back to the
+/// deterministic [`SkillExtractor::extract`] if that returns `None`.
 pub async fn induce_skill_from_page_with_library(
     library: Arc<SkillLibrary>,
     pool: &SqlitePool,
     page_id: &str,
+) -> InductionStats {
+    induce_skill_from_page_with_library_and_router(library, pool, page_id, None).await
+}
+
+/// As [`induce_skill_from_page_with_library`] but accepts a
+/// [`ModelRouter`] to enable LLM-based skill extraction.
+pub async fn induce_skill_from_page_with_router(
+    library: Arc<SkillLibrary>,
+    pool: &SqlitePool,
+    page_id: &str,
+    router: Arc<ModelRouter>,
+) -> InductionStats {
+    induce_skill_from_page_with_library_and_router(library, pool, page_id, Some(router)).await
+}
+
+async fn induce_skill_from_page_with_library_and_router(
+    library: Arc<SkillLibrary>,
+    pool: &SqlitePool,
+    page_id: &str,
+    router: Option<Arc<ModelRouter>>,
 ) -> InductionStats {
     let mut stats = InductionStats::default();
 
@@ -157,22 +212,77 @@ pub async fn induce_skill_from_page_with_library(
         turns,
         tools_used: Vec::new(),
     };
+
     let extractor = SkillExtractor::default();
-    let candidate = match extractor.extract(&trajectory) {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            stats.rejected += 1;
-            return stats;
+
+    // Try LLM-based extraction first if a router is available
+    let candidate = if let Some(ref r) = router {
+        match extractor.propose_with_llm(&ModelRouterLlmClient(r.clone()), &trajectory).await {
+            Ok(Some(c)) => {
+                debug!(page_id, "skill induction: LLM proposed a candidate");
+                c
+            }
+            Ok(None) => {
+                debug!(page_id, "skill induction: LLM returned None, falling back to deterministic");
+                match extractor.extract(&trajectory) {
+                    Ok(Some(c)) => c,
+                    Ok(None) => {
+                        stats.rejected += 1;
+                        return stats;
+                    }
+                    Err(e) => {
+                        warn!(page_id, error = %e, "skill induction: deterministic extractor failed");
+                        stats.errors += 1;
+                        return stats;
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(page_id, error = %e, "skill induction: LLM call failed, falling back");
+                match extractor.extract(&trajectory) {
+                    Ok(Some(c)) => c,
+                    Ok(None) => {
+                        stats.rejected += 1;
+                        return stats;
+                    }
+                    Err(e) => {
+                        warn!(page_id, error = %e, "skill induction: deterministic extractor failed");
+                        stats.errors += 1;
+                        return stats;
+                    }
+                }
+            }
         }
-        Err(e) => {
-            warn!(page_id, error = %e, "skill induction: extractor failed");
-            stats.errors += 1;
-            return stats;
+    } else {
+        // No router: use deterministic extraction directly
+        match extractor.extract(&trajectory) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                stats.rejected += 1;
+                return stats;
+            }
+            Err(e) => {
+                warn!(page_id, error = %e, "skill induction: extractor failed");
+                stats.errors += 1;
+                return stats;
+            }
         }
     };
 
     let existing: Vec<Skill> = library.list_skills(hydragent_skills::library::SkillFilter::default()).await.unwrap_or_default();
-    if extractor.is_duplicate(&candidate.skill, &existing, 0.6) {
+    // Deduplicate: Jaccard first (fast), optional semantic second (slow but more accurate)
+    let mut dup = extractor.is_duplicate(&candidate.skill, &existing, 0.6);
+    if !dup && router.is_some() {
+        if let Ok(embedder) = hydragent_embed::LocalEmbedder::new(
+            &std::path::Path::new("models/model.safetensors"),
+            &std::path::Path::new("models/tokenizer.json"),
+        ) {
+            if let Ok(true) = extractor.is_duplicate_semantic(&candidate.skill, &existing, &embedder, 0.85) {
+                dup = true;
+            }
+        }
+    }
+    if dup {
         stats.duplicates_skipped += 1;
         return stats;
     }

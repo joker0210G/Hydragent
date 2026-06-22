@@ -1,0 +1,47 @@
+id: skill-builtin-debug-rust-error
+name: debug-rust-error
+version: 1
+description: Diagnose a Rust compiler error and propose a fix. Returns the error code, a one-line cause, a minimal corrected snippet, and links to relevant docs.
+tier: active
+capability_tags:
+- rust
+- debug
+- compiler
+- error
+params:
+- name: error
+  type: string
+  description: The full compiler error text (including the error code, e.g. E0382).
+  required: true
+- name: code
+  type: string
+  description: The relevant source snippet (5-30 lines around the error). Use triple backticks.
+  required: true
+prompt_template: |
+  You are a Rust compiler error expert. Diagnose the error and propose a fix.
+
+  Compiler error:
+  ```
+  {{error}}
+  ```
+
+  Source context:
+  ```
+  {{code}}
+  ```
+
+  Reply in this exact structure:
+  - **Error code**: e.g. E0382
+  - **Cause**: one-sentence explanation
+  - **Fix**: a minimal corrected snippet (only the changed lines)
+  - **Why this works**: 1-2 sentences
+  - **Further reading**: link to the Rust error codes index entry, if applicable
+required_tools:
+- echo
+success_examples:
+- E0382 + a snippet that uses a moved value -> a fix that clones the value or borrows it before the move.
+author: builtin
+created_at: 1700000000000
+last_updated: 1700000000000
+success_rate: 0.0
+execution_count: 0

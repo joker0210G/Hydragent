@@ -1,0 +1,45 @@
+id: skill-builtin-csv-to-json
+name: convert-csv-to-json
+version: 1
+description: Convert a CSV string into a JSON array of objects. The first row is treated as the header. Empty cells become null. Embedded quotes are escaped per RFC 4180.
+tier: active
+capability_tags:
+- data
+- csv
+- json
+- transform
+params:
+- name: csv
+  type: string
+  description: The CSV blob to convert. Use \n for row separators and , for column separators.
+  required: true
+- name: delimiter
+  type: string
+  description: Field delimiter. Defaults to comma.
+  required: false
+prompt_template: |
+  Convert the following CSV input into a JSON array of objects.
+
+  Rules:
+  - Treat the first row as the header.
+  - Use the delimiter "{{delimiter}}" (default comma) to split fields.
+  - Empty cells become JSON null.
+  - Preserve numeric values as numbers (no quoting).
+  - Escape strings that contain quotes or newlines per RFC 4180.
+
+  CSV input:
+  ```
+  {{csv}}
+  ```
+
+  Respond with ONLY the JSON array, no commentary.
+required_tools:
+- echo
+success_examples:
+- name,age\nalice,30\nbob,25 -> [{"name":"alice","age":30},{"name":"bob","age":25}]
+- id,active\n1,true\n2,false -> [{"id":1,"active":true},{"id":2,"active":false}]
+author: builtin
+created_at: 1700000000000
+last_updated: 1700000000000
+success_rate: 0.0
+execution_count: 0

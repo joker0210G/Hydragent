@@ -7,9 +7,7 @@ use std::os::windows::process::CommandExt;
 
 const GITHUB_API_URL: &str = "https://api.github.com/repos/joker0210G/Hydragent/releases/latest";
 const GITHUB_COMMITS_API_URL: &str = "https://api.github.com/repos/joker0210G/Hydragent/commits?per_page=1";
-#[cfg(target_os = "windows")]
 const INSTALL_PS1_URL: &str = "https://joker0210G.github.io/Hydragent/install.ps1";
-#[cfg(not(target_os = "windows"))]
 const INSTALL_SH_URL: &str = "https://joker0210G.github.io/Hydragent/install.sh";
 
 // Windows process creation flags used by the updater.

@@ -1,9 +1,8 @@
-// crates/hydragent-tools/src/phase6.rs
+// crates/hydragent-tools/src/security.rs
 //
-// Phase 6 user-callable tools — exposed to the LLM so the chat CLI
-// can be driven with natural-language prompts that hit real Phase 6
-// features (Track 6.1 audit query, 6.2 taint check, 6.3 injection
-// scan, 6.4 vault rotation / mlock status).
+// User-callable security tools — exposed to the LLM so the chat CLI
+// can be driven with natural-language prompts that hit security
+// features (audit query, taint check, injection scan, vault rotation / mlock status).
 //
 // Each tool is small and self-contained. They share the *data
 // directory* (resolved from the same `AppConfig.data_dir` the rest

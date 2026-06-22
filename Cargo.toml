@@ -53,22 +53,23 @@ uuid           = { version = "1", features = ["v4"] }
 chrono         = { version = "0.4", features = ["serde"] }
 sha2           = "0.10"   # For params_hash in ToolCallRecord
 petgraph       = "0.6"    # DAG top-sort for swarm runner
+futures-util   = "0.3"   # buffer_unordered for bounded-concurrency feed polling
 
-# Stochastic selection (Track 5.4 — SelfHealingReplanner)
+# Stochastic selection (SelfHealingReplanner)
 rand           = "0.8"
 
-# Phase 6: Security pipeline (Track 6.1 — Merkle + Ed25519)
+# Security pipeline (Merkle + Ed25519)
 ed25519-dalek  = { version = "2", features = ["std", "zeroize", "rand_core"] }
 hex            = "0.4"
 zeroize        = { version = "1.7", features = ["derive"] }
 
-# Phase 6 / Track 6.2: Taint sink policy loader
+# Taint sink policy loader
 serde_yaml     = "0.9"
 
-# Phase 6 / Track 6.3: Prompt injection guard + SGNL auth
+# Prompt injection guard + SGNL auth
 regex          = "1"
 dashmap        = "6"
 
-# Phase 6 / Track 6.4: Column-AES (AES-256-GCM) + HKDF
+# Column-AES (AES-256-GCM) + HKDF
 aes-gcm        = "0.10"
 hkdf           = "0.12"

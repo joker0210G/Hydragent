@@ -1,0 +1,16 @@
+id: s1
+name: promote-me
+version: 1
+description: test
+tier: active
+capability_tags:
+- test
+params: []
+prompt_template: do {{x}}
+required_tools: []
+success_examples: []
+author: test
+created_at: 1782075813887
+last_updated: 1782075813920
+success_rate: 1.0
+execution_count: 6

@@ -858,6 +858,7 @@ mod tests {
 
     // ── Integration: real DDG Lite scrape ────────────────────────────
     #[tokio::test]
+    #[ignore]
     async fn test_ddg_lite_real() {
         let tool = WebSearchTool::new();
         let result = tool.search_ddg_lite("rust programming language", Some("en")).await;

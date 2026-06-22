@@ -2,7 +2,7 @@
 //
 // Bottom statusline inspired by the Kimi-CLI / Hyper CLI family.
 //
-//   plan → shift+tab · multi-model (kimi-k2.6) → ctrl+p · ████░░░░░░░░░░░░ 25% ctx · ↑411k ↓6.9k · phase:plan
+//   mode → shift+tab · multi-model (kimi-k2.6) → ctrl+p · ████░░░░░░░░░░░░ 25% ctx · ↑411k ↓6.9k · / for commands
 //
 // The bar is **state-driven**: the REPL owns a `StatusState` and
 // calls `render_status_bar(&state)` whenever something changes
@@ -18,13 +18,13 @@
 use owo_colors::{OwoColorize, Style, Stream::Stdout};
 
 /// What "mode" the REPL is in. Today there's only one — `Normal`
-/// — but the Kimi design makes the phase explicit so the user can
+/// — but the Kimi design makes the mode explicit so the user can
 /// see at a glance which rules apply. Future expansion: `Plan`
 /// (read-only), `Ferment` (background task), `Multi` (multi-model
 /// routing). They are all just enum variants that the renderer
 /// stringifies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Phase {
+pub enum Mode {
     /// Standard interactive mode.
     Normal,
     /// Read-only planning mode (the user can ask questions but
@@ -35,24 +35,24 @@ pub enum Phase {
     Ferment,
 }
 
-impl Phase {
+impl Mode {
     /// Short string used on the bar. Lowercase, no spaces.
     pub fn as_str(&self) -> &'static str {
         match self {
-            Phase::Normal => "normal",
-            Phase::Plan => "plan",
-            Phase::Ferment => "ferment",
+            Mode::Normal => "normal",
+            Mode::Plan => "plan",
+            Mode::Ferment => "ferment",
         }
     }
 }
 
 /// The full bar state. Cheap to `Clone` (no `String` copies for
-/// `phase`) and `Send` so it can live inside an `Arc` shared
+/// `mode`) and `Send` so it can live inside an `Arc` shared
 /// with the rendering thread.
 #[derive(Debug, Clone)]
 pub struct StatusState {
     /// Current REPL mode. The bar's leftmost token.
-    pub phase: Phase,
+    pub mode: Mode,
 
     /// Active model name. Shown after the `→ shift+tab` hint
     /// and again in the `→ ctrl+p` hint's parenthesised
@@ -95,7 +95,7 @@ impl StatusState {
     /// progresses.
     pub fn new(model: impl Into<String>) -> Self {
         Self {
-            phase: Phase::Normal,
+            mode: Mode::Normal,
             model: model.into(),
             multi_model: false,
             context_pct: 0,
@@ -124,7 +124,7 @@ pub fn render_status_bar(s: &StatusState) -> String {
     // value whose lifetime extends to the end of the function
     // (rather than just the let-statement). Without this, the
     // borrow checker sees the temporary drop too early.
-    let phase_text = s.phase.as_str().to_owned();
+    let phase_text = s.mode.as_str().to_owned();
     let phase_str = phase_text.if_supports_color(Stdout, |p| p.style(bold_cyan));
     let model_tag = if s.multi_model {
         format!("multi-model ({})", s.model)
@@ -236,7 +236,7 @@ mod tests {
 
     fn state() -> StatusState {
         StatusState {
-            phase: Phase::Normal,
+            mode: Mode::Normal,
             model: "kimi-k2.6".into(),
             multi_model: false,
             context_pct: 25,
@@ -247,10 +247,10 @@ mod tests {
     }
 
     #[test]
-    fn phase_as_str_is_lowercase() {
-        assert_eq!(Phase::Normal.as_str(), "normal");
-        assert_eq!(Phase::Plan.as_str(), "plan");
-        assert_eq!(Phase::Ferment.as_str(), "ferment");
+    fn mode_as_str_is_lowercase() {
+        assert_eq!(Mode::Normal.as_str(), "normal");
+        assert_eq!(Mode::Plan.as_str(), "plan");
+        assert_eq!(Mode::Ferment.as_str(), "ferment");
     }
 
     #[test]

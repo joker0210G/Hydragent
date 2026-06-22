@@ -298,20 +298,32 @@ mod tests {
     // A `static` Mutex is the canonical lockfor this in Rust 1.81+.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Run `f` with HYDRAGENT_HOME / HOME / USERPROFILE cleared, then
+    /// Run `f` with HYDRAGENT_HOME / HOME / USERPROFILE / HOMEDRIVE / HOMEPATH / HOMESHARE cleared, then
     /// restore the originals. Returns whatever `f` returns.
     fn with_env_cleared<F: FnOnce() -> T, T>(f: F) -> T {
         let _g = ENV_LOCK.lock().unwrap();
         let saved_home = env::var("HYDRAGENT_HOME").ok();
         let saved_userprofile = env::var("USERPROFILE").ok();
         let saved_home_unix = env::var("HOME").ok();
+        let saved_homedrive = env::var("HOMEDRIVE").ok();
+        let saved_homepath = env::var("HOMEPATH").ok();
+        let saved_homeshare = env::var("HOMESHARE").ok();
+
         env::remove_var("HYDRAGENT_HOME");
         env::remove_var("USERPROFILE");
         env::remove_var("HOME");
+        env::remove_var("HOMEDRIVE");
+        env::remove_var("HOMEPATH");
+        env::remove_var("HOMESHARE");
+
         let result = f();
+
         if let Some(v) = saved_home { env::set_var("HYDRAGENT_HOME", v); }
         if let Some(v) = saved_userprofile { env::set_var("USERPROFILE", v); }
         if let Some(v) = saved_home_unix { env::set_var("HOME", v); }
+        if let Some(v) = saved_homedrive { env::set_var("HOMEDRIVE", v); }
+        if let Some(v) = saved_homepath { env::set_var("HOMEPATH", v); }
+        if let Some(v) = saved_homeshare { env::set_var("HOMESHARE", v); }
         result
     }
 
@@ -325,6 +337,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn hydragent_home_falls_back_to_userprofile_on_windows() {
         with_env_cleared(|| {
             env::set_var("USERPROFILE", "C:\\Users\\TestUser");
@@ -334,6 +347,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn hydragent_home_falls_back_to_home_on_unix() {
         with_env_cleared(|| {
             env::set_var("HOME", "/home/testuser");
@@ -392,8 +406,13 @@ mod tests {
 
     #[test]
     fn absolutize_preserves_absolute_paths() {
-        let abs = absolutize(Path::new("/already/absolute"));
-        assert_eq!(abs, PathBuf::from("/already/absolute"));
+        let path_str = if cfg!(target_os = "windows") {
+            "C:\\already\\absolute"
+        } else {
+            "/already/absolute"
+        };
+        let abs = absolutize(Path::new(path_str));
+        assert_eq!(abs, PathBuf::from(path_str));
     }
 
     #[test]

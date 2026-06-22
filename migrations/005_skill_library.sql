@@ -97,3 +97,11 @@ CREATE TABLE IF NOT EXISTS skill_tags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_skill_tags_tag ON skill_tags(tag);
+
+-- Semantic embeddings for deduplication and prompt injection.
+CREATE TABLE IF NOT EXISTS skill_embeddings (
+    skill_id TEXT PRIMARY KEY,
+    embedding BLOB NOT NULL,          -- JSON array of f32
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY(skill_id) REFERENCES skills(id) ON DELETE CASCADE
+);

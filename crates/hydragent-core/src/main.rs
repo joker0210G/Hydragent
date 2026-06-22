@@ -32,11 +32,11 @@ use hydragent_tools::file_read::FileReadTool;
 use hydragent_tools::memory_store::MemoryStoreTool;
 use hydragent_tools::memory_search::MemorySearchTool;
 use hydragent_tools::memory_forget::MemoryForgetTool;
-use hydragent_tools::phase6::AuditQueryTool;
-use hydragent_tools::phase6::SanitizerListPatternsTool;
-use hydragent_tools::phase6::SanitizerScanTool;
-use hydragent_tools::phase6::TaintCheckTool;
-use hydragent_tools::phase6::VaultRotateTool;
+use hydragent_tools::security::AuditQueryTool;
+use hydragent_tools::security::SanitizerListPatternsTool;
+use hydragent_tools::security::SanitizerScanTool;
+use hydragent_tools::security::TaintCheckTool;
+use hydragent_tools::security::VaultRotateTool;
 use tracing::{info, error};
 
 struct SandboxedTool {
@@ -2428,36 +2428,33 @@ async fn main() {
 
     info!("Hydragent starting up with config: {:?}", app_config);
 
+    // Open the skill library once for the lifetime of the process.
+    // We share an `Arc` so both the dream worker and chat loops can
+    // use it without opening their own SQLite connection pools.
+    let skill_lib_path = std::path::PathBuf::from(&app_config.data_dir)
+        .join("skill_library.sqlite");
+    let skill_library = match hydragent_skills::library::SkillLibrary::open(&skill_lib_path).await {
+        Ok(lib) => {
+            info!(
+                path = %skill_lib_path.display(),
+                "📚 Skill library opened; skill induction enabled"
+            );
+            Some(Arc::new(lib))
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "📚 Could not open skill library; skill induction disabled"
+            );
+            None
+        }
+    };
+
     // Spawn dreaming background worker if enabled
     if app_config.enable_dreaming {
         let store_clone = store.clone();
         let model_router_clone = model_router.clone();
         let interval_secs = app_config.dreaming_interval_sec;
-
-        // Open the skill library once for the lifetime of the process.
-        // We share an `Arc` so the dream worker can call
-        // `induce_skill_from_page_with_library` per-page concurrently
-        // without each task paying the cost of opening its own SQLite
-        // connection pool. The library file lives at
-        // `{data_dir}/skill_library.sqlite`.
-        let skill_lib_path = std::path::PathBuf::from(&app_config.data_dir)
-            .join("skill_library.sqlite");
-        let skill_library = match hydragent_skills::library::SkillLibrary::open(&skill_lib_path).await {
-            Ok(lib) => {
-                info!(
-                    path = %skill_lib_path.display(),
-                    "📚 Skill library opened; skill induction enabled"
-                );
-                Some(Arc::new(lib))
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "📚 Could not open skill library; dream-cycle skill induction disabled"
-                );
-                None
-            }
-        };
         let skill_library_for_worker = skill_library.clone();
 
         tokio::spawn(async move {
@@ -2562,7 +2559,7 @@ async fn main() {
     registry.register(hydragent_tools::standing_orders::SoulTool::new(PathBuf::from("./config")));
     registry.register(hydragent_tools::user_profile::UserProfileTool::new(PathBuf::from("./config")));
 
-    // ── Phase 6 LLM-callable tools (Tracks 6.1–6.4) ────────────────────
+    // ── Security LLM-callable tools ────────────────────
     //
     // These expose the security surface to the chat adapter so the model
     // can call them via `ToolRegistry::dispatch(...)`. Constructors take
@@ -2580,7 +2577,7 @@ async fn main() {
     )));
     registry.register(VaultRotateTool::new(PathBuf::from(&app_config.data_dir)));
 
-    // ── Phase 7 / Track 7.1 — Skill library tools ───────────────────
+    // ── Skill library tools ───────────────────
     //
     // Wire the persistent `SkillLibrary` into the chat LLM as three
     // LLM-callable tools. The library is opened lazily on each call so
@@ -2624,6 +2621,7 @@ async fn main() {
     let work_iq_clone = work_iq.clone();
     let max_react_steps = app_config.max_react_steps;
     let registry_cell_clone = registry_cell.clone();
+    let skill_library_for_cron = skill_library.clone();
 
     let executor = Arc::new(move |job: hydragent_types::CronJob| {
         let _store = store_clone.clone();
@@ -2631,6 +2629,7 @@ async fn main() {
         let heartbeat = heartbeat_clone.clone();
         let registry_cell = registry_cell_clone.clone();
         let work_iq = work_iq_clone.clone();
+        let skill_library = skill_library_for_cron.clone();
         let fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = Box::pin(async move {
             if job.task_type == "react_loop" {
                 let mut prompt = job.task_params.clone();
@@ -2670,6 +2669,7 @@ async fn main() {
                         max_react_steps,
                         tx,
                         active_perms,
+                        skill_library.clone(),
                     ).await;
                 });
                 
@@ -2750,19 +2750,19 @@ async fn main() {
     // Add rss_subscribe tool to registry
     let work_iq_subscribe = work_iq.clone();
     let cron_scheduler_subscribe = cron_scheduler.clone();
-    let rss_subscribe_tool = hydragent_tools::rss_subscribe::RssSubscribeTool::new(move |url, name, keywords, digest_channel, digest_cron| {
+    let rss_subscribe_tool = hydragent_tools::rss_subscribe::RssSubscribeTool::new(move |spec| {
         let work_iq = work_iq_subscribe.clone();
         let scheduler = cron_scheduler_subscribe.clone();
         Box::pin(async move {
             // Add feed to DB
-            work_iq.add_feed(&url, &name, &keywords, &digest_channel, &digest_cron).await?;
+            work_iq.add_feed_with_spec(&spec).await?;
             // Add cron job for feed digest
             let _ = scheduler.add_job(
-                &digest_cron,
-                &format!("Work IQ Digest for {}", name),
+                &spec.digest_cron,
+                &format!("Work IQ Digest for {}", spec.name),
                 "work_iq_digest",
-                &url,
-                &digest_channel,
+                &spec.url,
+                &spec.digest_channel,
             ).await?;
             Ok(())
         })
@@ -2829,6 +2829,7 @@ async fn main() {
             app_config: app_config.clone(),
             workspace_dir: PathBuf::from(workspace_dir),
             brand,
+            skill_library: skill_library.clone(),
         };
         let code = cli_repl::run(state).await;
         std::process::exit(code);
@@ -2901,6 +2902,7 @@ async fn main() {
         gateway_router: gateway_router.clone(),
         audit_chain: audit_chain.clone(),
         pending_clarifications: pending_clarifications.clone(),
+        skill_library: skill_library.clone(),
     });
     router.register("permission.respond", orchestrator::PermissionRespondHandler {
         active_permissions,

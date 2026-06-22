@@ -1,0 +1,15 @@
+id: skill-builtin-b
+name: builtin-b
+version: 1
+description: A builtin that does B
+tier: active
+capability_tags: []
+params: []
+prompt_template: Do B
+required_tools: []
+success_examples: []
+author: builtin
+created_at: 1700000000000
+last_updated: 1700000000000
+success_rate: 0.0
+execution_count: 0

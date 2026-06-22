@@ -132,6 +132,8 @@ pub struct ReplState {
     pub max_react_steps: u8,
     pub app_config: AppConfig,
     pub workspace_dir: PathBuf,
+    /// Optional skill library for proactive skill injection.
+    pub skill_library: Option<Arc<hydragent_skills::SkillLibrary>>,
     /// Pre-built startup metadata (version, branch, model, etc.)
     /// that the banner reads. Holding it on the state (rather
     /// than re-detecting the branch on every print) means the
@@ -143,11 +145,11 @@ pub struct ReplState {
 
 use std::path::PathBuf;
 
-use crate::status_bar::{render_status_bar, Phase as StatusPhase, StatusState};
+use crate::status_bar::{render_status_bar, Mode as StatusMode, StatusState};
 use crate::tui_header::{default_tip_box, print_kimi_header, BrandInfo};
 
 /// Build a `StatusState` from a `ReplState`. The status bar
-/// is the *single* source of truth for phase + model + tool
+/// is the *single* source of truth for mode + model + tool
 /// count during a session, so any change to those fields
 /// (e.g. `/model` switching the active brain) should also
 /// update `state.brand.model` and call this helper. For now
@@ -155,7 +157,7 @@ use crate::tui_header::{default_tip_box, print_kimi_header, BrandInfo};
 /// the bar's struct shape.
 fn status_state_from(state: &ReplState) -> StatusState {
     StatusState {
-        phase: StatusPhase::Normal,
+        mode: StatusMode::Normal,
         model: state.brand.model.clone(),
         multi_model: false,
         context_pct: 0,
@@ -851,6 +853,7 @@ async fn dispatch_user_message(
     let channel_id = state.channel_id.clone();
     let max_steps = state.max_react_steps;
     let message_owned = message.to_string();
+    let skill_library = state.skill_library.clone();
 
     let thinker = tokio::spawn(async move {
         run_react_loop(
@@ -867,6 +870,7 @@ async fn dispatch_user_message(
             max_steps,
             tx,
             active_permissions,
+            skill_library,
         ).await
     });
 

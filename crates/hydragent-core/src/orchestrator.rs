@@ -36,6 +36,7 @@ pub struct IntentSubmitHandler {
     /// Pending clarification questions keyed by `page_id`. The orchestrator
     /// pops one when a new `intent.submit` arrives on the same page.
     pub pending_clarifications: Arc<Mutex<HashMap<String, PendingClarification>>>,
+    pub skill_library: Option<Arc<hydragent_skills::SkillLibrary>>,
 }
 
 #[async_trait]
@@ -258,6 +259,7 @@ impl MethodHandler for IntentSubmitHandler {
                 let user_query_for_loop = user_query.clone();
                 let response_tx_clone = response_tx.clone();
                 let active_permissions = self.active_permissions.clone();
+                let skill_library = self.skill_library.clone();
 
                 let handle = tokio::spawn(async move {
                     crate::react_loop::run_react_loop(
@@ -274,6 +276,7 @@ impl MethodHandler for IntentSubmitHandler {
                         max_react_steps,
                         response_tx_clone,
                         active_permissions,
+                        skill_library,
                     ).await
                 });
 

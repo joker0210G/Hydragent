@@ -1,0 +1,16 @@
+id: s2
+name: demote-me
+version: 1
+description: test
+tier: active
+capability_tags:
+- test
+params: []
+prompt_template: do {{x}}
+required_tools: []
+success_examples: []
+author: test
+created_at: 1782075813811
+last_updated: 1782075813811
+success_rate: 0.0
+execution_count: 0

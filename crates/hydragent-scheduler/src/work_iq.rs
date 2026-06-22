@@ -7,6 +7,84 @@ use crate::HeartbeatEngine;
 use hydragent_model::router::ModelRouter;
 use anyhow::{Result, Context};
 use tracing::{info, warn, error};
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackfillPolicy {
+    None,
+    LastN,
+    Last24h,
+}
+
+impl BackfillPolicy {
+    pub fn as_db(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::LastN => "last_n",
+            Self::Last24h => "last_24h",
+        }
+    }
+}
+
+impl Default for BackfillPolicy {
+    fn default() -> Self {
+        Self::LastN
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum KeywordRule {
+    Include { phrase: String, weight: f32 },
+    Phrase { phrase: String, weight: f32 },
+    Exclude { phrase: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct FeedSpec {
+    pub url: String,
+    pub name: String,
+    pub rules: Option<Vec<KeywordRule>>,
+    pub legacy_csv: Option<String>,
+    pub digest_channel: String,
+    pub digest_cron: String,
+    pub backfill_policy: BackfillPolicy,
+    pub backfill_n: i64,
+}
+
+impl FeedSpec {
+    pub fn new(
+        url: impl Into<String>,
+        name: impl Into<String>,
+        keywords_csv: impl Into<String>,
+        digest_channel: impl Into<String>,
+        digest_cron: impl Into<String>,
+    ) -> Self {
+        Self {
+            url: url.into(),
+            name: name.into(),
+            rules: None,
+            legacy_csv: Some(keywords_csv.into()),
+            digest_channel: digest_channel.into(),
+            digest_cron: digest_cron.into(),
+            backfill_policy: BackfillPolicy::default(),
+            backfill_n: 10,
+        }
+    }
+
+    pub fn with_rules(mut self, rules: Vec<KeywordRule>) -> Self {
+        self.rules = Some(rules);
+        self.legacy_csv = None;
+        self
+    }
+
+    pub fn with_backfill(mut self, policy: BackfillPolicy, n: i64) -> Self {
+        self.backfill_policy = policy;
+        self.backfill_n = n;
+        self
+    }
+}
 
 #[derive(Debug, Clone, FromRow)]
 pub struct FeedMonitor {
@@ -58,6 +136,26 @@ impl WorkIqEngine {
                 .unwrap_or_default(),
             model_router,
         })
+    }
+
+    pub async fn add_feed_with_spec(&self, spec: &FeedSpec) -> Result<()> {
+        let keywords_csv = if let Some(ref rules) = spec.rules {
+            let kws: Vec<String> = rules.iter().map(|r| match r {
+                KeywordRule::Include { phrase, .. } => phrase.clone(),
+                KeywordRule::Phrase { phrase, .. } => phrase.clone(),
+                KeywordRule::Exclude { phrase } => phrase.clone(),
+            }).collect();
+            kws.join(", ")
+        } else {
+            spec.legacy_csv.clone().unwrap_or_default()
+        };
+        self.add_feed(
+            &spec.url,
+            &spec.name,
+            &keywords_csv,
+            &spec.digest_channel,
+            &spec.digest_cron,
+        ).await
     }
 
     /// Add a new feed to the monitor database
