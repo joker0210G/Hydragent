@@ -152,17 +152,17 @@ $AnsiMagenta = "$([char]27)[35m"
 
 function Write-Banner {
     if ($Quiet) { return }
-    $B = [char]0x2588  # █
-    $h = [char]0x2550  # ═
-    $v = [char]0x2551  # ║
-    $tl = [char]0x2554 # ╔
-    $tr = [char]0x2557 # ╗
-    $bl = [char]0x255A # ╚
-    $br = [char]0x255D # ╝
+    $B = [char]0x2588  # Full block
+    $h = [char]0x2550  # Double horizontal
+    $v = [char]0x2551  # Double vertical
+    $tl = [char]0x2554 # Double top-left
+    $tr = [char]0x2557 # Double top-right
+    $bl = [char]0x255A # Double bottom-left
+    $br = [char]0x255D # Double bottom-right
 
     Write-Host ''
     Write-Host "$AnsiCyan$AnsiBold$B$B$tr  $B$B$tr$B$B$tr   $B$B$tr$B$B$B$B$B$B$tr $B$B$B$B$B$B$tr  $B$B$B$B$B$tr  $B$B$B$B$B$B$tr $B$B$B$B$B$B$B$tr$B$B$B$tr   $B$B$tr$B$B$B$B$B$B$B$B$tr$AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold$B$B$v  $B$B$v$bl$B$B$tr $B$B$tl$br$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$h$h$h$br $B$B$tl$h$h$h$h$h$br$B$B$B$B$tr  $B$B$v$bl$h$h$B$B$tl$h$h$br$AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold$B$B$v  $B$B$v$bl$B$B$tr $B$B$tl$br$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$h$h$br $B$B$tl$h$h$h$h$br$B$B$B$B$tr  $B$B$v$bl$h$h$B$B$tl$h$h$br$AnsiReset"
     Write-Host "$AnsiCyan$AnsiBold$B$B$B$B$B$B$B$v $bl$B$B$B$B$tl$br $B$B$v  $B$B$v$B$B$B$B$B$B$tl$br$B$B$B$B$B$B$B$v$B$B$v  $B$B$B$tr$B$B$B$B$B$tr  $B$B$tl$B$B$tr $B$B$v   $B$B$v   $AnsiReset"
     Write-Host "$AnsiCyan$AnsiBold$B$B$tl$h$h$B$B$v  $bl$B$B$tl$br  $B$B$v  $B$B$v$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$B$B$v$B$B$v   $B$B$v$B$B$tl$h$h$br  $B$B$v$bl$B$B$tr$B$B$v   $B$B$v   $AnsiReset"
     Write-Host "$AnsiCyan$AnsiBold$B$B$v  $B$B$v   $B$B$v   $B$B$B$B$B$B$tl$br$B$B$v  $B$B$v$B$B$v  $B$B$v$bl$B$B$B$B$B$B$tl$br$B$B$B$B$B$B$B$tr$B$B$v $bl$B$B$B$B$v   $B$B$v   $AnsiReset"
@@ -183,7 +183,7 @@ function Show-UpdateStatus {
             Reads the local HEAD commit, fetches origin, and counts how many
             commits the local clone is behind origin/<default-branch>.
 
-        RELEASE mode (no local git repo — prebuilt binary install):
+        RELEASE mode (no local git repo - prebuilt binary install):
             Reads the installed version from hydragent --version, then hits
             the GitHub Releases API to find the latest tag and compare.
 
@@ -194,7 +194,7 @@ function Show-UpdateStatus {
 
     Write-Host ''
 
-    # ── Helper: make a web request with a short timeout ───────────────────────
+    # -- Helper: make a web request with a short timeout -----------------------
     function Invoke-ApiGet {
         param([string]$Uri, [int]$TimeoutSec = 8)
         try {
@@ -213,10 +213,10 @@ function Show-UpdateStatus {
         }
     }
 
-    # ── SOURCE MODE ────────────────────────────────────────────────────────────
+    # -- SOURCE MODE ------------------------------------------------------------
     if (Test-Path (Join-Path $SourceDir '.git')) {
         if (-not (Test-Command git)) {
-            Write-WarningMessage 'git not on PATH — cannot check update status.'
+            Write-WarningMessage 'git not on PATH - cannot check update status.'
             return
         }
 
@@ -226,7 +226,7 @@ function Show-UpdateStatus {
             $localFull  = (& git rev-parse HEAD           2>$null | Out-String).Trim()
             $localShort = (& git rev-parse --short HEAD   2>$null | Out-String).Trim()
             if (-not $localFull) {
-                Write-WarningMessage 'Could not read local git HEAD — skipping update check.'
+                Write-WarningMessage 'Could not read local git HEAD - skipping update check.'
                 return
             }
 
@@ -244,7 +244,7 @@ function Show-UpdateStatus {
             $fetchOk     = ($LASTEXITCODE -eq 0)
 
             if (-not $fetchOk) {
-                Write-WarningMessage "Could not reach GitHub (git fetch failed) — showing local info only."
+                Write-WarningMessage "Could not reach GitHub (git fetch failed) - showing local info only."
                 Write-Info "Installed commit : $AnsiCyan$localShort$AnsiReset"
                 return
             }
@@ -263,7 +263,7 @@ function Show-UpdateStatus {
                 $behindRaw = (& git rev-list --count "$localFull..$remoteRef" 2>$null | Out-String).Trim()
                 $behind    = 0
                 if ([int]::TryParse($behindRaw, [ref]$behind) -and $behind -gt 0) {
-                    Write-WarningMessage ("Your install is $behind commit(s) behind GitHub — run 'hydragent update' to update.")
+                    Write-WarningMessage ("Your install is $behind commit(s) behind GitHub - run 'hydragent update' to update.")
                 }
 
                 # Count commits ahead (local unpushed)
@@ -281,7 +281,7 @@ function Show-UpdateStatus {
         return
     }
 
-    # ── RELEASE MODE (prebuilt binary) ─────────────────────────────────────────
+    # -- RELEASE MODE (prebuilt binary) -----------------------------------------
     $binPath = Join-Path $BinDir $BinName
     if (-not (Test-Path $binPath)) {
         # Binary not yet written (first-run install still in progress)
@@ -294,7 +294,7 @@ function Show-UpdateStatus {
     $installedVer = $rawVer -replace '^[^\d]*(v?)', 'v'
     $installedVer = ($installedVer -split '\s')[0]  # keep first token
     if (-not $installedVer -or $installedVer -eq 'v') {
-        Write-WarningMessage "Could not read installed version from binary — skipping update check."
+        Write-WarningMessage "Could not read installed version from binary - skipping update check."
         return
     }
 
@@ -303,7 +303,7 @@ function Show-UpdateStatus {
 
     $rel = Invoke-ApiGet "https://api.github.com/repos/$Repo/releases/latest"
     if ($null -eq $rel -or -not $rel.tag_name) {
-        Write-WarningMessage "Could not reach GitHub Releases API — skipping update check."
+        Write-WarningMessage "Could not reach GitHub Releases API - skipping update check."
         return
     }
 
@@ -324,7 +324,7 @@ function Show-UpdateStatus {
             $instVer   = [System.Version]$instNum
             $latestVer = [System.Version]$latestNum
             if ($latestVer -gt $instVer) {
-                Write-WarningMessage "A newer version is available: $latestTag — run 'hydragent update' to upgrade."
+                Write-WarningMessage "A newer version is available: $latestTag - run 'hydragent update' to upgrade."
             } elseif ($instVer -gt $latestVer) {
                 Write-Info "Your build is newer than the latest GitHub release (pre-release or local build)."
             }
@@ -579,7 +579,7 @@ function Install-SelfCopy {
     # Copy this very script into $BinDir so the launcher can find it for
     # `Hydragent install` without re-downloading. If the launcher ever
     # points at a missing install.ps1, it falls back to downloading from
-    # raw.githubusercontent.com — so this is a perf / offline convenience,
+    # raw.githubusercontent.com - so this is a perf / offline convenience,
     # not a hard requirement.
     # $PSCommandPath is set when the script is invoked by file path
     # (e.g. `install.ps1 -Foo`). When invoked via `iex` (the one-liner
