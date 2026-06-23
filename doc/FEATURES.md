@@ -45,7 +45,7 @@ Rather than a single flat vector database, Hydragent implements a full taxonomy 
 | **Social** | Relationship graph — contacts, organizations, interaction history | SQLite graph schema | Persistent; manually curated |
 | **Spatial** | Locations, environments, geofenced contexts | GeoJSON flat files | Session-scoped unless explicitly saved |
 | **Temporal** | Recurring patterns, scheduled intents, circadian preferences | Cron-style YAML patterns | Active until user revokes |
-| **Declarative** | Explicit user instructions: "always respond in bullet points" | `USER.md` / `SOUL.md` Markdown files | Permanent until overwritten |
+| **Declarative** | Explicit user instructions: "always respond in bullet points" | `USER.md` / `SOUL.md` Markdown files | Enforced by `BoundedMd` (6K/12K limits); auto-compacted via LLM re-synthesis |
 
 ### 1.2 Hierarchical File-System Layout *(from memU)*
 
@@ -106,7 +106,7 @@ Inspired by biological memory consolidation during sleep, Hydragent runs a night
    - If fact exists in Semantic DB → merge & update embedding (strength++)
    - If new → insert new semantic vector node
    - If contradicts known fact → surface for user review
-5. Re-generate USER.md and SOUL.md with updated facts
+5. Re-generate USER.md and SOUL.md with updated facts (bounded via BoundedMd; compacting via LLM if over limits)
 6. Grade and prune skills library (Curator)
 7. Strengthen frequently-accessed memory pathways (Hebbian-style)
 8. Sleep until next heartbeat
@@ -440,9 +440,9 @@ Hydragent achieves deep personalization through a combination of explicit config
 
 ### 7.1 SOUL.md & USER.md Persona System *(from OpenClaw + MimiClaw)*
 
-The agent's identity and its understanding of the user are encoded in two living Markdown files:
+The agent's identity and its understanding of the user are encoded in two living Markdown files, restricted by strict character limits to force high-signal curation:
 
-**`SOUL.md`** — Agent identity:
+**`SOUL.md`** (Limit: `12,000` chars) — Agent identity:
 ```markdown
 # Agent Identity
 Name: Hydra
@@ -452,7 +452,7 @@ Communication style: Bullet-points for technical content; conversational for per
 Prohibited: Never share raw credentials, never claim to be human
 ```
 
-**`USER.md`** — User model:
+**`USER.md`** (Limit: `6,000` chars) — User model:
 ```markdown
 # User Profile
 Name: [User's name]
@@ -466,7 +466,7 @@ Preferences:
 Contact graph: [Known contacts and relationships]
 ```
 
-Both files are automatically updated by the nightly Dreaming pipeline based on behavioral signals.
+Both files are managed by the `BoundedMd` crate module. If a file exceeds its character limit after a dream cycle update, an LLM-driven re-synthesis compaction (the **Hermes true approach**) compiles the document back down into the target character budget, preserving format hierarchy and critical facts. If manual edits or writes via `ConfigWriteHandler` push the file over budget, a warning is logged, and the dream cycle compacts the file on its next run.
 
 ### 7.2 Affective / Emotional Memory *(from Inflection Pi + Vellum)*
 

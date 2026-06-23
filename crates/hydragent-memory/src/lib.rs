@@ -15,6 +15,13 @@ pub mod library;
 /// Orchestrator that runs the 25% LLM / 75% Graphify ingestion
 /// loop and tracks the cost split between the two.
 pub mod librarian;
+/// Bounded Markdown memory files (Hermes pattern).
+///
+/// Enforces character-count ceilings on `config/USER.md` and
+/// `config/SOUL.md` to prevent unbounded growth. See
+/// [`bounded_md::BoundedMd`] and the limit constants
+/// [`bounded_md::USER_MD_CHAR_LIMIT`] / [`bounded_md::SOUL_MD_CHAR_LIMIT`].
+pub mod bounded_md;
 
 pub use session_store::SessionStore;
 pub use models::{SemanticMemory, MemoryConsolidationJob};
@@ -23,3 +30,4 @@ pub use retrieval::hybrid_search;
 pub use context_injector::build_system_prompt_with_memory;
 pub use library::{Library, LibraryStats, NodeKind, EdgeRelation, GraphNode, ExpandHit};
 pub use librarian::{Librarian, LibrarianStats, IngestionResult};
+pub use bounded_md::{BoundedMd, USER_MD_CHAR_LIMIT, SOUL_MD_CHAR_LIMIT};

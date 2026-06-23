@@ -8,10 +8,11 @@ use hydragent_types::{
     PendingClarification, AuditEvent, AuditEventType,
 };
 use hydragent_memory::SessionStore;
+use hydragent_memory::{BoundedMd, USER_MD_CHAR_LIMIT, SOUL_MD_CHAR_LIMIT};
 use hydragent_model::router::ModelRouter;
 use hydragent_tools::registry::ToolRegistry;
 use std::sync::Arc;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 use tokio::sync::oneshot;
 use std::collections::HashMap;
@@ -1349,12 +1350,29 @@ impl MethodHandler for ConfigWriteHandler {
             let _ = std::fs::create_dir_all(parent);
         }
         match std::fs::write(&path, content) {
-            Ok(_) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                result: Some(serde_json::json!({"status": "success"})),
-                error: None,
-                id: request.id,
-            },
+            Ok(_) => {
+                // Enforce the character budget — warn if the write pushed the
+                // file over its limit. The dream cycle will perform full LLM
+                // re-synthesis on its next run; we don't call the LLM here
+                // because ConfigWriteHandler has no model_router reference.
+                let limit = if file_name == "USER.md" { USER_MD_CHAR_LIMIT } else { SOUL_MD_CHAR_LIMIT };
+                let bmd = BoundedMd::new(&path, limit);
+                if bmd.is_over_limit().unwrap_or(false) {
+                    let current = bmd.len().unwrap_or(0);
+                    warn!(
+                        file = %file_name,
+                        current_chars = current,
+                        limit,
+                        "ConfigWriteHandler: write exceeded character budget — LLM compaction will run on next dream cycle"
+                    );
+                }
+                JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: Some(serde_json::json!({"status": "success"})),
+                    error: None,
+                    id: request.id,
+                }
+            }
             Err(e) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: None,

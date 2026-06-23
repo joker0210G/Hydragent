@@ -5,6 +5,7 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 use hydragent_memory::SessionStore;
 use hydragent_memory::library::{Library, NodeKind};
+use hydragent_memory::{BoundedMd, USER_MD_CHAR_LIMIT, SOUL_MD_CHAR_LIMIT};
 use hydragent_model::router::ModelRouter;
 use hydragent_model::openrouter::ChatMessage;
 use hydragent_skills::library::SkillLibrary;
@@ -52,6 +53,14 @@ pub struct DreamStats {
     /// edge writes, label lookups). This is `LibrarianStats.local_ops`
     /// expressed at the cycle level so operators can spot drift.
     pub local_graphify_ops: u64,
+    /// Number of LLM compaction passes performed on `config/USER.md`
+    /// this cycle. Non-zero means the file was over its
+    /// [`USER_MD_CHAR_LIMIT`] budget and was re-synthesized.
+    pub compactions_user_md: usize,
+    /// Number of LLM compaction passes performed on `config/SOUL.md`
+    /// this cycle. Non-zero means the file was over its
+    /// [`SOUL_MD_CHAR_LIMIT`] budget and was re-synthesized.
+    pub compactions_soul_md: usize,
 }
 
 impl DreamStats {
@@ -65,6 +74,8 @@ impl DreamStats {
         self.style_habits_stored += other.style_habits_stored;
         self.behavior_rules_stored += other.behavior_rules_stored;
         self.pages_emitted += other.pages_emitted;
+        self.compactions_user_md += other.compactions_user_md;
+        self.compactions_soul_md += other.compactions_soul_md;
         // The clustering pass runs once at the cycle level, not per-page,
         // so it doesn't participate in `merge()`. Cycle-level
         // `pages_clustered` / `books_organized` / `local_graphify_ops`
@@ -111,6 +122,26 @@ pub async fn run_dream_cycle(
         provider = %model_router.provider_label(),
         "Dream cycle: using live brain"
     );
+
+    // ── Step 0: Startup compaction check ─────────────────────────────────
+    // Immediately enforce the character budget on both personality files.
+    // This handles the first-run case where the files are already over-limit
+    // from an era of unbounded appends (Hermes pattern: apply limits now,
+    // not just to new appends). Compaction is non-fatal — a failure logs at
+    // WARN and the cycle continues.
+    {
+        let mut user_md_compacted = false;
+        let mut soul_md_compacted = false;
+        if let Err(e) = startup_compaction_check(
+            &model_router,
+            &mut user_md_compacted,
+            &mut soul_md_compacted,
+        ).await {
+            warn!(error = %e, "Dream cycle: startup compaction check failed (non-fatal)");
+        }
+        if user_md_compacted { stats.compactions_user_md += 1; }
+        if soul_md_compacted { stats.compactions_soul_md += 1; }
+    }
 
     // 1. Fetch distinct pages that have requires_consolidation messages
     let pages = sqlx::query(
@@ -342,34 +373,52 @@ async fn process_page(
         }
     }
 
-    // Append style habits to USER.md
+    // ── Step 5a: Append style habits → USER.md (bounded) ─────────────────
     if let Some(habits) = extraction.style_habits {
         if !habits.is_empty() {
-            if let Err(e) = append_to_markdown_section(
-                "./config/USER.md",
-                "# Style & Communication Habits",
+            let user_bmd = BoundedMd::new("./config/USER.md", USER_MD_CHAR_LIMIT);
+            match user_bmd.append_curated(
                 &habits,
-                "# User Profile\n- Name: User\n\n# Style & Communication Habits\n"
+                "# Style & Communication Habits",
+                "# User Profile\n- Name: User\n\n# Style & Communication Habits\n",
             ) {
-                error!(page_id = %page_id, error = %e, "Dream cycle: failed to write style habits to USER.md");
-            } else {
-                stats.style_habits_stored += habits.len();
+                Ok(_) => { stats.style_habits_stored += habits.len(); }
+                Err(e) => error!(page_id = %page_id, error = %e, "Dream cycle: failed to write style habits to USER.md"),
+            }
+            // ── Step 5b: LLM compaction if over the budget ───────────────
+            if user_bmd.needs_compaction().unwrap_or(false) {
+                match compact_md_with_llm(&user_bmd, &model_router, USER_MD_CHAR_LIMIT).await {
+                    Ok(()) => {
+                        stats.compactions_user_md += 1;
+                        info!(page_id = %page_id, "Dream cycle: USER.md compacted via LLM re-synthesis");
+                    }
+                    Err(e) => warn!(page_id = %page_id, error = %e, "Dream cycle: USER.md compaction failed (non-fatal)"),
+                }
             }
         }
     }
 
-    // Append behavior rules to SOUL.md
+    // ── Step 5c: Append behavior rules → SOUL.md (bounded) ───────────────
     if let Some(rules) = extraction.behavior_rules {
         if !rules.is_empty() {
-            if let Err(e) = append_to_markdown_section(
-                "./config/SOUL.md",
-                "# Behavior Rules",
+            let soul_bmd = BoundedMd::new("./config/SOUL.md", SOUL_MD_CHAR_LIMIT);
+            match soul_bmd.append_curated(
                 &rules,
-                "# Agent Soul & Personality\n- Name: Hydra\n- Tone: Helpful, intelligent, and adaptive.\n\n# Behavior Rules\n"
+                "# Behavior Rules",
+                "# Agent Soul & Personality\n- Name: Hydra\n- Tone: Helpful, intelligent, and adaptive.\n\n# Behavior Rules\n",
             ) {
-                error!(page_id = %page_id, error = %e, "Dream cycle: failed to write rules to SOUL.md");
-            } else {
-                stats.behavior_rules_stored += rules.len();
+                Ok(_) => { stats.behavior_rules_stored += rules.len(); }
+                Err(e) => error!(page_id = %page_id, error = %e, "Dream cycle: failed to write behavior rules to SOUL.md"),
+            }
+            // ── Step 5d: LLM compaction if over the budget ───────────────
+            if soul_bmd.needs_compaction().unwrap_or(false) {
+                match compact_md_with_llm(&soul_bmd, &model_router, SOUL_MD_CHAR_LIMIT).await {
+                    Ok(()) => {
+                        stats.compactions_soul_md += 1;
+                        info!(page_id = %page_id, "Dream cycle: SOUL.md compacted via LLM re-synthesis");
+                    }
+                    Err(e) => warn!(page_id = %page_id, error = %e, "Dream cycle: SOUL.md compaction failed (non-fatal)"),
+                }
             }
         }
     }
@@ -543,47 +592,120 @@ fn parse_json_extraction(raw: &str) -> Option<ExtractionResponse> {
     serde_json::from_str(json_sub).ok()
 }
 
-fn append_to_markdown_section(
-    file_path: &str,
-    section_header: &str,
-    items: &[String],
-    default_template: &str,
+/// Checks both bounded Markdown files at dream-cycle startup and compacts
+/// them via LLM if they are already over their character limits.
+///
+/// This is the "apply limits now, not just to new appends" step that handles
+/// the first-run case where `USER.md` and `SOUL.md` are bloated from an era
+/// of unbounded appends. Compaction results are surfaced through the boolean
+/// flags so `run_dream_cycle` can update its `DreamStats` counters.
+async fn startup_compaction_check(
+    model_router: &ModelRouter,
+    user_md_compacted: &mut bool,
+    soul_md_compacted: &mut bool,
 ) -> anyhow::Result<()> {
-    let path = std::path::Path::new(file_path);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    let user_bmd = BoundedMd::new("./config/USER.md", USER_MD_CHAR_LIMIT);
+    if user_bmd.needs_compaction().unwrap_or(false) {
+        let current_len = user_bmd.len().unwrap_or(0);
+        warn!(
+            current_chars = current_len,
+            limit = USER_MD_CHAR_LIMIT,
+            "Dream cycle startup: USER.md exceeds budget — running LLM compaction"
+        );
+        compact_md_with_llm(&user_bmd, model_router, USER_MD_CHAR_LIMIT).await?;
+        *user_md_compacted = true;
     }
 
-    let mut content = std::fs::read_to_string(path).unwrap_or_else(|_| default_template.to_string());
-
-    if !content.contains(section_header) {
-        if !content.ends_with('\n') && !content.is_empty() {
-            content.push('\n');
-        }
-        content.push_str("\n");
-        content.push_str(section_header);
-        content.push_str("\n");
+    let soul_bmd = BoundedMd::new("./config/SOUL.md", SOUL_MD_CHAR_LIMIT);
+    if soul_bmd.needs_compaction().unwrap_or(false) {
+        let current_len = soul_bmd.len().unwrap_or(0);
+        warn!(
+            current_chars = current_len,
+            limit = SOUL_MD_CHAR_LIMIT,
+            "Dream cycle startup: SOUL.md exceeds budget — running LLM compaction"
+        );
+        compact_md_with_llm(&soul_bmd, model_router, SOUL_MD_CHAR_LIMIT).await?;
+        *soul_md_compacted = true;
     }
 
-    let mut updated = false;
-    for item in items {
-        let normalized = item.trim();
-        if normalized.is_empty() {
-            continue;
-        }
-        // Check if item is already present (case insensitive and simple substring check)
-        let lowered_content = content.to_lowercase();
-        let lowered_item = normalized.to_lowercase();
-        if !lowered_content.contains(&lowered_item) {
-            if !content.ends_with('\n') && !content.is_empty() {
-                content.push('\n');
-            }
-            content.push_str(&format!("- {}\n", normalized));
-            updated = true;
-        }
-    }
-    if updated {
-        std::fs::write(path, content)?;
-    }
     Ok(())
 }
+
+/// Compact an over-limit bounded Markdown file using an LLM re-synthesis call.
+///
+/// This is the **Hermes true approach**: instead of mechanically truncating
+/// old lines, the LLM receives the full over-limit file and rewrites it to
+/// fit within `limit` characters — merging near-duplicates, ranking by
+/// importance, and preserving the mandatory header block.
+///
+/// The function follows the same `model_router.chat_stream` pattern used by
+/// the extraction call in `process_page`, keeping the LLM interface uniform
+/// throughout the dream cycle.
+///
+/// # Failure modes
+/// - LLM call fails → returns `Err`, caller logs at WARN and continues.
+/// - LLM output is still over `limit` → returns `Err` (no partial write).
+/// - File I/O error → returns `Err`.
+async fn compact_md_with_llm(
+    bmd: &BoundedMd,
+    model_router: &ModelRouter,
+    limit: usize,
+) -> anyhow::Result<()> {
+    let content = bmd.read()?;
+    let current_len = content.chars().count();
+
+    if current_len <= limit {
+        // Nothing to do — may have been compacted by a concurrent task.
+        return Ok(());
+    }
+
+    let template = include_str!("prompts/compaction_prompt.txt");
+    let prompt = template
+        .replace("{LIMIT}", &limit.to_string())
+        .replace("{CURRENT_LEN}", &current_len.to_string())
+        .replace("{CONTENT}", &content);
+
+    let system_message = ChatMessage {
+        role: "user".to_string(),
+        content: prompt,
+    };
+
+    let (tx, mut rx) = mpsc::channel(100);
+    let drain = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
+
+    let (compacted_text, model_used) = match model_router
+        .chat_stream(vec![system_message], tx, None)
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            let _ = drain.await;
+            return Err(e.into());
+        }
+    };
+    let _ = drain.await;
+
+    // Strip any accidental markdown fences the LLM might have added
+    let compacted = compacted_text.trim().trim_start_matches("```markdown")
+        .trim_start_matches("```").trim_end_matches("```").trim();
+
+    let compacted_len = compacted.chars().count();
+    if compacted_len > limit {
+        return Err(anyhow::anyhow!(
+            "compact_md_with_llm: LLM output ({} chars) still exceeds limit ({} chars) — not writing",
+            compacted_len, limit
+        ));
+    }
+
+    bmd.write(compacted)?;
+    info!(
+        path = ?bmd.path(),
+        before_chars = current_len,
+        after_chars  = compacted_len,
+        limit,
+        model = %model_used,
+        "BoundedMd: LLM re-synthesis compaction complete"
+    );
+    Ok(())
+}
+

@@ -107,7 +107,7 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 - [x] BM25 + ChromaDB hybrid retrieval scoring ≥ 88.78% on HaluMem QA benchmark — **partially**: BM25 + linear-scan-vector works, ChromaDB is not used; **stress test passed (G1)**
 - [x] HaluMem memory accuracy score ≥ 94.06% — **not measured**; cross-session recall verified (E1) but no HaluMem benchmark suite
 - [x] Nightly "Dreaming" compaction pipeline: Compress → Link → Strengthen — **scaffolded**: `run_dream_cycle` exists, gated by `enable_dreaming` config flag, not yet observed to actually consolidate in normal runs
-- [x] SOUL.md and USER.md auto-generation from extracted facts — **partially**: `soul` tool writes `config/SOUL.md`; `USER.md` has a `user_profile` tool but no auto-generation loop
+- [x] SOUL.md and USER.md auto-generation from extracted facts — **fully implemented**: `USER.md` (6,000 char budget) and `SOUL.md` (12,000 char budget) are managed by `BoundedMd` and integrated into the `run_dream_cycle` pipeline with startup checks and LLM-driven re-synthesis compaction.
 - [x] **Soul (a.k.a. "Standing Orders")** system: persistent behavioral rules loaded at startup — **live**: verified by F1 + F2
 
 #### Key Tasks
@@ -124,6 +124,7 @@ Phase 9: Enterprise Features & Public Release      Weeks 36+
 | Memory CLI | ✅ `hydragent memory list` + `clear` (subcommand at `main.rs:805-815`) |
 | `memory_store` / `memory_search` / `memory_forget` tools | ✅ Live; bus RPC `memory.search` added 2026-06-12 (see `doc/archive/phases/PHASE_2_FINAL_REPORT.md` Bug 1) |
 | LRU eviction | ❌ Documented SQL in §5.10 but not wired into runtime |
+| Bounded Markdown Memory | ✅ Fully implemented (6K limit on `USER.md`, 12K on `SOUL.md` + LLM compaction) |
 | `benches/retrieval_benchmark.rs` | ❌ Not present |
 
 #### Success Criteria

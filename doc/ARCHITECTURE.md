@@ -612,6 +612,31 @@ For long sessions, Hydragent uses a multi-strategy context management system:
 | Spawning a subagent | Fresh context window; inject relevant memory chunks only |
 | Background task (cron) | No conversation history; inject USER.md + task context only |
 
+### 5.4 Bounded Markdown Hot Memory (Hermes Pattern)
+
+Hydragent implements the **Hermes "bounded hot memory"** pattern to solve the core problem of passive storage bloat. Unbounded vector stores accumulate raw information without judgment, creating a noisy environment that degrades retrieval quality. 
+
+Instead of passive accumulation, Hydragent's declarative hot memories live in two plain Markdown files under strict character ceilings. This budget forces the agent to periodically rewrite, consolidate, and curate its hot memory.
+
+#### 5.4.1 Files and Limits
+
+| File | Character Ceiling | Purpose | Approximate Token Budget |
+| :--- | :--- | :--- | :--- |
+| `config/USER.md` | `USER_MD_CHAR_LIMIT` = `6,000` | Episodic user memory (preferences, habits, interaction style). | ~1,500 tokens |
+| `config/SOUL.md` | `SOUL_MD_CHAR_LIMIT` = `12,000` | World/Agent memory (rules of engagement, core identity, project boundaries). | ~3,000 tokens |
+
+#### 5.4.2 Compaction & Re-Synthesis Flow
+
+When a file exceeds its character limit, the system does not mechanically truncate. It uses **LLM-driven re-synthesis** (the Hermes true approach):
+
+1. **Dream Cycle Startup Check**: On startup, the dream cycle runs `startup_compaction_check`. If either file is over limit (e.g. from raw manual edits or legacy appends), it triggers an immediate LLM compaction.
+2. **Post-Append Compaction**: During the dream cycle, when new facts are appended (via `BoundedMd::append_curated`), if the file exceeds its character budget, `compact_md_with_llm` is invoked.
+3. **LLM Prompting & Validation**:
+   - The over-limit content is sent to the LLM with `crates/hydragent-core/src/prompts/compaction_prompt.txt`.
+   - The LLM consolidates near-duplicates, groups related items, ranks entries by importance, and formats the output to fit strictly under the character limit.
+   - The output is validated: if it is still over the limit, it is rejected to prevent partial file corruption or unbounded creep.
+4. **Client Write Warnings**: When external RPC clients write to configuration files via `ConfigWriteHandler`, the orchestrator checks limits and logs a warning if a write exceeds the budget. Compaction will automatically run during the next dream cycle.
+
 ---
 
 ## 6. Security Architecture & Cryptographic Boundaries

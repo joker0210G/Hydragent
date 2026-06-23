@@ -180,7 +180,7 @@ Hydragent is built on **seven foundational axioms** distilled from the collectiv
 Borrowed from **Hermes Agent** — the only agent with a built-in learning loop. Hydragent creates skills from completed executions, improves them during reuse, and runs an autonomous *Curator* on a 7-day cycle that grades, consolidates, and prunes the skill library. Every interaction makes the agent measurably more capable.
 
 ### 2. 🗄️ Memory is a File System, Not a Flat Database
-Borrowed from **memU** — memories are organized like a file system with Folders (auto-categorized topics), Files (discrete Markdown fact-items), and Mount Points (indexed external documents). Retrieval uses a dual-mode engine: a cheap embedding pass for ambient monitoring, escalating to frontier model reasoning only on high-signal queries.
+Borrowed from **memU & Hermes Agent** — declarative hot memories are structured as human-readable Markdown files. To prevent context bloat and database decay, the memory files are bound by strict character limits (`USER.md` capped at 6,000 characters; `SOUL.md` capped at 12,000 characters). When limits are exceeded, an LLM re-synthesis compaction pass (Hermes true approach) condenses and curates the file back into budget, ensuring only high-signal traits are retained. Retrieval uses SQLite BM25 + linear-scan vector index (all-MiniLM-L6-v2) hybrid search.
 
 ### 3. 🔒 Secrets Must Never Touch the LLM
 Borrowed from **IronClaw** — every API key, OAuth token, and credential lives inside an XChaCha20-Poly1305 + Argon2id encrypted vault. The orchestrator speaks only in header placeholders (`Authorization: Bearer {{GITHUB_TOKEN}}`); the dispatcher performs key injection at the network boundary, then immediately zeroizes memory. The model never processes raw credentials — *ever*.
@@ -244,8 +244,8 @@ hydragent/
 │
 ├── adapters/                   # Python channel adapters (Telegram, Slack, Discord, Webhooks)
 ├── config/
-│   ├── SOUL.md                 # Agent personality, values, and behavioral guidelines
-│   ├── USER.md                 # User profile, preferences, and memory seed
+│   ├── SOUL.md                 # Agent personality, values, rules (Bounded: 12,000 chars limit)
+│   ├── USER.md                 # User profile, preferences, memory (Bounded: 6,000 chars limit)
 │   └── model_council.yaml      # 20+ model profiles for the Model Council
 │
 ├── data/                       # Local data: skill_library.sqlite, vault, ML models
@@ -293,7 +293,7 @@ Hydragent's runtime is composed of seven decoupled layers communicating over a g
 └──────────────────────────────────────────────────────────┘
 ```
 
-For the full technical specification, interface contracts, and API schemas → **[ARCHITECTURE.md](ARCHITECTURE.md)**
+For the full technical specification, interface contracts, and API schemas → **[ARCHITECTURE.md](doc\ARCHITECTURE.md)**
 
 > **Layer 5 also hosts the Skill Engine** — Hermes-style deterministic skill
 > inducer, Skill Library with FTS5 + tag retrieval, 7-day Curator (promotes
@@ -492,13 +492,13 @@ Hydragent draws design targets from real-world agent performance benchmarks:
 
 | Category | Capability | Sources |
 |---|---|---|
-| **Memory** | 8-type hierarchical memory (episodic, semantic, procedural, emotional, spatial, social, temporal, declarative) | Vellum, memU, Hermes |
+| **Memory** | 8-type hierarchical memory (episodic, semantic, procedural, emotional, spatial, social, temporal, declarative); Bounded Markdown limits (6K/12K) + LLM compaction | Vellum, memU, Hermes |
 | **Self-improvement** | Autonomous skill authoring and 7-day Curator pruning cycle | Hermes, OpenClaw |
 | **Security** | 16-layer cryptographic pipeline + TEE enclaves | OpenFang, IronClaw, NEAR AI |
 | **Execution** | Docker + WASM sandboxed tool runtime | NanoClaw, Manus, IronClaw |
 | **Multi-model** | Dynamic routing across 20+ model profiles (`config/model_council.yaml`) | Perplexity Computer, OpenRouter |
 | **Channels** | 40+ platform adapters | OpenClaw, ZeroClaw, QwenPaw |
-| **Personalization** | SOUL.md / USER.md persona seeding; affective memory | OpenClaw, MimiClaw, Inflection Pi |
+| **Personalization** | SOUL.md / USER.md persona seeding with Hermes-style character-bounded hot memory and LLM re-synthesis compaction; affective memory | OpenClaw, MimiClaw, Inflection Pi |
 | **Orchestration** | DAG subagent swarms with Model Council | Claude Code, Taskade, SuperAGI |
 | **RAG** | Hybrid BM25 + vector semantic search over private docs | Khoj, AnythingLLM, QwenPaw |
 | **Edge deployment** | RISC-V / ESP32 binary support; quantized 4-bit inference | MimiClaw, PicoClaw, NullClaw |
