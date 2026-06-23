@@ -162,7 +162,7 @@ impl SkillExtractor {
             templated_goal
         );
 
-        // Build SkillParam list.
+         // Build SkillParam list.
         let skill_params: Vec<SkillParam> = params.iter().map(|(name, kind, _ex)| SkillParam {
             name: name.clone(),
             type_: match kind.as_str() {
@@ -172,6 +172,8 @@ impl SkillExtractor {
                 "sha"   => "string".into(),
                 "number"=> "int".into(),
                 "quoted"=> "string".into(),
+                "json"  => "json".into(),
+                "yaml"  => "yaml".into(),
                 _       => "string".into(),
             },
             description: format!("{} extracted from the inducing trajectory.", kind),
@@ -191,6 +193,10 @@ impl SkillExtractor {
             .unwrap_or_default();
 
         let now = chrono::Utc::now().timestamp_millis();
+        let filtered_tools: Vec<String> = traj.tools_used.clone().into_iter()
+            .filter(|t| t != "__think__" && t != "__memory__" && t != "__plan__")
+            .collect();
+
         let skill = Skill {
             id: Uuid::new_v4().to_string(),
             name: derive_skill_name(&goal, &params),
@@ -200,7 +206,7 @@ impl SkillExtractor {
             capability_tags: tags,
             params: skill_params,
             prompt_template,
-            required_tools: traj.tools_used.clone(),
+            required_tools: filtered_tools,
             success_examples: if example.is_empty() { Vec::new() } else { vec![truncate(&example, 240)] },
             author: "extractor".into(),
             created_at: now,
@@ -272,46 +278,73 @@ impl SkillExtractor {
     ///   ("successfully", "done", "completed", "result", "here is")
     ///   OR has no failure markers at all
     pub fn is_trajectory_successful(&self, traj: &Trajectory) -> bool {
-        // 1. Check tool turns for errors
+        // Check 1: Minimum meaningful length (user turn + at least one agent turn)
+        if traj.turns.len() < 2 {
+            return false;
+        }
+
+        // Check 2: No tool errors in any turn's tool logs
         for turn in &traj.turns {
             if turn.role == "tool" {
                 let lower = turn.content.to_lowercase();
-                if lower.contains("error") || lower.contains("failed") || lower.contains("failure") {
+                if lower.contains("error")
+                    || lower.contains("exception")
+                    || lower.contains("traceback")
+                    || lower.contains("panicked")
+                    || lower.contains("failed")
+                    || lower.contains("failure")
+                {
                     return false;
                 }
             }
         }
 
-        // 2. Find the last assistant turn
+        // Find the last assistant turn
         let last_assistant = traj.turns.iter().rev().find(|t| t.role == "assistant");
 
         // If there's no assistant turn, we can't verify success
         let Some(last) = last_assistant else { return true; };
 
-        let content = last.content.trim();
+        let final_msg = last.content.to_lowercase();
 
-        // 3. Check for failure markers at the START of the response
-        // Only fail if the response literally starts with these words
-        let failure_starters = ["sorry", "failed", "error", "unable", "cannot"];
-        let first_word_lower = content
-            .split_whitespace()
-            .next()
-            .map(|w| w.trim_end_matches(|c: char| c.is_ascii_punctuation()).to_lowercase())
-            .unwrap_or_default();
-
-        for starter in &failure_starters {
-            if first_word_lower == *starter {
-                return false;
-            }
+        // Check 3: No failure language in the final message
+        let failure_signals = [
+            "sorry",
+            "i couldn't",
+            "i was unable",
+            "i cannot",
+            "failed to",
+            "partial result",
+            "unfortunately",
+            "let me try again",
+            "i don't have",
+            "i do not have",
+        ];
+        let no_failure_language = failure_signals
+            .iter()
+            .all(|&signal| !final_msg.contains(signal));
+        if !no_failure_language {
+            return false;
         }
 
-        // 4. Check for success indicators
-        let lower = content.to_lowercase();
-        let success_indicators = ["successfully", "done", "completed", "result", "here is"];
-        let has_success = success_indicators.iter().any(|ind| lower.contains(ind));
-
-        // Pass if success indicators present OR no explicit failure at start
-        has_success || !failure_starters.iter().any(|f| lower.contains(f))
+        // Check 4: At least one positive completion signal present
+        let success_signals = [
+            "done",
+            "here is",
+            "here are",
+            "completed",
+            "successfully",
+            "finished",
+            "created",
+            "updated",
+            "the result",
+            "output:",
+            "result:",
+        ];
+        success_signals
+            .iter()
+            .any(|&signal| final_msg.contains(signal))
+            || no_failure_language
     }
 
     /// Use an LLM to propose a [`SkillCandidate`] from a trajectory.
@@ -394,7 +427,18 @@ impl SkillExtractor {
             execution_count: 0,
         };
 
-        let confidence = proposal.confidence.unwrap_or(0.7).clamp(0.0, 1.0);
+        let confidence = proposal.confidence.unwrap_or(0.75).clamp(0.0, 1.0);
+        const MIN_INDUCTION_CONFIDENCE: f32 = 0.72;
+
+        if confidence < MIN_INDUCTION_CONFIDENCE {
+            tracing::debug!(
+                skill_name = %skill.name,
+                confidence = confidence,
+                threshold = MIN_INDUCTION_CONFIDENCE,
+                "Skill proposal rejected: confidence below threshold"
+            );
+            return Ok(None);
+        }
 
         Ok(Some(SkillCandidate { skill, confidence }))
     }
@@ -446,11 +490,24 @@ The prompt_template should be the generalized version of the user's original req
     }
 
     fn extract_placeholders(&self, s: &str) -> (String, Vec<(String, String, String)>) {
-        // Each kind of match gets a stable placeholder name. We do
-        // longest-first to avoid partial overlaps (URLs before paths
-        // before quoted strings).
         let mut params: Vec<(String, String, String)> = Vec::new();
         let mut out = s.to_string();
+        let mut param_names = Vec::new();
+
+        // 1. Detect and replace structured blocks
+        let blocks = detect_structured_blocks(&out);
+        for block in blocks {
+            let unique_slot = make_unique(&block.slot, &param_names);
+            param_names.push(unique_slot.clone());
+            out = out.replacen(&block.span, &format!("{{{{{}}}}}", unique_slot), 1);
+            let kind_str = match block.kind {
+                ParamType::Json => "json",
+                ParamType::Yaml => "yaml",
+            };
+            params.push((unique_slot, kind_str.to_string(), block.span));
+        }
+
+        // 2. Now run the existing regex substitution on the cleaned text
         let mut counter = 0;
         macro_rules! sub {
             ($re:ident, $kind:literal) => {{
@@ -461,12 +518,23 @@ The prompt_template should be the generalized version of the user's original req
                     let m = cap.get(0).unwrap();
                     new.push_str(&out[last_end..m.start()]);
                     counter += 1;
-                    let name = format!("var_{counter}_{}", $kind);
+
+                    // Smart naming context tokens
+                    let preceding_text = &out[last_end..m.start()];
+                    let preceding_tokens: Vec<&str> = preceding_text
+                        .split_whitespace()
+                        .rev()
+                        .take(3)
+                        .collect();
+                    let raw_slot = name_slot(&preceding_tokens, counter);
+                    let unique_slot = make_unique(&raw_slot, &param_names);
+                    param_names.push(unique_slot.clone());
+
                     let example = m.as_str().to_string();
                     new.push_str("{{");
-                    new.push_str(&name);
+                    new.push_str(&unique_slot);
                     new.push_str("}}");
-                    params.push((name, $kind.to_string(), example));
+                    params.push((unique_slot, $kind.to_string(), example));
                     last_end = m.end();
                 }
                 new.push_str(&out[last_end..]);
@@ -480,6 +548,102 @@ The prompt_template should be the generalized version of the user's original req
         sub!(quoted_re, "quoted");
         sub!(number_re, "number");
         (out, params)
+    }
+}
+
+#[derive(Debug)]
+enum ParamType {
+    Json,
+    Yaml,
+}
+
+#[derive(Debug)]
+struct StructuredBlock {
+    span: String,
+    slot: String,
+    kind: ParamType,
+}
+
+fn detect_structured_blocks(text: &str) -> Vec<StructuredBlock> {
+    let mut blocks = Vec::new();
+
+    // 1. JSON objects and arrays
+    let json_re = Regex::new(r"(\{[\s\S]*?\}|\[[\s\S]*?\])").unwrap();
+    for cap in json_re.captures_iter(text) {
+        let span = cap[0].to_string();
+        if serde_json::from_str::<serde_json::Value>(&span).is_ok() {
+            blocks.push(StructuredBlock {
+                span,
+                slot: "json_payload".into(),
+                kind: ParamType::Json,
+            });
+        }
+    }
+
+    // 2. YAML front-matter
+    let yaml_re = Regex::new(r"(?m)^---\n([\s\S]*?)\n---").unwrap();
+    for cap in yaml_re.captures_iter(text) {
+        let content = &cap[1];
+        if serde_yaml::from_str::<serde_yaml::Value>(content).is_ok() {
+            blocks.push(StructuredBlock {
+                span: cap[0].to_string(),
+                slot: "yaml_config".into(),
+                kind: ParamType::Yaml,
+            });
+        }
+    }
+
+    blocks
+}
+
+static KEYWORD_MAP: &[(&str, &str)] = &[
+    ("file",   "file_path"),
+    ("path",   "file_path"),
+    ("dir",    "directory"),
+    ("output", "output_path"),
+    ("url",    "repo_url"),
+    ("repo",   "repo_url"),
+    ("host",   "host_url"),
+    ("endpoint", "api_endpoint"),
+    ("token",  "api_token"),
+    ("key",    "api_key"),
+    ("secret", "api_secret"),
+    ("error",  "error_msg"),
+    ("trace",  "traceback"),
+    ("query",  "search_query"),
+    ("branch", "branch_name"),
+    ("commit", "commit_hash"),
+    ("diff",   "staged_diff"),
+    ("input",  "input_data"),
+    ("data",   "payload"),
+    ("config", "config_value"),
+    ("name",   "resource_name"),
+];
+
+fn name_slot(preceding_tokens: &[&str], idx: usize) -> String {
+    for token in preceding_tokens {
+        let lower = token.to_lowercase();
+        let stripped = lower.trim_end_matches(|c: char| !c.is_alphanumeric());
+        for &(kw, slot_name) in KEYWORD_MAP {
+            if stripped.contains(kw) {
+                return slot_name.to_string();
+            }
+        }
+    }
+    format!("param_{}", idx)
+}
+
+fn make_unique(name: &str, existing: &[String]) -> String {
+    if !existing.contains(&name.to_string()) {
+        return name.to_string();
+    }
+    let mut i = 1;
+    loop {
+        let candidate = format!("{}_{}", name, i);
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        i += 1;
     }
 }
 
@@ -596,7 +760,7 @@ mod tests {
         let cand = ex.extract(&traj_csv()).unwrap()
             .expect("trajectory should yield a skill");
         assert_eq!(cand.skill.tier, SkillTier::Candidate);
-        assert!(cand.skill.params.iter().any(|p| p.name.starts_with("var_")));
+        assert!(cand.skill.params.iter().any(|p| p.name.starts_with("param_")));
         assert!(cand.skill.capability_tags.contains(&"csv".to_string()));
         assert!(cand.skill.capability_tags.contains(&"json".to_string()));
         assert!(cand.skill.capability_tags.iter().any(|t| t == "tool:read_file"));
@@ -638,8 +802,8 @@ mod tests {
         let (out, params) = ex.extract_placeholders(
             "Fetch https://example.com/api?q=1 and write to /tmp/out.json"
         );
-        assert!(out.contains("{{var_1_url}}"));
-        assert!(out.contains("{{var_2_path}}"));
+        assert!(out.contains("{{param_1}}"));
+        assert!(out.contains("{{param_2}}"));
         assert_eq!(params.len(), 2);
         assert_eq!(params[0].1, "url");
         assert_eq!(params[1].1, "path");
@@ -965,6 +1129,6 @@ mod llm_tests {
         assert_eq!(cand.skill.required_tools, Vec::<String>::new());
         assert_eq!(cand.skill.capability_tags, vec!["tool:file_read"]);
         // Default confidence when not provided
-        assert_eq!(cand.confidence, 0.7);
+        assert_eq!(cand.confidence, 0.75);
     }
 }

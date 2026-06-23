@@ -34,7 +34,7 @@
 
 use crate::skill::SkillSpec;
 use anyhow::{Context, Result};
-use hydragent_types::{Skill, SkillExecutionRecord, SkillParam, SkillTier};
+use hydragent_types::{Skill, SkillExecutionRecord, SkillParam, SkillTier, SkillVersion};
 use sqlx::{Row, SqlitePool};
 use std::path::Path;
 use std::str::FromStr;
@@ -582,6 +582,55 @@ impl SkillLibrary {
         let successes = successes.unwrap_or(0);
         Ok(Some((successes as f64 / total as f64, total)))
     }
+
+    /// Returns the most recent version entry before the skill's current version.
+    pub async fn get_previous_version(&self, skill_id: &str) -> Result<Option<SkillVersion>> {
+        let row = sqlx::query(
+            "SELECT skill_id, version, spec_yaml, created_at, changed_by, change_note
+             FROM skill_versions
+             WHERE skill_id = ?
+             ORDER BY version DESC
+             LIMIT 1 OFFSET 1"
+        )
+        .bind(skill_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(r) = row {
+            let spec_yaml: String = r.try_get("spec_yaml")?;
+            let created_at: i64 = r.try_get("created_at")?;
+            let version_num: i32 = r.try_get("version")?;
+            let change_note: Option<String> = r.try_get("change_note")?;
+            Ok(Some(SkillVersion {
+                skill_id: skill_id.to_string(),
+                version: version_num as u32,
+                yaml: spec_yaml,
+                created_at,
+                changelog: change_note.unwrap_or_default(),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Overwrites the live skill row with data from a historical version.
+    pub async fn restore_version(&self, _skill_id: &str, version: &SkillVersion) -> Result<()> {
+        let skill = crate::skill::skill_from_yaml(&version.yaml)?;
+        self.update_skill(&skill).await?;
+        Ok(())
+    }
+
+    /// Resets execution count and success rate stats.
+    pub async fn reset_skill_stats(&self, skill_id: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE skills SET execution_count = 0, success_count = 0, failure_count = 0, success_rate = 0.0 WHERE id = ?"
+        )
+        .bind(skill_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
 
     /// Number of skills in the library.
     pub async fn count(&self) -> Result<i64> {

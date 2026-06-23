@@ -1,0 +1,24 @@
+# Curator configuration
+# All values can be changed without recompiling — just restart the service.
+
+[promotion]
+# A Candidate must have this many executions before promotion is considered
+min_executions   = 5
+# And this success rate or higher
+min_success_rate = 0.85
+
+[demotion]
+# An Active skill is demoted (or rolled back) if success rate drops below:
+max_failure_rate = 0.50
+
+[archival]
+# A skill with no executions in this many days is moved to Archived
+idle_days = 30
+
+[deduplication]
+# Cosine similarity threshold for merging a Candidate into an existing Active skill
+similarity_threshold = 0.88
+
+[induction]
+# Minimum LLM confidence score to accept a proposed skill
+min_confidence = 0.72

@@ -148,9 +148,10 @@ fn find_close(bytes: &[u8]) -> Option<usize> {
 /// function reads these from disk; this constant is a list of canonical
 /// names so callers can refer to them without resolving paths.
 pub const BUILTIN_SKILL_NAMES: &[&str] = &[
-    "convert-csv-to-json",
-    "summarize-github-issue",
-    "debug-rust-error",
+    "summarize-text",
+    "explain-concept",
+    "draft-message",
+    "translate-text",
 ];
 
 #[cfg(test)]
@@ -254,11 +255,12 @@ author: test
     }
 
     #[test]
-    fn builtins_are_three_named() {
-        assert_eq!(BUILTIN_SKILL_NAMES.len(), 3);
-        assert!(BUILTIN_SKILL_NAMES.contains(&"convert-csv-to-json"));
-        assert!(BUILTIN_SKILL_NAMES.contains(&"summarize-github-issue"));
-        assert!(BUILTIN_SKILL_NAMES.contains(&"debug-rust-error"));
+    fn builtins_are_four_named() {
+        assert_eq!(BUILTIN_SKILL_NAMES.len(), 4);
+        assert!(BUILTIN_SKILL_NAMES.contains(&"summarize-text"));
+        assert!(BUILTIN_SKILL_NAMES.contains(&"explain-concept"));
+        assert!(BUILTIN_SKILL_NAMES.contains(&"draft-message"));
+        assert!(BUILTIN_SKILL_NAMES.contains(&"translate-text"));
     }
 
     #[test]

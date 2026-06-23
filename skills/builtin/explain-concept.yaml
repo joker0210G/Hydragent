@@ -1,0 +1,36 @@
+id: "skill-builtin-explain-concept"
+name: "explain-concept"
+version: 1
+description: "Explain any complex concept, topic, or term in simple language, with helpful analogies."
+tier: "active"
+capability_tags:
+  - general
+  - education
+  - explanation
+params:
+  - name: "topic"
+    type: "string"
+    description: "The concept or term to explain."
+    required: true
+  - name: "audience"
+    type: "string"
+    description: "The target audience (e.g. kid, beginner, expert)."
+    required: false
+prompt_template: |
+  Explain the following concept to a {{audience}} (default to a beginner if not specified).
+
+  Concept: {{topic}}
+
+  Rules:
+  - Use simple language.
+  - Avoid unnecessary jargon, or explain it immediately if used.
+  - Include at least one relatable analogy or everyday example.
+required_tools:
+  - echo
+success_examples:
+  - "topic: 'Gravity' -> Gravity is an invisible pull, like a magnet..."
+author: "builtin"
+created_at: 1700000000000
+last_updated: 1700000000000
+success_rate: 0.0
+execution_count: 0

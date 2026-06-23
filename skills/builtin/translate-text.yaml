@@ -1,0 +1,36 @@
+id: "skill-builtin-translate-text"
+name: "translate-text"
+version: 1
+description: "Translate any input text into a target language."
+tier: "active"
+capability_tags:
+  - general
+  - translation
+  - language
+params:
+  - name: "text"
+    type: "string"
+    description: "The text to translate."
+    required: true
+  - name: "target_language"
+    type: "string"
+    description: "The language to translate the text into (e.g. Spanish, French, Japanese)."
+    required: true
+prompt_template: |
+  Translate the following text into {{target_language}}.
+
+  Text to translate:
+  """
+  {{text}}
+  """
+
+  Provide only the translated text, preserving original formatting.
+required_tools:
+  - echo
+success_examples:
+  - "text: 'Hello' target_language: 'Spanish' -> Hola"
+author: "builtin"
+created_at: 1700000000000
+last_updated: 1700000000000
+success_rate: 0.0
+execution_count: 0

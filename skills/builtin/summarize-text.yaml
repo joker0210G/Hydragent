@@ -1,0 +1,40 @@
+id: "skill-builtin-summarize-text"
+name: "summarize-text"
+version: 1
+description: "Summarize any text, article, or document into key bullet points and a brief TL;DR."
+tier: "active"
+capability_tags:
+  - text
+  - summary
+  - general
+params:
+  - name: "text"
+    type: "string"
+    description: "The text or document content to summarize."
+    required: true
+  - name: "length"
+    type: "string"
+    description: "The desired length of the summary (e.g. short, detailed)."
+    required: false
+prompt_template: |
+  Please summarize the following text.
+
+  Target Length: {{length}} (default to short/concise if not specified)
+
+  Text to summarize:
+  """
+  {{text}}
+  """
+
+  Provide the summary in this structure:
+  - **TL;DR**: A 1-2 sentence quick summary.
+  - **Key Points**: A bulleted list of the main takeaways.
+required_tools:
+  - echo
+success_examples:
+  - "text: 'The earth orbits the sun...' -> TL;DR: The earth travels around the sun. Key Points: Orbits once a year, etc."
+author: "builtin"
+created_at: 1700000000000
+last_updated: 1700000000000
+success_rate: 0.0
+execution_count: 0

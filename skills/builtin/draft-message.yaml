@@ -1,0 +1,36 @@
+id: "skill-builtin-draft-message"
+name: "draft-message"
+version: 1
+description: "Draft emails, notes, or chat messages based on key points and a desired tone."
+tier: "active"
+capability_tags:
+  - general
+  - writing
+  - communication
+params:
+  - name: "bullet_points"
+    type: "string"
+    description: "The core ideas or points to convey in the message."
+    required: true
+  - name: "tone"
+    type: "string"
+    description: "The tone of the message (e.g. professional, friendly, polite, direct)."
+    required: false
+prompt_template: |
+  Draft a message based on the following key points:
+  """
+  {{bullet_points}}
+  """
+
+  Desired Tone: {{tone}} (default to polite and friendly if not specified)
+
+  Generate a clear, well-structured message. Provide multiple subject lines if it looks like an email.
+required_tools:
+  - echo
+success_examples:
+  - "bullet_points: 'reschedule meeting to 3pm' -> Subject: Rescheduling meeting. Hi, can we shift..."
+author: "builtin"
+created_at: 1700000000000
+last_updated: 1700000000000
+success_rate: 0.0
+execution_count: 0
