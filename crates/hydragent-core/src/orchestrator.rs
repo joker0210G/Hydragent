@@ -171,8 +171,8 @@ impl MethodHandler for IntentSubmitHandler {
         }
 
         // Load profiles silently
-        let user_profile = std::fs::read_to_string("./config/USER.md").ok();
-        let soul_guidelines = std::fs::read_to_string("./config/SOUL.md").ok();
+        let user_profile = std::fs::read_to_string(crate::paths::config_dir().join("USER.md")).ok();
+        let soul_guidelines = std::fs::read_to_string(crate::paths::config_dir().join("SOUL.md")).ok();
 
         // ─── 1. Pop pending clarification (if any) and decide what to do ───
         //
@@ -1304,7 +1304,7 @@ impl MethodHandler for ConfigReadHandler {
                 id: request.id,
             };
         }
-        let path = format!("./config/{}", file_name);
+        let path = crate::paths::config_dir().join(&file_name);
         match std::fs::read_to_string(&path) {
             Ok(content) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
@@ -1345,8 +1345,8 @@ impl MethodHandler for ConfigWriteHandler {
                 id: request.id,
             };
         }
-        let path = format!("./config/{}", file_name);
-        if let Some(parent) = std::path::Path::new(&path).parent() {
+        let path = crate::paths::config_dir().join(&file_name);
+        if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         match std::fs::write(&path, content) {
@@ -1463,7 +1463,8 @@ impl MethodHandler for VaultChallengeHandler {
             (challenge.clone(), std::time::Instant::now() + std::time::Duration::from_secs(60)),
         );
 
-        let salt = if let Ok(content) = std::fs::read_to_string("config/security/admin_auth.hash") {
+        let hash_path = crate::paths::config_dir().join("security").join("admin_auth.hash");
+        let salt = if let Ok(content) = std::fs::read_to_string(&hash_path) {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                 val.get("salt").and_then(|s| s.as_str()).unwrap_or("").to_string()
             } else {
@@ -1501,12 +1502,12 @@ fn verify_vault_signature(
         return Err(anyhow::anyhow!("Challenge expired"));
     }
 
-    let hash_path = std::path::Path::new("config/security/admin_auth.hash");
+    let hash_path = crate::paths::config_dir().join("security").join("admin_auth.hash");
     if !hash_path.exists() {
         return Err(anyhow::anyhow!("Vault admin authentication has not been initialized."));
     }
 
-    let file_content = std::fs::read_to_string(hash_path)?;
+    let file_content = std::fs::read_to_string(&hash_path)?;
     let parsed: serde_json::Value = serde_json::from_str(&file_content)?;
     let stored_hash_hex = parsed.get("hash").and_then(|h| h.as_str()).ok_or_else(|| anyhow::anyhow!("Missing hash in admin_auth.hash"))?;
     let stored_hash = hex::decode(stored_hash_hex)?;

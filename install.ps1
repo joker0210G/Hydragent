@@ -152,18 +152,187 @@ $AnsiMagenta = "$([char]27)[35m"
 
 function Write-Banner {
     if ($Quiet) { return }
-    # Console encoding (UTF-8 / chcp 65001) is set up at the top of the
-    # script, before any Write-Host runs. See section 0 at the top of
-    # this file (Console encoding setup).
+    $B = [char]0x2588  # █
+    $h = [char]0x2550  # ═
+    $v = [char]0x2551  # ║
+    $tl = [char]0x2554 # ╔
+    $tr = [char]0x2557 # ╗
+    $bl = [char]0x255A # ╚
+    $br = [char]0x255D # ╝
+
     Write-Host ''
-    Write-Host "$AnsiCyan$AnsiBold██╗  ██╗██╗   ██╗██████╗ ██████╗  █████╗  ██████╗ ███████╗███╗   ██╗████████╗$AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold██║  ██║╚██╗ ██╔╝██╔══██╗██╔══██╗██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝$AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold███████║ ╚████╔╝ ██║  ██║██████╔╝███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   $AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold██╔══██║  ╚██╔╝  ██║  ██║██╔══██╗██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   $AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold██║  ██║   ██║   ██████╔╝██║  ██║██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   $AnsiReset"
-    Write-Host "$AnsiCyan$AnsiBold╚═╝  ╚═╝   ╚═╝   ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   $AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold$B$B$tr  $B$B$tr$B$B$tr   $B$B$tr$B$B$B$B$B$B$tr $B$B$B$B$B$B$tr  $B$B$B$B$B$tr  $B$B$B$B$B$B$tr $B$B$B$B$B$B$B$tr$B$B$B$tr   $B$B$tr$B$B$B$B$B$B$B$B$tr$AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold$B$B$v  $B$B$v$bl$B$B$tr $B$B$tl$br$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$h$h$h$br $B$B$tl$h$h$h$h$h$br$B$B$B$B$tr  $B$B$v$bl$h$h$B$B$tl$h$h$br$AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold$B$B$B$B$B$B$B$v $bl$B$B$B$B$tl$br $B$B$v  $B$B$v$B$B$B$B$B$B$tl$br$B$B$B$B$B$B$B$v$B$B$v  $B$B$B$tr$B$B$B$B$B$tr  $B$B$tl$B$B$tr $B$B$v   $B$B$v   $AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold$B$B$tl$h$h$B$B$v  $bl$B$B$tl$br  $B$B$v  $B$B$v$B$B$tl$h$h$B$B$tr$B$B$tl$h$h$B$B$v$B$B$v   $B$B$v$B$B$tl$h$h$br  $B$B$v$bl$B$B$tr$B$B$v   $B$B$v   $AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold$B$B$v  $B$B$v   $B$B$v   $B$B$B$B$B$B$tl$br$B$B$v  $B$B$v$B$B$v  $B$B$v$bl$B$B$B$B$B$B$tl$br$B$B$B$B$B$B$B$tr$B$B$v $bl$B$B$B$B$v   $B$B$v   $AnsiReset"
+    Write-Host "$AnsiCyan$AnsiBold$bl$h$br  $bl$h$br   $bl$h$br   $bl$h$h$h$h$h$br $bl$h$br  $bl$h$br$bl$h$br  $bl$h$br $bl$h$h$h$h$h$br $bl$h$h$h$h$h$h$br$bl$h$br  $bl$h$h$h$br   $bl$h$br   $AnsiReset"
     Write-Host "$AnsiDim  one-command installer$AnsiReset"
     Write-Host ''
+}
+
+function Show-UpdateStatus {
+    <#
+    .SYNOPSIS
+        Show the installed commit/version and compare it against GitHub.
+
+    .DESCRIPTION
+        Two modes, chosen automatically:
+
+        SOURCE mode  (when $SourceDir/.git exists):
+            Reads the local HEAD commit, fetches origin, and counts how many
+            commits the local clone is behind origin/<default-branch>.
+
+        RELEASE mode (no local git repo — prebuilt binary install):
+            Reads the installed version from hydragent --version, then hits
+            the GitHub Releases API to find the latest tag and compare.
+
+        Both modes are best-effort: any failure prints a single warning line
+        and returns silently so the installer is never blocked by network
+        issues or missing tools.
+    #>
+
+    Write-Host ''
+
+    # ── Helper: make a web request with a short timeout ───────────────────────
+    function Invoke-ApiGet {
+        param([string]$Uri, [int]$TimeoutSec = 8)
+        try {
+            $req = [System.Net.HttpWebRequest]::Create($Uri)
+            $req.Method       = 'GET'
+            $req.Timeout      = $TimeoutSec * 1000
+            $req.UserAgent    = 'hydragent-installer/1.0'
+            $req.Accept       = 'application/vnd.github+json'
+            $res = $req.GetResponse()
+            $sr  = [System.IO.StreamReader]::new($res.GetResponseStream())
+            $raw = $sr.ReadToEnd()
+            $sr.Close(); $res.Close()
+            return $raw | ConvertFrom-Json
+        } catch {
+            return $null
+        }
+    }
+
+    # ── SOURCE MODE ────────────────────────────────────────────────────────────
+    if (Test-Path (Join-Path $SourceDir '.git')) {
+        if (-not (Test-Command git)) {
+            Write-WarningMessage 'git not on PATH — cannot check update status.'
+            return
+        }
+
+        Push-Location $SourceDir
+        try {
+            # Local commit
+            $localFull  = (& git rev-parse HEAD           2>$null | Out-String).Trim()
+            $localShort = (& git rev-parse --short HEAD   2>$null | Out-String).Trim()
+            if (-not $localFull) {
+                Write-WarningMessage 'Could not read local git HEAD — skipping update check.'
+                return
+            }
+
+            # Discover default branch (HEAD might not be main)
+            $defaultBranch = (& git symbolic-ref refs/remotes/origin/HEAD 2>$null | Out-String).Trim()
+            if ($defaultBranch) {
+                $defaultBranch = $defaultBranch -replace '^refs/remotes/origin/', ''
+            } else {
+                $defaultBranch = 'main'  # sensible default
+            }
+
+            # Fetch silently with a 15-second timeout
+            $env:GIT_HTTP_TIMEOUT = '15'
+            $fetchResult = (& git fetch origin $defaultBranch 2>&1 | Out-String).Trim()
+            $fetchOk     = ($LASTEXITCODE -eq 0)
+
+            if (-not $fetchOk) {
+                Write-WarningMessage "Could not reach GitHub (git fetch failed) — showing local info only."
+                Write-Info "Installed commit : $AnsiCyan$localShort$AnsiReset"
+                return
+            }
+
+            $remoteRef   = "origin/$defaultBranch"
+            $remoteFull  = (& git rev-parse $remoteRef      2>$null | Out-String).Trim()
+            $remoteShort = (& git rev-parse --short $remoteRef 2>$null | Out-String).Trim()
+
+            Write-Info  "Installed commit : $AnsiCyan$localShort$AnsiReset"
+            Write-Info  "Latest on GitHub : $AnsiCyan$remoteShort$AnsiReset  (origin/$defaultBranch)"
+
+            if ($localFull -eq $remoteFull) {
+                Write-OK 'Your source install is up to date with GitHub.'
+            } else {
+                # Count commits behind
+                $behindRaw = (& git rev-list --count "$localFull..$remoteRef" 2>$null | Out-String).Trim()
+                $behind    = 0
+                if ([int]::TryParse($behindRaw, [ref]$behind) -and $behind -gt 0) {
+                    Write-WarningMessage ("Your install is $behind commit(s) behind GitHub — run 'hydragent update' to update.")
+                }
+
+                # Count commits ahead (local unpushed)
+                $aheadRaw = (& git rev-list --count "$remoteRef..$localFull" 2>$null | Out-String).Trim()
+                $ahead    = 0
+                if ([int]::TryParse($aheadRaw, [ref]$ahead) -and $ahead -gt 0) {
+                    Write-Info "Your clone is $ahead commit(s) ahead of origin (local-only changes)."
+                }
+            }
+        } catch {
+            Write-WarningMessage "Update check failed: $($_.Exception.Message)"
+        } finally {
+            Pop-Location
+        }
+        return
+    }
+
+    # ── RELEASE MODE (prebuilt binary) ─────────────────────────────────────────
+    $binPath = Join-Path $BinDir $BinName
+    if (-not (Test-Path $binPath)) {
+        # Binary not yet written (first-run install still in progress)
+        return
+    }
+
+    # Get installed version from the binary
+    $rawVer = (& $binPath --version 2>$null | Out-String).Trim()
+    # clap outputs:  "hydragent 0.7.0"  or  "hydragent v0.7.0"
+    $installedVer = $rawVer -replace '^[^\d]*(v?)', 'v'
+    $installedVer = ($installedVer -split '\s')[0]  # keep first token
+    if (-not $installedVer -or $installedVer -eq 'v') {
+        Write-WarningMessage "Could not read installed version from binary — skipping update check."
+        return
+    }
+
+    Write-Info "Installed version : $AnsiCyan$installedVer$AnsiReset"
+    Write-Info "Checking GitHub Releases API..."
+
+    $rel = Invoke-ApiGet "https://api.github.com/repos/$Repo/releases/latest"
+    if ($null -eq $rel -or -not $rel.tag_name) {
+        Write-WarningMessage "Could not reach GitHub Releases API — skipping update check."
+        return
+    }
+
+    $latestTag = $rel.tag_name        # e.g. "v0.8.1"
+    $publishedAt = ''
+    try { $publishedAt = [datetime]::Parse($rel.published_at).ToString('yyyy-MM-dd') } catch {}
+
+    Write-Info "Latest release    : $AnsiCyan$latestTag$AnsiReset$(if ($publishedAt) { "  ($publishedAt)" })"
+
+    # Strip leading 'v' for semver comparison
+    $instNum   = $installedVer -replace '^v', ''
+    $latestNum = $latestTag    -replace '^v', ''
+
+    if ($instNum -eq $latestNum) {
+        Write-OK 'Your installation is up to date.'
+    } else {
+        try {
+            $instVer   = [System.Version]$instNum
+            $latestVer = [System.Version]$latestNum
+            if ($latestVer -gt $instVer) {
+                Write-WarningMessage "A newer version is available: $latestTag — run 'hydragent update' to upgrade."
+            } elseif ($instVer -gt $latestVer) {
+                Write-Info "Your build is newer than the latest GitHub release (pre-release or local build)."
+            }
+        } catch {
+            # Fallback if version isn't parseable as System.Version
+            Write-WarningMessage "Installed ($installedVer) differs from latest release ($latestTag)."
+        }
+    }
 }
 
 function Write-OK            { param($m) Write-Host "$AnsiGreen  ok$AnsiReset  $m" }
@@ -553,6 +722,7 @@ if ($alreadyInstalled -and -not $Force) {
     } else {
         Write-OK "Hydragent is already installed at $(Join-Path $BinDir $BinName)"
     }
+    Show-UpdateStatus
     Write-Info "Pass -Force to reinstall, run 'hydragent update' to update, or 'hydragent uninstall' to remove."
     # Re-run the PATH/launcher steps in case the user nuked them.
     Install-Launcher
@@ -584,6 +754,7 @@ Write-OK "Hydragent installed to $BinDir"
 Write-OK "Data directory: $DataDir"
 Write-OK "Launcher:       $LauncherPath"
 Write-OK "PATH updated (new shells will pick this up)"
+Show-UpdateStatus
 
 if (-not $SkipOnboard) { Invoke-Onboarding }
 Write-NextSteps

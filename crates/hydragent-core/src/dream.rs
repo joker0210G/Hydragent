@@ -376,11 +376,11 @@ async fn process_page(
     // ── Step 5a: Append style habits → USER.md (bounded) ─────────────────
     if let Some(habits) = extraction.style_habits {
         if !habits.is_empty() {
-            let user_bmd = BoundedMd::new("./config/USER.md", USER_MD_CHAR_LIMIT);
+            let user_bmd = BoundedMd::new(crate::paths::config_dir().join("USER.md"), USER_MD_CHAR_LIMIT);
             match user_bmd.append_curated(
                 &habits,
                 "# Style & Communication Habits",
-                "# User Profile\n- Name: User\n\n# Style & Communication Habits\n",
+                "# User Profile\n- Name: User\n- Role: Software Engineer & Technical Operator\n- Preferred Tone: Professional, direct, and technically rigorous\n- Language & Locale: English (Universal)\n- Key Constraints: Absolute precision, strict formatting compliance, zero fluff\n\n# Style & Communication Habits\n",
             ) {
                 Ok(_) => { stats.style_habits_stored += habits.len(); }
                 Err(e) => error!(page_id = %page_id, error = %e, "Dream cycle: failed to write style habits to USER.md"),
@@ -401,11 +401,11 @@ async fn process_page(
     // ── Step 5c: Append behavior rules → SOUL.md (bounded) ───────────────
     if let Some(rules) = extraction.behavior_rules {
         if !rules.is_empty() {
-            let soul_bmd = BoundedMd::new("./config/SOUL.md", SOUL_MD_CHAR_LIMIT);
+            let soul_bmd = BoundedMd::new(crate::paths::config_dir().join("SOUL.md"), SOUL_MD_CHAR_LIMIT);
             match soul_bmd.append_curated(
                 &rules,
                 "# Behavior Rules",
-                "# Agent Soul & Personality\n- Name: Hydra\n- Tone: Helpful, intelligent, and adaptive.\n\n# Behavior Rules\n",
+                "# Agent Soul & Personality\n- Name: Hydra\n- Role: Advanced Agentic AI Coding Assistant & Technical Sparring Partner\n- Tone: Professional, precise, adaptive, and concise\n- Core Guidelines: Prioritize execution, maintain high technical depth, respect security boundaries, avoid placeholders\n- Language Capability: Global (English primary)\n\n# Behavior Rules\n",
             ) {
                 Ok(_) => { stats.behavior_rules_stored += rules.len(); }
                 Err(e) => error!(page_id = %page_id, error = %e, "Dream cycle: failed to write behavior rules to SOUL.md"),
@@ -604,7 +604,7 @@ async fn startup_compaction_check(
     user_md_compacted: &mut bool,
     soul_md_compacted: &mut bool,
 ) -> anyhow::Result<()> {
-    let user_bmd = BoundedMd::new("./config/USER.md", USER_MD_CHAR_LIMIT);
+    let user_bmd = BoundedMd::new(crate::paths::config_dir().join("USER.md"), USER_MD_CHAR_LIMIT);
     if user_bmd.needs_compaction().unwrap_or(false) {
         let current_len = user_bmd.len().unwrap_or(0);
         warn!(
@@ -616,7 +616,7 @@ async fn startup_compaction_check(
         *user_md_compacted = true;
     }
 
-    let soul_bmd = BoundedMd::new("./config/SOUL.md", SOUL_MD_CHAR_LIMIT);
+    let soul_bmd = BoundedMd::new(crate::paths::config_dir().join("SOUL.md"), SOUL_MD_CHAR_LIMIT);
     if soul_bmd.needs_compaction().unwrap_or(false) {
         let current_len = soul_bmd.len().unwrap_or(0);
         warn!(
@@ -690,6 +690,18 @@ async fn compact_md_with_llm(
         .trim_start_matches("```").trim_end_matches("```").trim();
 
     let compacted_len = compacted.chars().count();
+    if compacted_len == 0 {
+        anyhow::bail!("compact_md_with_llm: LLM returned empty content — not writing");
+    }
+
+    let original_header = content.lines().next().unwrap_or("").trim();
+    if !original_header.is_empty() && !compacted.contains(original_header) {
+        anyhow::bail!(
+            "compact_md_with_llm: compacted content is missing the original header {:?} — not writing",
+            original_header
+        );
+    }
+
     if compacted_len > limit {
         return Err(anyhow::anyhow!(
             "compact_md_with_llm: LLM output ({} chars) still exceeds limit ({} chars) — not writing",

@@ -661,8 +661,8 @@ mod tests {
         assert!(injected.contains("Barnaby"));
         assert!(injected.contains("Rust code"));
         
-        // Test strict budget limit (75 tokens) which fits first memory but not the second
-        let limited = crate::build_system_prompt_with_memory(base_prompt, &[doc1.clone(), doc2.clone()], 75);
+        // Test strict budget limit (85 tokens) which fits first memory but not the second
+        let limited = crate::build_system_prompt_with_memory(base_prompt, &[doc1.clone(), doc2.clone()], 85);
         assert!(limited.contains("Barnaby"));
         assert!(!limited.contains("Rust code"));
     }

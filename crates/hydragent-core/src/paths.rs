@@ -97,6 +97,7 @@ pub fn hydragent_home() -> PathBuf {
 }
 
 /// Resolve the data directory (sqlite DBs, vault, logs, audit chain,
+/// Resolve the data directory (sqlite DBs, vault, logs, audit chain,
 /// embedding cache, ...).
 ///
 /// Order: `HYDRAGENT_DATA_DIR` env > `{hydragent_home()}/data`.
@@ -108,6 +109,28 @@ pub fn data_dir() -> PathBuf {
         }
     }
     hydragent_home().join("data")
+}
+
+/// Resolve the config directory (USER.md, SOUL.md, keys, security policies, ...).
+///
+/// Order: `HYDRAGENT_CONFIG_DIR` env > `{hydragent_home()}/config` (if exists) >
+/// `{hydragent_home()}/src/config` (if exists) > `{hydragent_home()}/config` (default).
+pub fn config_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("HYDRAGENT_CONFIG_DIR") {
+        let p = p.trim();
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    let home_config = hydragent_home().join("config");
+    if home_config.exists() {
+        return home_config;
+    }
+    let src_config = hydragent_home().join("src").join("config");
+    if src_config.exists() {
+        return src_config;
+    }
+    home_config
 }
 
 /// Resolve the path to the user's `.env` config file. Always at the top
@@ -135,6 +158,7 @@ pub fn bin_dir() -> PathBuf {
 ///   * `.hydragent/data/logs/`                (chat.jsonl + per-command logs)
 ///   * `.hydragent/data/cache/`               (downloaded embedding model, …)
 ///   * `.hydragent/bin/`                      (launcher + bundled tools)
+///   * `.hydragent/config/`                   (user configuration files)
 ///
 /// Returns the canonical [`hydragent_home`] path so callers can chain:
 /// `paths::ensure_dirs()?; Ok(paths::data_dir())`.
@@ -142,6 +166,7 @@ pub fn ensure_dirs() -> std::io::Result<PathBuf> {
     let home = hydragent_home();
     let data = data_dir();
     let bins = bin_dir();
+    let config = config_dir();
 
     let dirs = [
         &home,
@@ -152,6 +177,7 @@ pub fn ensure_dirs() -> std::io::Result<PathBuf> {
         &data.join("logs"),
         &data.join("cache"),
         &bins,
+        &config,
     ];
     for d in dirs {
         if !d.as_os_str().is_empty() {
@@ -417,6 +443,7 @@ mod tests {
 
     #[test]
     fn describe_includes_source_labels() {
+        let _g = ENV_LOCK.lock().unwrap();
         let layout = describe();
         // Source labels are non-empty so a UI can always show *why*
         // a particular path was chosen.

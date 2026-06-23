@@ -1547,7 +1547,7 @@ async fn main() {
         });
         let chain_path = audit_dir.join("chain.db");
         let key_path = keys_dir.join("agent_ed25519.key");
-        let pub_path = std::path::PathBuf::from("config/keys/agent_ed25519.pub");
+        let pub_path = crate::paths::config_dir().join("keys").join("agent_ed25519.pub");
 
         let signer = load_or_create_agent_signer(&key_path, &pub_path)
             .unwrap_or_else(|e| {
@@ -1785,8 +1785,8 @@ async fn main() {
         let audit_dir = data_dir.join("audit");
         let keys_dir = data_dir.join("keys");
         let vault_file = data_dir.join("vault/.hydravault");
-        let policy_path = std::path::PathBuf::from("config/security/taint_sinks.yaml");
-        let patterns_path = std::path::PathBuf::from("config/security/injection_patterns.yaml");
+        let policy_path = crate::paths::config_dir().join("security").join("taint_sinks.yaml");
+        let patterns_path = crate::paths::config_dir().join("security").join("injection_patterns.yaml");
 
         println!("------------------------------------------------------------------------");
         println!("  🛡  Hydragent Phase 6 Security Surface");
@@ -1811,7 +1811,7 @@ async fn main() {
                 if chain_path.exists() {
                     let signer = match load_or_create_agent_signer(
                         &keys_dir.join("agent_ed25519.key"),
-                        &std::path::PathBuf::from("config/keys/agent_ed25519.pub"),
+                        &crate::paths::config_dir().join("keys").join("agent_ed25519.pub"),
                     ) {
                         Ok(s) => s,
                         Err(e) => {
@@ -2558,8 +2558,8 @@ async fn main() {
     registry.register(MemoryStoreTool::new(store.clone()));
     registry.register(MemorySearchTool::new(store.clone()));
     registry.register(MemoryForgetTool::new(store.clone()));
-    registry.register(hydragent_tools::standing_orders::SoulTool::new(PathBuf::from("./config")));
-    registry.register(hydragent_tools::user_profile::UserProfileTool::new(PathBuf::from("./config")));
+    registry.register(hydragent_tools::standing_orders::SoulTool::new(crate::paths::config_dir()));
+    registry.register(hydragent_tools::user_profile::UserProfileTool::new(crate::paths::config_dir()));
 
     // ── Security LLM-callable tools ────────────────────
     //
@@ -2568,15 +2568,9 @@ async fn main() {
     // filesystem paths, not runtime state, so they can be re-registered
     // cheaply during a hot-reload.
     registry.register(AuditQueryTool::new(PathBuf::from(&app_config.data_dir)));
-    registry.register(TaintCheckTool::new(PathBuf::from(
-        "config/security/taint_sinks.yaml",
-    )));
-    registry.register(SanitizerScanTool::new(PathBuf::from(
-        "config/security/injection_patterns.yaml",
-    )));
-    registry.register(SanitizerListPatternsTool::new(PathBuf::from(
-        "config/security/injection_patterns.yaml",
-    )));
+    registry.register(TaintCheckTool::new(crate::paths::config_dir().join("security").join("taint_sinks.yaml")));
+    registry.register(SanitizerScanTool::new(crate::paths::config_dir().join("security").join("injection_patterns.yaml")));
+    registry.register(SanitizerListPatternsTool::new(crate::paths::config_dir().join("security").join("injection_patterns.yaml")));
     registry.register(VaultRotateTool::new(PathBuf::from(&app_config.data_dir)));
 
     // ── Skill library tools ───────────────────
@@ -2647,8 +2641,8 @@ async fn main() {
                 let page_id = format!("cron-{}", job.id);
                 let history_messages = vec![];
                 let retrieved_memories = vec![];
-                let user_profile = std::fs::read_to_string("./config/USER.md").ok();
-                let soul_guidelines = std::fs::read_to_string("./config/SOUL.md").ok();
+                let user_profile = std::fs::read_to_string(crate::paths::config_dir().join("USER.md")).ok();
+                let soul_guidelines = std::fs::read_to_string(crate::paths::config_dir().join("SOUL.md")).ok();
                 
                 let (tx, mut rx) = tokio::sync::mpsc::channel(100);
                 let active_perms = orchestrator::ActivePermissions::default();
@@ -2850,7 +2844,7 @@ async fn main() {
     });
     let chain_path = audit_dir.join("chain.db");
     let key_path = keys_dir.join("agent_ed25519.key");
-    let pub_path = std::path::PathBuf::from("config/keys/agent_ed25519.pub");
+    let pub_path = crate::paths::config_dir().join("keys").join("agent_ed25519.pub");
     let signer = load_or_create_agent_signer(&key_path, &pub_path).unwrap_or_else(|e| {
         eprintln!("Failed to load agent Ed25519 key: {}", e);
         std::process::exit(1);
