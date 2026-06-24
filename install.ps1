@@ -339,6 +339,44 @@ function Write-OK            { param($m) Write-Host "$AnsiGreen  ok$AnsiReset  $
 function Write-Info          { param($m) Write-Host "$AnsiCyan  ..$AnsiReset  $m" }
 function Write-WarningMessage { param($m) Write-Host "$AnsiYellow  !!$AnsiReset  $m" }
 function Write-Err           { param($m) Write-Host "$AnsiRed  ERR$AnsiReset $m" ; exit 1 }
+
+function Get-CommitHash {
+    param([string]$Dir)
+    # Only attempt git if $Dir is a real checkout
+    if (-not (Test-Path (Join-Path $Dir '.git'))) { return 'N/A' }
+    if (-not (Test-Command git)) { return 'N/A' }
+    Push-Location $Dir
+    try {
+        $hash = (& git rev-parse --short HEAD 2>$null | Out-String).Trim()
+        if ($hash) { return $hash } else { return 'N/A' }
+    } catch {
+        return 'N/A'
+    } finally {
+        Pop-Location
+    }
+}
+
+function Write-Metadata {
+    param([string]$Version, [string]$InstallMode)
+
+    $commit = if ($InstallMode -eq 'source') {
+        Get-CommitHash -Dir $SourceDir
+    } else {
+        'N/A'   # prebuilt: no local git repo to query
+    }
+
+    $meta = [ordered]@{
+        version      = $Version
+        commit       = $commit
+        install_mode = $InstallMode
+        date         = (Get-Date -Format 'o')   # ISO 8601
+    }
+
+    $metaPath = Join-Path $InstallRoot 'metadata.json'
+    $meta | ConvertTo-Json -Depth 2 | Set-Content -Path $metaPath -Encoding UTF8 -Force
+    Write-OK "Metadata written: $metaPath"
+}
+
 function Write-Step  {
     param($n, $m)
     if ($Quiet) { return }
@@ -408,14 +446,7 @@ function Install-FromRelease {
     }
 
     # Write metadata.json for prebuilt install
-    $metaPath = Join-Path $InstallRoot "metadata.json"
-    $metaContent = @{
-        version = $v
-        commit = if ($CommitHash) { $CommitHash } else { "unknown" }
-        install_mode = "prebuilt"
-        date = (Get-Date -uformat "%Y-%m-%dT%H:%M:%SZ")
-    } | ConvertTo-Json -Compress
-    Set-Content -Path $metaPath -Value $metaContent -Encoding utf8
+    Write-Metadata -Version $v -InstallMode 'prebuilt'
 }
 
 function Install-FromSource {
@@ -541,14 +572,7 @@ function Build-Source {
         Write-OK "Built and installed $BinName"
 
         # Write metadata.json for source install
-        $metaPath = Join-Path $InstallRoot "metadata.json"
-        $metaContent = @{
-            version = "source"
-            commit = if ($CommitHash) { $CommitHash } else { "unknown" }
-            install_mode = "source"
-            date = (Get-Date -uformat "%Y-%m-%dT%H:%M:%SZ")
-        } | ConvertTo-Json -Compress
-        Set-Content -Path $metaPath -Value $metaContent -Encoding utf8
+        Write-Metadata -Version 'source' -InstallMode 'source'
 
         # Best-effort: clean up the .old backup on success.
         if (Test-Path $oldDest) {
@@ -739,7 +763,7 @@ function Pause-IfEphemeral {
 
 # Resolve the current commit ID if possible (best effort)
 $CommitHash = $null
-if (Test-Command git) {
+if (Test-Command git -and (Test-Path '.git')) {
     $CommitHash = (git rev-parse --short HEAD 2>$null)
     if ($CommitHash) { $CommitHash = $CommitHash.Trim() }
 }
