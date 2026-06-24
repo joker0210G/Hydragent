@@ -143,11 +143,20 @@ install_from_release() {
         err "Download failed (release $version may not be published for $triple)"
     fi
 
-    step 3 "Extracting to $BIN_DIR"
-    [[ -f "$BIN_DIR/$BIN_NAME" ]] && rm -f "$BIN_DIR/$BIN_NAME"
     tar -xzf "$tmp/$asset" -C "$BIN_DIR"
     [[ -x "$BIN_DIR/$BIN_NAME" ]] || err "Extraction succeeded but $BIN_DIR/$BIN_NAME is not executable"
     chmod +x "$BIN_DIR/$BIN_NAME"
+
+    # Write metadata.json for prebuilt release
+    cat <<EOF > "$INSTALL_ROOT/metadata.json"
+{
+  "version": "$version",
+  "commit": "${CommitHash:-unknown}",
+  "install_mode": "prebuilt",
+  "date": "$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u)"
+}
+EOF
+
     ok "Installed $BIN_DIR/$BIN_NAME"
 }
 
@@ -196,6 +205,21 @@ build_source() {
     [[ -x "$built" ]] || err "Build reported success but $built not found"
     cp -f "$built" "$BIN_DIR/$BIN_NAME"
     chmod +x "$BIN_DIR/$BIN_NAME"
+
+    # Write metadata.json for source build
+    local commit_hash="unknown"
+    if [[ -d "$SRC_DIR/.git" ]] && have git; then
+        commit_hash="$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+    fi
+    cat <<EOF > "$INSTALL_ROOT/metadata.json"
+{
+  "version": "source",
+  "commit": "$commit_hash",
+  "install_mode": "source",
+  "date": "$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u)"
+}
+EOF
+
     ok "Built and installed $BIN_DIR/$BIN_NAME"
 }
 

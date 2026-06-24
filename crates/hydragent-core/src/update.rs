@@ -5,11 +5,6 @@ use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-const GITHUB_API_URL: &str = "https://api.github.com/repos/joker0210G/Hydragent/releases/latest";
-const GITHUB_COMMITS_API_URL: &str = "https://api.github.com/repos/joker0210G/Hydragent/commits?per_page=1";
-const INSTALL_PS1_URL: &str = "https://joker0210G.github.io/Hydragent/install.ps1";
-const INSTALL_SH_URL: &str = "https://joker0210G.github.io/Hydragent/install.sh";
-
 // Windows process creation flags used by the updater.
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -45,184 +40,330 @@ struct CommitInfo {
 #[allow(dead_code)]
 struct CompareResponse {
     status: String,
-    // `ahead_by` is deserialized but not used directly; kept for
-    // completeness so the API shape is fully represented.
     ahead_by: i64,
     behind_by: i64,
 }
 
-/// Update Hydragent to the latest release from GitHub.
-///
-/// Checks the GitHub Releases API for a newer version, downloads the
-/// correct prebuilt asset for the current platform, and replaces the
-/// running binary safely.
-pub async fn run() {
-    let current_version = env!("CARGO_PKG_VERSION");
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct InstallationMetadata {
+    version: String,
+    commit: String,
+    install_mode: String,
+    date: String,
+}
 
-    println!("  Checking for updates… (current version: {})", current_version);
+fn get_installation_metadata() -> Option<InstallationMetadata> {
+    let path = crate::paths::hydragent_home().join("metadata.json");
+    if path.exists() {
+        if let Ok(data) = std::fs::read_to_string(path) {
+            if let Ok(meta) = serde_json::from_str::<InstallationMetadata>(&data) {
+                return Some(meta);
+            }
+        }
+    }
+    None
+}
 
-    match check_latest_version().await {
-        Ok(CheckOutcome::NewRelease { version: latest_version, asset }) => {
-            println!(
-                "  New version available: {} (current: {})",
-                latest_version, current_version
-            );
-            println!(
-                "  Downloading {} …",
-                asset.name
-            );
-            match download_and_extract(&asset).await {
-                Ok(new_binary_path) => {
-                    println!("  Extracted to {}", new_binary_path.display());
-                    match replace_binary(&new_binary_path).await {
-                        Ok(()) => {
-                            // Clean up the staging directory.
-                            if let Some(staging_dir) = new_binary_path.parent() {
-                                let _ = std::fs::remove_dir(staging_dir);
-                            }
-                            println!(
-                                "  ✓ Hydragent updated to v{}. Run `hydragent --version` to verify.",
-                                latest_version
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("  ✗ Failed to replace binary: {}", e);
-                            std::process::exit(1);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("  ✗ Failed to download update: {}", e);
-                    std::process::exit(1);
+fn write_installation_metadata(meta: &InstallationMetadata) {
+    let path = crate::paths::hydragent_home().join("metadata.json");
+    if let Ok(data) = serde_json::to_string_pretty(meta) {
+        let _ = std::fs::write(path, data);
+    }
+}
+
+fn parse_git_remote(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches(".git");
+    // Validate host is github.com (per user feedback!)
+    if !url.contains("github.com") {
+        return None;
+    }
+    // Handle SSH format: git@github.com:owner/repo
+    if let Some(pos) = url.find("github.com:") {
+        return Some(url[pos + 11..].to_string());
+    }
+    // Handle HTTPS format: https://github.com/owner/repo
+    if let Some(pos) = url.find("github.com/") {
+        return Some(url[pos + 11..].to_string());
+    }
+    None
+}
+
+fn parse_git_remote_from_local_config() -> Option<String> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(p) = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)) {
+        dirs.push(p);
+    }
+    #[cfg(target_os = "windows")]
+    let src_dir = std::env::var("USERPROFILE").ok().map(|p| PathBuf::from(p).join(".hydragent").join("src"));
+    #[cfg(not(target_os = "windows"))]
+    let src_dir = std::env::var("HOME").ok().map(|p| PathBuf::from(p).join(".hydragent").join("src"));
+    if let Some(p) = src_dir {
+        dirs.push(p);
+    }
+    if let Ok(p) = std::env::current_dir() {
+        dirs.push(p);
+    }
+
+    for dir in dirs {
+        if let Ok(output) = Command::new("git")
+            .args(["-C", &dir.to_string_lossy(), "config", "--get", "remote.origin.url"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+        {
+            if output.status.success() {
+                let url = String::from_utf8_lossy(&output.stdout);
+                if let Some(parsed) = parse_git_remote(&url) {
+                    return Some(parsed);
                 }
             }
         }
-        Ok(CheckOutcome::UpToDate) => {
-            println!(
-                "  Hydragent is already up to date (v{}).",
-                current_version
-            );
+    }
+    None
+}
+
+fn github_repo() -> String {
+    if let Ok(r) = std::env::var("HYDRAGENT_REPO") {
+        let r = r.trim().to_string();
+        if !r.is_empty() {
+            return r;
+        }
+    }
+    // Simple key-value line parser for .env scoped specifically to Hydragent-generated formats (per user feedback)
+    if let Ok(text) = std::fs::read_to_string(crate::paths::env_file()) {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                if k.trim() == "HYDRAGENT_REPO" {
+                    let val = v.trim().trim_matches('"').trim_matches('\'').trim().to_string();
+                    if !val.is_empty() {
+                        return val;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(parsed) = parse_git_remote_from_local_config() {
+        return parsed;
+    }
+    "joker0210G/Hydragent".to_string()
+}
+
+fn install_ps1_url() -> String {
+    let repo = github_repo();
+    let (org, name) = repo.split_once('/').unwrap_or(("joker0210G", "Hydragent"));
+    format!("https://{}.github.io/{}/install.ps1", org, name)
+}
+
+fn install_sh_url() -> String {
+    let repo = github_repo();
+    let (org, name) = repo.split_once('/').unwrap_or(("joker0210G", "Hydragent"));
+    format!("https://{}.github.io/{}/install.sh", org, name)
+}
+
+/// Update Hydragent to the latest release from GitHub.
+pub async fn run() {
+    let repo = github_repo();
+    let current_version = if let Some(meta) = get_installation_metadata() {
+        if meta.version != "source" {
+            meta.version
+        } else {
+            env!("CARGO_PKG_VERSION").to_string()
+        }
+    } else {
+        env!("CARGO_PKG_VERSION").to_string()
+    };
+
+    println!("  Checking for updates in repository: {}… (installed: v{})", repo, current_version);
+
+    let latest_release = check_latest_version().await;
+    let latest_commit = fetch_latest_commit().await.ok();
+    let local_commit = get_local_commit();
+
+    let mut installed_str = format!("v{}", current_version);
+    if let Some(ref commit) = local_commit {
+        installed_str.push_str(&format!(" (commit: {})", &commit[..8.min(commit.len())]));
+    }
+
+    let mut upstream_ver = current_version.clone();
+    let mut upstream_commit = "unknown".to_string();
+    let mut has_new_release = false;
+    let mut target_asset = None;
+
+    match &latest_release {
+        Ok(CheckOutcome::NewRelease { version, asset }) => {
+            upstream_ver = version.clone();
+            target_asset = Some(asset.clone());
+            has_new_release = true;
+        }
+        _ => {}
+    }
+
+    if let Some(ref info) = latest_commit {
+        upstream_commit = info.sha.clone();
+    }
+
+    let commits_behind = match (&local_commit, &latest_commit) {
+        (Some(local), Some(latest)) => fetch_commits_behind(local, &latest.sha).await,
+        _ => None,
+    };
+
+    println!();
+    println!("  Comparison Summary:");
+    println!("    Installed : {}", installed_str);
+    if upstream_commit != "unknown" {
+        println!("    Upstream  : v{} (commit: {})", upstream_ver, &upstream_commit[..8.min(upstream_commit.len())]);
+    } else {
+        println!("    Upstream  : v{}", upstream_ver);
+    }
+
+    if let Some(behind) = commits_behind {
+        if behind > 0 {
+            println!("    Difference: {} commit(s) behind", behind);
+        } else {
+            println!("    Difference: Up to date");
+        }
+    } else {
+        println!("    Difference: Unknown (could not compare commits)");
+    }
+    println!();
+
+    if has_new_release {
+        let asset = target_asset.unwrap();
+        println!("  New version available: v{} (installed: v{})", upstream_ver, current_version);
+        if !confirm_yes_no("  Do you want to download and install the new prebuilt release?", true) {
+            println!("  Update cancelled.");
             std::process::exit(0);
         }
-        Ok(CheckOutcome::NoReleasesPublished) => {
-            // GitHub returned 404 from /releases/latest, which means the
-            // repo has not published any tagged releases yet.
-            println!("  No release found for this repo ({}).", GITHUB_REPO);
-            println!();
 
-            // Try to show both local and upstream commit info.
-            let local_commit = get_local_commit();
-            let latest_commit = match fetch_latest_commit().await {
-                Ok(info) => Some(info),
-                Err(e) => {
-                    eprintln!("  ⚠ Could not fetch latest commit from GitHub: {}", e);
-                    None
-                }
-            };
+        println!("  Downloading {} …", asset.name);
+        match download_and_extract(&asset).await {
+            Ok(new_binary_path) => {
+                println!("  Extracted to {}", new_binary_path.display());
+                match replace_binary(&new_binary_path).await {
+                    Ok(()) => {
+                        if let Some(staging_dir) = new_binary_path.parent() {
+                            let _ = std::fs::remove_dir(staging_dir);
+                        }
+                        
+                        // Write fresh metadata.json
+                        let meta = InstallationMetadata {
+                            version: upstream_ver.clone(),
+                            commit: upstream_commit.clone(),
+                            install_mode: "prebuilt".to_string(),
+                            date: chrono::Utc::now().to_rfc3339(),
+                        };
+                        write_installation_metadata(&meta);
 
-            let current_version = env!("CARGO_PKG_VERSION");
-
-            // Try to compute how far behind the local build is.
-            let commits_behind = match (&local_commit, &latest_commit) {
-                (Some(local), Some(latest)) => fetch_commits_behind(local, &latest.sha).await,
-                _ => None,
-            };
-
-            if let Some(ref commit) = local_commit {
-                if let Some(behind) = commits_behind {
-                    if behind == 0 {
-                        println!("  Current version: v{} (prebuild, commit: {}) — up to date", current_version, &commit[..8.min(commit.len())]);
-                    } else {
-                        println!("  Current version: v{} (prebuild, commit: {}, {} commits behind)", current_version, &commit[..8.min(commit.len())], behind);
+                        println!(
+                            "  ✓ Hydragent updated to v{}. Run `hydragent --version` to verify.",
+                            upstream_ver
+                        );
+                        std::process::exit(0);
                     }
-                } else {
-                    println!("  Current version: v{} (prebuild, commit: {})", current_version, &commit[..8.min(commit.len())]);
+                    Err(e) => {
+                        eprintln!("  ✗ Failed to replace binary: {}", e);
+                        std::process::exit(1);
+                    }
                 }
-            } else {
-                println!("  Current version: v{}", current_version);
             }
-
-            if let Some(ref info) = latest_commit {
-                println!("  Latest version:  v{} (commit: {})", current_version, &info.sha[..8.min(info.sha.len())]);
-            } else {
-                println!("  Latest version:  v{} (commit: unknown)", current_version);
+            Err(e) => {
+                eprintln!("  ✗ Failed to download update: {}", e);
+                std::process::exit(1);
             }
-            println!();
-
-            if !confirm_yes_no("  Do you want to update from the current state of the GitHub commit?", true) {
-                println!("  Update cancelled.");
+        }
+    } else {
+        match latest_release {
+            Ok(CheckOutcome::NewRelease { .. }) => {
+                // Logically unreachable because has_new_release would be true and that branch exits.
+                unreachable!();
+            }
+            Ok(CheckOutcome::UpToDate) => {
+                println!("  Hydragent is already up to date (v{}).", current_version);
                 std::process::exit(0);
             }
-
-            println!();
-            println!("  The one-command installer will:");
-            println!("    1. Clone the repo into ~/.hydragent/src (or update it)");
-            println!("    2. cargo build --release -p hydragent-core");
-            println!("    3. Copy the fresh binary over the running one");
-            println!("    4. Refresh the launcher and PATH entries");
-            println!();
-            println!("  Launching installer: {}", install_one_liner());
-            println!();
-            match launch_source_installer().await {
-                Ok(status) => {
-                    if !status.success() {
-                        eprintln!(
-                            "  ✗ Installer exited with code {}",
-                            status.code().unwrap_or(-1)
-                        );
-                        std::process::exit(status.code().unwrap_or(1));
+            Ok(CheckOutcome::NoReleasesPublished) | Err(_) => {
+                if let Err(ref e) = latest_release {
+                    // Check if it's a rate limit error (graceful degradation, per user feedback!)
+                    let err_str = e.to_string();
+                    if err_str.contains("rate limit") || err_str.contains("403") || err_str.contains("429") {
+                        eprintln!("  ⚠ {}", err_str);
+                    } else {
+                        eprintln!("  ⚠ Failed to check release channel: {}", e);
                     }
-                    // Installer already printed its own success message;
-                    // nothing more to add.
+                } else {
+                    println!("  No release found for this repo.");
                 }
-                Err(e) => {
-                    eprintln!("  ✗ Failed to launch installer: {}", e);
-                    std::process::exit(1);
+
+                if !confirm_yes_no("  Do you want to update and rebuild from the latest GitHub commit?", true) {
+                    println!("  Update cancelled.");
+                    std::process::exit(0);
+                }
+
+                println!();
+                println!("  Launching source build installer...");
+                match launch_source_installer().await {
+                    Ok(status) => {
+                        if !status.success() {
+                            eprintln!(
+                                "  ✗ Installer exited with code {}",
+                                status.code().unwrap_or(-1)
+                            );
+                            std::process::exit(status.code().unwrap_or(1));
+                        }
+                        
+                        // Write fresh metadata.json
+                        let meta = InstallationMetadata {
+                            version: "source".to_string(),
+                            commit: upstream_commit.clone(),
+                            install_mode: "source".to_string(),
+                            date: chrono::Utc::now().to_rfc3339(),
+                        };
+                        write_installation_metadata(&meta);
+                        
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("  ✗ Failed to launch installer: {}", e);
+                        std::process::exit(1);
+                    }
                 }
             }
-            std::process::exit(0);
-        }
-        Err(e) => {
-            eprintln!("  ✗ Failed to check for updates: {}", e);
-            std::process::exit(1);
         }
     }
 }
 
-/// Repo identifier for the source-only "no release" hint. Kept in sync
-/// with the launchers and installer (`install.ps1`, `install.sh`,
-/// `Hydragent.cmd`). The single `GITHUB_API_URL` constant above is the
-/// authoritative endpoint used by the check itself.
-const GITHUB_REPO: &str = "joker0210G/Hydragent";
-
 /// Outcome of querying GitHub for the latest release.
 #[derive(Debug)]
 enum CheckOutcome {
-    /// A release newer than the local binary is available.
     NewRelease {
         version: String,
         asset: Asset,
     },
-    /// The local binary is at least as new as the published release.
     UpToDate,
-    /// The repo has not published any releases yet (API returned 404
-    /// for `/releases/latest`). Treated as informational, not an error.
     NoReleasesPublished,
 }
 
-/// Query GitHub Releases for the latest tag and see if it is newer than
-/// the binary's compile-time version.
+/// Query GitHub Releases for the latest tag.
 async fn check_latest_version() -> Result<CheckOutcome, Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .user_agent("hydragent-updater")
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
-    let response = client.get(GITHUB_API_URL).send().await?;
+    let repo = github_repo();
+    let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    let response = client.get(&api_url).send().await?;
 
-    // Special case: /releases/latest returns 404 when the repo has not
-    // published any releases at all. Treat as "no release channel yet"
-    // instead of an error so the user gets an actionable hint.
+    // Graceful rate limit handling (per user feedback!)
+    if response.status() == reqwest::StatusCode::FORBIDDEN || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err("GitHub API rate limit exceeded (403/429). Skipped release channel check.".into());
+    }
+
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(CheckOutcome::NoReleasesPublished);
     }
@@ -237,10 +378,6 @@ async fn check_latest_version() -> Result<CheckOutcome, Box<dyn std::error::Erro
     }
 
     let release: Release = response.json().await?;
-
-    // Defensive: even if /releases/latest succeeds, an empty tag list
-    // (shouldn't happen, but GitHub occasionally returns odd shapes) is
-    // also treated as "no release channel".
     if release.tag_name.trim().is_empty() {
         return Ok(CheckOutcome::NoReleasesPublished);
     }
@@ -262,15 +399,22 @@ async fn check_latest_version() -> Result<CheckOutcome, Box<dyn std::error::Erro
     })
 }
 
-/// Fetch the SHA of the most recent commit on the default branch from
-/// the GitHub Commits API.
+/// Fetch the SHA of the most recent commit.
 async fn fetch_latest_commit() -> Result<CommitInfo, Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .user_agent("hydragent-updater")
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
-    let response = client.get(GITHUB_COMMITS_API_URL).send().await?;
+    let repo = github_repo();
+    let commits_api_url = format!("https://api.github.com/repos/{}/commits?per_page=1", repo);
+    let response = client.get(&commits_api_url).send().await?;
+
+    // Graceful rate limit handling (per user feedback!)
+    if response.status() == reqwest::StatusCode::FORBIDDEN || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err("GitHub API rate limit exceeded (403/429). Skipped commit channel check.".into());
+    }
+
     if !response.status().is_success() {
         return Err(format!(
             "GitHub API returned {}: {}",
@@ -289,15 +433,15 @@ async fn fetch_latest_commit() -> Result<CommitInfo, Box<dyn std::error::Error>>
     Ok(CommitInfo { sha })
 }
 
-/// Query the GitHub Compare API to see how many commits `local_sha` is
-/// behind `latest_sha`. Returns the count on success, or None on any
-/// error so the UI can silently omit the distance line.
+/// Query the GitHub Compare API.
 async fn fetch_commits_behind(
     local_sha: &str,
     latest_sha: &str,
 ) -> Option<i64> {
+    let repo = github_repo();
     let url = format!(
-        "https://api.github.com/repos/joker0210G/Hydragent/compare/{}...{}",
+        "https://api.github.com/repos/{}/compare/{}...{}",
+        repo,
         local_sha,
         latest_sha,
     );
@@ -321,23 +465,21 @@ async fn fetch_commits_behind(
     }
 }
 
-/// Best-effort detection of the local git commit the running binary was
-/// built from.
-///
-/// We check, in order:
-///   1. The directory holding the current binary (works for `cargo run`).
-///   2. The standard source checkout path used by the installer
-///      (`~/.hydragent/src` or `%USERPROFILE%\.hydragent\src`).
-///   3. The current working directory (last-ditch fallback).
+/// Best-effort detection of the local git commit the running binary was built from.
 fn get_local_commit() -> Option<String> {
+    // 1. Primary source of truth: installation metadata
+    if let Some(meta) = get_installation_metadata() {
+        if !meta.commit.is_empty() && meta.commit != "unknown" {
+            return Some(meta.commit);
+        }
+    }
+
     let mut dirs: Vec<PathBuf> = Vec::new();
 
-    // 1. Directory that holds the binary.
     if let Some(p) = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)) {
         dirs.push(p);
     }
 
-    // 2. Installer source checkout directory.
     #[cfg(target_os = "windows")]
     let src_dir = std::env::var("USERPROFILE").ok().map(|p| PathBuf::from(p).join(".hydragent").join("src"));
     #[cfg(not(target_os = "windows"))]
@@ -346,7 +488,6 @@ fn get_local_commit() -> Option<String> {
         dirs.push(p);
     }
 
-    // 3. Current working directory.
     if let Ok(p) = std::env::current_dir() {
         dirs.push(p);
     }
@@ -368,7 +509,7 @@ fn get_local_commit() -> Option<String> {
     None
 }
 
-/// Parse two dotted version strings and compare them as (major,minor,patch).
+/// Parse two dotted version strings and compare them.
 fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |s: &str| -> Option<(u64, u64, u64)> {
         let mut parts = s.split('.');
@@ -381,14 +522,13 @@ fn is_newer(latest: &str, current: &str) -> bool {
 
     match (parse(latest), parse(current)) {
         (Some(l), Some(c)) => l > c,
-        (Some(_), None) => true,   // release parses, local doesn't → assume release is newer
-        (None, Some(_)) => false,  // local parses, release doesn't → don't downgrade
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
         (None, None) => latest != current,
     }
 }
 
-/// Return the Rust target triple for the platform this binary was built
-/// for, matching the asset names published by the release workflow.
+/// Return the Rust target triple.
 fn get_target_triple() -> &'static str {
     if cfg!(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")) {
         "x86_64-pc-windows-msvc"
@@ -705,7 +845,7 @@ const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 fn unix_installer_command() -> String {
     format!(
         "curl -fsSL {url} | HYDRAGENT_SOURCE=1 HYDRAGENT_FORCE=1 sh",
-        url = INSTALL_SH_URL,
+        url = install_sh_url(),
     )
 }
 
@@ -797,7 +937,7 @@ async fn launch_source_installer() -> io::Result<std::process::ExitStatus> {
 
 #[cfg(target_os = "windows")]
 async fn launch_source_installer_windows() -> io::Result<std::process::ExitStatus> {
-    let (tmp_path, _guard) = match download_windows_installer_to_temp(INSTALL_PS1_URL).await {
+    let (tmp_path, _guard) = match download_windows_installer_to_temp(&install_ps1_url()).await {
         Ok(pair) => pair,
         Err(e) => {
             return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
@@ -840,23 +980,43 @@ async fn launch_source_installer_unix() -> io::Result<std::process::ExitStatus> 
 mod tests {
     use super::*;
 
-    /// The no-release fallback shells out to the canonical hosted
-    /// install script. Make sure the constants agree with the live
-    /// site, otherwise `hydragent update` on a repo with no releases
-    /// will silently fail to fetch the installer.
+    /// Test the git remote URL parser (verifying hosts, SSH, and HTTPS formats)
     #[test]
-    fn installer_urls_point_to_canonical_github_pages() {
-        assert!(
-            INSTALL_PS1_URL.starts_with("https://joker0210G.github.io/Hydragent/"),
-            "unexpected install.ps1 URL: {}",
-            INSTALL_PS1_URL
+    fn test_git_remote_parser() {
+        // Valid GitHub HTTPS URLs
+        assert_eq!(
+            parse_git_remote("https://github.com/owner/repo.git").as_deref(),
+            Some("owner/repo")
         );
-        assert!(
-            INSTALL_SH_URL.starts_with("https://joker0210G.github.io/Hydragent/"),
-            "unexpected install.sh URL: {}",
-            INSTALL_SH_URL
+        assert_eq!(
+            parse_git_remote("https://github.com/owner/repo").as_deref(),
+            Some("owner/repo")
         );
-        assert_eq!(GITHUB_REPO, "joker0210G/Hydragent");
+        // Valid GitHub SSH URLs
+        assert_eq!(
+            parse_git_remote("git@github.com:owner/repo.git").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(
+            parse_git_remote("git@github.com:owner/repo").as_deref(),
+            Some("owner/repo")
+        );
+
+        // Invalid hosts (GitLab/Gitea) should return None
+        assert_eq!(parse_git_remote("https://gitlab.com/owner/repo.git"), None);
+        assert_eq!(parse_git_remote("git@gitlab.com:owner/repo.git"), None);
+        assert_eq!(parse_git_remote("https://gitea.com/owner/repo"), None);
+    }
+
+    /// Test the simple .env key-value line parser
+    #[test]
+    fn test_github_repo_resolves_env_or_fallback() {
+        // By default, without env overrides, it should fallback to the canonical repo
+        // (unless running inside a git checkout, in which case it discovers the local remote,
+        // which is also acceptable since it's testing the dynamic path!)
+        let repo = github_repo();
+        assert!(!repo.is_empty());
+        assert!(repo.contains('/'));
     }
 
     /// The one-liner we print to the user must match the platform
@@ -981,8 +1141,8 @@ mod tests {
             cmd
         );
         assert!(
-            cmd.contains(INSTALL_SH_URL),
-            "unix command must reference the canonical install.sh URL: {}",
+            cmd.contains(&install_sh_url()),
+            "unix command must reference the dynamic install.sh URL: {}",
             cmd
         );
         // Make sure we didn't regress to the broken

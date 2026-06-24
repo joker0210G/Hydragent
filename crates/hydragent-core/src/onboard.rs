@@ -243,6 +243,120 @@ pub fn run(opts: OnboardOptions) -> i32 {
         }
     };
 
+    // ── New Steps: Persona, Sandbox, Memory, Integrations ─────────────
+    let mut persona = "developer";
+    let mut custom_soul_prompt = String::new();
+    let mut enforce_sandbox = false;
+    let mut max_semantic_memories = 100;
+    let mut telegram_token = String::new();
+
+    if !opts.non_interactive {
+        // Step 2: Persona
+        println!();
+        println!("------------------------------------------------------------------------");
+        println!("  [Step 2/5] Agent Persona Selection");
+        println!("  Choose your Hydragent's default persona.");
+        println!("  (Note: Whichever baseline you choose will dynamically adapt and evolve based on your usage.)");
+        println!("------------------------------------------------------------------------");
+        let personas = &[
+            "Developer (Default: Fact-focused, objective, coding-specialist)",
+            "Creative (Warm, expressive, brainstorming partner)",
+            "Minimalist (Extremely concise, direct answers)",
+            "Custom (Define your own custom system prompt)"
+        ];
+        let selected_p = select(personas, None).unwrap_or(0);
+        match selected_p {
+            0 => persona = "developer",
+            1 => persona = "creative",
+            2 => persona = "minimalist",
+            _ => {
+                persona = "custom";
+                println!();
+                if let Some(prompt_text) = prompt("  Enter your custom system prompt / soul guidelines:") {
+                    custom_soul_prompt = prompt_text;
+                } else {
+                    custom_soul_prompt = "You are a helpful AI assistant.".to_string();
+                }
+            }
+        }
+
+        // Step 3: Security & Sandbox
+        println!();
+        println!("------------------------------------------------------------------------");
+        println!("  [Step 3/5] Security & Sandbox Level");
+        println!("  Configure Security Guardrails & Sandboxing.");
+        println!("------------------------------------------------------------------------");
+        let sandboxes = &[
+            "Secure Sandbox (Runs code in isolated WebAssembly, 100% safe)",
+            "Host Execution (Runs directly on host, but asks before executing write/run actions)"
+        ];
+        let selected_s = select(sandboxes, None).unwrap_or(1);
+        if selected_s == 0 {
+            enforce_sandbox = true;
+        }
+
+        // Step 4: Memory & Storage
+        println!();
+        println!("------------------------------------------------------------------------");
+        println!("  [Step 4/5] Memory & Storage");
+        println!("  Configure long-term semantic memory.");
+        println!("------------------------------------------------------------------------");
+        let memory_options = &[
+            "Enabled (Default: Stores and retrieves past facts about your chats)",
+            "Disabled (Pure stateless session execution)"
+        ];
+        let selected_m = select(memory_options, None).unwrap_or(0);
+        if selected_m == 1 {
+            max_semantic_memories = 0;
+        }
+
+        // Step 5: Integrations & Adapters
+        println!();
+        println!("------------------------------------------------------------------------");
+        println!("  [Step 5/5] Integrations & Adapters");
+        println!("  Would you like to configure external chat interfaces (like Telegram)?");
+        println!("------------------------------------------------------------------------");
+        if prompt_yes_no("  Configure Telegram integration?", false).unwrap_or(false) {
+            if let Some(token) = prompt("  Enter your Telegram Bot Token:") {
+                telegram_token = token;
+            }
+        }
+    }
+
+    // Now write SOUL.md and USER.md
+    let config_dir = paths::config_dir();
+    let _ = std::fs::create_dir_all(&config_dir);
+    let soul_path = config_dir.join("SOUL.md");
+    let soul_content = match persona {
+        "developer" => {
+            "You are a pragmatic, direct, fact-focused, and objective software engineer and systems architect.\n\
+             Focus on structural correctness, optimal architecture, bug prevention, and clean implementation.\n\
+             Avoid unnecessary conversational fluff."
+        }
+        "creative" => {
+            "You are a warm, imaginative, expressive, and brainstorming partner.\n\
+             Help the user explore concepts, design creative solutions, write engaging text, and think outside the box.\n\
+             Use rich analogies and encouraging language."
+        }
+        "minimalist" => {
+            "You are a highly concise assistant.\n\
+             Provide short, direct, and to-the-point answers with minimal explanation unless asked.\n\
+             Do not use conversational filler or introductory/concluding remarks."
+        }
+        _ => &custom_soul_prompt,
+    };
+    if let Err(e) = std::fs::write(&soul_path, soul_content) {
+        eprintln!("  ⚠ Failed to write SOUL.md: {}", e);
+    } else if !opts.non_interactive {
+        println!("  ✓ Wrote SOUL.md (Persona: {})", persona);
+    }
+
+    let user_path = config_dir.join("USER.md");
+    if !user_path.exists() {
+        let user_content = "Name: User\nPreferences: (Self-evolving based on your interactions and habits)\n";
+        let _ = std::fs::write(&user_path, user_content);
+    }
+
     // ── 5. Write .env ─────────────────────────────────────────────────
     // Always write to ~/.hydragent/.env (top-level), never cwd/.env.
     // The installer creates ~/.hydragent/ and exports HYDRAGENT_HOME;
@@ -311,6 +425,13 @@ pub fn run(opts: OnboardOptions) -> i32 {
     // Suggest two fallbacks (empty fallback list is fine).
     if !new_env.contains_key("BRAIN_FALLBACKS") {
         new_env.insert("BRAIN_FALLBACKS".to_string(), String::new());
+    }
+
+    // Overlay new variables
+    new_env.insert("ENFORCE_SANDBOX".to_string(), enforce_sandbox.to_string());
+    new_env.insert("MAX_SEMANTIC_MEMORIES".to_string(), max_semantic_memories.to_string());
+    if !telegram_token.is_empty() {
+        new_env.insert("TELEGRAM_BOT_TOKEN".to_string(), telegram_token.clone());
     }
 
     // Re-render the file. write_env_file() creates the parent

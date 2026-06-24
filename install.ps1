@@ -406,6 +406,16 @@ function Install-FromRelease {
     if (-not (Test-Path (Join-Path $BinDir $BinName))) {
         throw "Extraction succeeded but $BinName not found in archive"
     }
+
+    # Write metadata.json for prebuilt install
+    $metaPath = Join-Path $InstallRoot "metadata.json"
+    $metaContent = @{
+        version = $v
+        commit = if ($CommitHash) { $CommitHash } else { "unknown" }
+        install_mode = "prebuilt"
+        date = (Get-Date -uformat "%Y-%m-%dT%H:%M:%SZ")
+    } | ConvertTo-Json -Compress
+    Set-Content -Path $metaPath -Value $metaContent -Encoding utf8
 }
 
 function Install-FromSource {
@@ -483,6 +493,19 @@ function Install-SourceCheckout {
 
 function Build-Source {
     Write-Step 'A3' "Building hydragent-core (release)"
+
+    # Pre-Build Renaming (Windows Lock Bypass):
+    # If the target binary already exists and is locked by a running process,
+    # rename it to .old so cargo can build and write a new exe without locks.
+    $built = Join-Path $SourceDir "target\release\$BinName"
+    if (Test-Path $built) {
+        $builtOld = $built + ".old"
+        Remove-Item $builtOld -Force -ErrorAction SilentlyContinue
+        try {
+            Rename-Item $built $builtOld -Force -ErrorAction SilentlyContinue
+        } catch {}
+    }
+
     Push-Location $SourceDir
 
     # Give cargo a generous HTTP timeout (120s instead of 30s) so
@@ -495,7 +518,6 @@ function Build-Source {
         Pop-Location
         Write-Err "cargo build failed (exit $LASTEXITCODE). See output above."
     }
-    $built = Join-Path $SourceDir "target\release\$BinName"
     if (-not (Test-Path $built)) {
         Pop-Location
         Write-Err "Build reported success but $built not found."
@@ -517,6 +539,17 @@ function Build-Source {
     try {
         Copy-Item $built $dest -Force
         Write-OK "Built and installed $BinName"
+
+        # Write metadata.json for source install
+        $metaPath = Join-Path $InstallRoot "metadata.json"
+        $metaContent = @{
+            version = "source"
+            commit = if ($CommitHash) { $CommitHash } else { "unknown" }
+            install_mode = "source"
+            date = (Get-Date -uformat "%Y-%m-%dT%H:%M:%SZ")
+        } | ConvertTo-Json -Compress
+        Set-Content -Path $metaPath -Value $metaContent -Encoding utf8
+
         # Best-effort: clean up the .old backup on success.
         if (Test-Path $oldDest) {
             Remove-Item $oldDest -Force -ErrorAction SilentlyContinue
@@ -704,11 +737,34 @@ function Pause-IfEphemeral {
 # 3. Main flow
 # ===========================================================================
 
+# Resolve the current commit ID if possible (best effort)
+$CommitHash = $null
+if (Test-Command git) {
+    $CommitHash = (git rev-parse --short HEAD 2>$null)
+    if ($CommitHash) { $CommitHash = $CommitHash.Trim() }
+}
+if (-not $CommitHash -and $PSScriptRoot) {
+    if (Test-Path (Join-Path $PSScriptRoot '.git')) {
+        $CommitHash = (git -C $PSScriptRoot rev-parse --short HEAD 2>$null)
+        if ($CommitHash) { $CommitHash = $CommitHash.Trim() }
+    }
+}
+if (-not $CommitHash) {
+    try {
+        $targetRef = if ($Version -eq 'latest') { 'main' } else { $Version }
+        $api = "https://api.github.com/repos/$Repo/commits/$targetRef"
+        $commit = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'hydragent-installer' } -ErrorAction SilentlyContinue
+        if ($commit -and $commit.sha) {
+            $CommitHash = $commit.sha.Substring(0, 7)
+        }
+    } catch {}
+}
+
 Write-Banner
 Write-Info "Install root: $InstallRoot"
 Write-Info "Repo:         $Repo"
-Write-Info "Version:      $Version"
-Write-Info "Mode:         $(if ($Source) { 'source' } else { 'auto (prefer prebuilt)' })"
+Write-Info "Version:      $Version$(if ($CommitHash) { " ($CommitHash)" })"
+Write-Info "Mode:         $(if ($Source) { 'source' } else { 'prebuilt' })"
 
 Ensure-Directory $BinDir
 Ensure-Directory $DataDir
