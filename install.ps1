@@ -764,13 +764,17 @@ function Pause-IfEphemeral {
 # Resolve the current commit ID if possible (best effort)
 $CommitHash = $null
 if (Test-Command git -and (Test-Path '.git')) {
-    $CommitHash = (git rev-parse --short HEAD 2>$null)
-    if ($CommitHash) { $CommitHash = $CommitHash.Trim() }
+    try {
+        $CommitHash = (git rev-parse --short HEAD 2>$null)
+        if ($CommitHash) { $CommitHash = $CommitHash.Trim() }
+    } catch {}
 }
 if (-not $CommitHash -and $PSScriptRoot) {
     if (Test-Path (Join-Path $PSScriptRoot '.git')) {
-        $CommitHash = (git -C $PSScriptRoot rev-parse --short HEAD 2>$null)
-        if ($CommitHash) { $CommitHash = $CommitHash.Trim() }
+        try {
+            $CommitHash = (git -C $PSScriptRoot rev-parse --short HEAD 2>$null)
+            if ($CommitHash) { $CommitHash = $CommitHash.Trim() }
+        } catch {}
     }
 }
 if (-not $CommitHash) {
