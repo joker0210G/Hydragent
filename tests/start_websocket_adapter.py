@@ -6,7 +6,7 @@ import sys
 import socket
 
 repo = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-adapter = os.path.join(repo, "adapters", "websocket_adapter.py")
+adapter = os.path.join(repo, "adapters", "channels", "websocket", "websocket_adapter.py")
 python = os.path.join(repo, "adapters", ".venv", "Scripts", "python.exe")
 logs_dir = os.path.join(repo, "logs")
 os.makedirs(logs_dir, exist_ok=True)

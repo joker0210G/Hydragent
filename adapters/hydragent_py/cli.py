@@ -24,7 +24,7 @@ from .repl import REPL
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="hydra-cli",
-        description="Hydragent Python SDK — chat, send, and embed.",
+        description="Hydragent Python Client CLI — A lightweight client for interacting with a running Hydragent gateway daemon. Use this to send commands from scripts/CI, or chat with a remote/background gateway.",
     )
     p.add_argument("--page", type=str, help="Session id (default: random uuid)")
     p.add_argument("--host", type=str, help="Bus host (default: HYDRA_BUS_HOST or 127.0.0.1)")

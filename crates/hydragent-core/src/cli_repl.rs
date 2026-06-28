@@ -37,7 +37,7 @@
 // adapter-based paths use.
 
 
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -45,6 +45,7 @@ use hydragent_memory::SessionStore;
 use hydragent_model::router::ModelRouter;
 use hydragent_tools::registry::ToolRegistry;
 use hydragent_types::MessageRole;
+use sqlx::Row;
 // `VerificationResult` is the return-type of `MerkleAuditChain::verify`
 // (the Merkle chain's "is the chain intact?" answer). The enum has
 // `Valid { event_count }` and `Tampered { seq_id, detail }` variants —
@@ -61,6 +62,7 @@ use crate::config::AppConfig;
 // helper can all use the same colour palette without having
 // to redeclare them at the top of every function.
 const ANSI_DIM: &str = "\x1b[2m";
+#[allow(dead_code)]
 const ANSI_BOLD: &str = "\x1b[1m";
 const ANSI_CYAN: &str = "\x1b[36m";
 const ANSI_RESET: &str = "\x1b[0m";
@@ -141,6 +143,15 @@ pub struct ReplState {
     /// they display, and it keeps the branching out of the
     /// main.rs dispatch (which already has too much going on).
     pub brand: BrandInfo,
+    // Active session status tracking fields
+    pub status_mode: StatusMode,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub context_pct: u8,
+    pub stream_raw: bool,
+    pub show_reasoning: bool,
+    pub input_history: Vec<String>,
+    pub renderer: crate::markdown_render::MarkdownRenderer,
 }
 
 use std::path::PathBuf;
@@ -157,12 +168,12 @@ use crate::tui_header::{default_tip_box, print_kimi_header, BrandInfo};
 /// the bar's struct shape.
 fn status_state_from(state: &ReplState) -> StatusState {
     StatusState {
-        mode: StatusMode::Normal,
+        mode: state.status_mode,
         model: state.brand.model.clone(),
         multi_model: false,
-        context_pct: 0,
-        input_tokens: 0,
-        output_tokens: 0,
+        context_pct: state.context_pct,
+        input_tokens: state.input_tokens,
+        output_tokens: state.output_tokens,
         slash_hint: "/ for commands".to_string(),
     }
 }
@@ -194,8 +205,6 @@ pub async fn run(mut state: ReplState) -> i32 {
     // does it.
     print!("{}", render_status_bar(&status_state_from(&state)));
 
-    let stdin = std::io::stdin();
-    let mut stdin_lock = stdin.lock();
     let mut stdout = std::io::stdout();
     let mut paste_mode = false;
     let mut paste_buffer = String::new();
@@ -226,23 +235,23 @@ pub async fn run(mut state: ReplState) -> i32 {
             return 1;
         }
 
-        let mut line = String::new();
-        match stdin_lock.read_line(&mut line) {
-            Ok(0) => {
-                // EOF (Ctrl-Z on Windows / Ctrl-D on Unix)
+        // Read a line using our custom raw-mode keyboard interceptor!
+        // This lets us handle shift+tab for modes and ctrl+p for model picker
+        // without waiting for the user to press Enter.
+        let line = match read_line_interactive(&mut state, paste_mode) {
+            Ok(Some(l)) => l,
+            Ok(None) => {
+                // EOF or cancel
                 println!();
-                println!("  (EOF — exiting chat)");
+                println!("  (exiting chat)");
                 return 0;
             }
-            Ok(_) => {}
             Err(e) => {
-                eprintln!("\n  ✗ stdin read error: {}", e);
+                eprintln!("\n  ✗ keyboard input error: {}", e);
                 return 1;
             }
-        }
-        let line = strip_line_ending(&line);
+        };
 
-        // ── input hardening ───────────────────────────────────────────
         // Filter C0 control bytes and DEL so binary garbage, NUL
         // bytes, stray ESC sequences, etc. can't reach the model
         // (and don't render as mojibake in the local echo). The
@@ -256,7 +265,7 @@ pub async fn run(mut state: ReplState) -> i32 {
         const MAX_LINE_BYTES: usize = 64 * 1024;
         if line.len() > MAX_LINE_BYTES {
             eprintln!(
-                "  ✗ Single-line input is {} bytes — over the {} KB cap. Use /paste (256 KB) or run with --file.",
+                "  ✗ Single-line input is {} bytes — over the {} KB cap. Use /paste (256 KB).",
                 line.len(),
                 MAX_LINE_BYTES / 1024
             );
@@ -294,7 +303,7 @@ pub async fn run(mut state: ReplState) -> i32 {
                     println!("  (empty paste — cancelled)");
                     continue;
                 }
-                if let Err(code) = dispatch_user_message(&state, &full, &mut reasoning_history).await {
+                if let Err(code) = dispatch_user_message(&mut state, &full, &mut reasoning_history).await {
                     return code;
                 }
                 println!();
@@ -306,7 +315,7 @@ pub async fn run(mut state: ReplState) -> i32 {
                 paste_mode = false;
                 paste_buffer.clear();
                 eprintln!(
-                    "  ✗ Paste buffer exceeded {} KB — split the message and use /paste again, or run with --file.",
+                    "  ✗ Paste buffer exceeded {} KB — split the message and use /paste again.",
                     MAX_PASTE_BYTES / 1024
                 );
                 continue;
@@ -342,7 +351,7 @@ pub async fn run(mut state: ReplState) -> i32 {
 
         // ── regular user message ──────────────────────────────────────
         println!();
-        if let Err(code) = dispatch_user_message(&state, trimmed, &mut reasoning_history).await {
+        if let Err(code) = dispatch_user_message(&mut state, trimmed, &mut reasoning_history).await {
             return code;
         }
         println!();
@@ -381,21 +390,26 @@ async fn handle_slash_command(
             return SlashExit::Exit(0);
         }
         "new" => {
-            // Generating a new page mid-REPL would require
-            // tearing down the current `SessionStore`,
-            // `ModelRouter`, and `ToolRegistry` (they're all
-            // wired to the current `page_id`) and rebuilding
-            // them — too much surgery for a slash command.
-            // The user-facing answer is therefore a copy-paste
-            // command: mint a fresh id here, and the next
-            // `hydragent chat` invocation picks it up.
-            // (The `--page` flag is at the top level, so the
-            // correct invocation is `hydragent --page <id> chat`,
-            // not `hydragent chat --page <id>`.)
+            // Let's create a new page, optionally allowing the user to assign it to a Shelf and Book
             let new_id = format!("chat-{}", &uuid::Uuid::new_v4().to_string()[..8]);
-            println!("  /new starts a fresh page with a new id.");
-            println!("  To do that, exit this REPL and run:");
-            println!("      hydragent --page {} chat", new_id);
+            
+            println!("  Creating a new page: {}", new_id);
+            match setup_new_page_interactive(state, &new_id).await {
+                Ok(true) => {
+                    state.page_id = new_id.clone();
+                    state.brand.page_id_short = short_id(&new_id);
+                    // Repaint status bar
+                    print!("\r\x1b[A\x1b[2K");
+                    print!("{}", render_status_bar(&status_state_from(state)));
+                    println!("  ✓ Created and swapped to new page: {}", new_id);
+                }
+                Ok(false) => {
+                    println!("  (cancelled new page creation)");
+                }
+                Err(e) => {
+                    eprintln!("  ✗ Failed to setup new page: {}", e);
+                }
+            }
         }
         "page" => {
             // Show the short id (matches the prompt) and put the
@@ -427,11 +441,7 @@ async fn handle_slash_command(
                             let dt = chrono::DateTime::from_timestamp(*last_active / 1000, 0)
                                 .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
                                 .unwrap_or_else(|| "Unknown".to_string());
-                            let id_display = if page_id.len() > 13 {
-                                format!("{}…", &page_id[..12])
-                            } else {
-                                page_id.clone()
-                            };
+                            let id_display = short_id(page_id);
                             println!("    {:<14}  {:<16}  {:>6}", id_display, dt, turn_count);
                         }
                         if pages.len() > 20 {
@@ -448,34 +458,114 @@ async fn handle_slash_command(
             }
         }
         "resume" => {
-            // The slash-command splitter already trims `rest`,
-            // but the user can still pass an argument that's
-            // effectively empty once shell-style quoting is
-            // stripped — e.g. `/resume ""` or `/resume ' '`.
-            // Treat those as "no argument" and surface the
-            // usage hint instead of pretending the user
-            // supplied a real (empty) page id and printing
-            // `hydragent --page "" chat`, which is a useless
-            // and confusing command.
             let rest = unquote(rest);
-            if rest.is_empty() {
-                eprintln!("  Usage: /resume <page_id>");
-                println!("  Tip: /pages shows the most recent 20 ids.");
+            if !rest.is_empty() {
+                // If the user specified a page ID, let's verify if it exists and switch directly!
+                match state.store.list_pages().await {
+                    Ok(pages) => {
+                        if let Some((target_id, _, _, _)) = pages.iter().find(|(pid, _, _, _)| pid == &rest || short_id(pid) == rest) {
+                            state.page_id = target_id.clone();
+                            state.brand.page_id_short = short_id(&target_id);
+                            println!("  ✓ Resumed page {}", target_id);
+                        } else {
+                            eprintln!("  ✗ Page '{}' not found in store.", rest);
+                        }
+                    }
+                    Err(e) => eprintln!("  ✗ Failed to list pages: {}", e),
+                }
             } else {
-                // Same constraint as /new: switching the
-                // page_id mid-REPL would require rebuilding
-                // the store/router/registry. The CLI flag
-                // exists (`hydragent --page <id> chat`) and
-                // is the path of least friction.
-                println!("  /resume in-REPL isn't implemented yet, but you can continue");
-                println!("  this conversation outside the REPL with:");
-                println!("      hydragent --page {} chat", rest);
+                // No page ID specified. Open the interactive TUI Library Browser!
+                match run_tui_library_browser(state).await {
+                    Ok(Some(selected_page_id)) => {
+                        state.page_id = selected_page_id.clone();
+                        state.brand.page_id_short = short_id(&selected_page_id);
+                        // Repaint status bar
+                        print!("\r\x1b[A\x1b[2K");
+                        print!("{}", render_status_bar(&status_state_from(state)));
+                        println!("  ✓ Swapped to page: {}", selected_page_id);
+                    }
+                    Ok(None) => {
+                        println!("  (selection cancelled)");
+                    }
+                    Err(e) => {
+                        eprintln!("  ✗ Library Browser error: {}", e);
+                    }
+                }
+            }
+        }
+        "compact" => {
+            if let Err(e) = run_compaction_pass(state).await {
+                eprintln!("  ✗ Compaction failed: {}", e);
+            }
+        }
+        "export" => {
+            let filename = if rest.is_empty() {
+                format!("hydragent-{}.md", short_id(&state.page_id))
+            } else {
+                unquote(rest)
+            };
+            match state.store.load_recent(&state.page_id, u32::MAX).await {
+                Ok(messages) => {
+                    let mut md = format!("# Hydragent Conversation Export\n\n- Page ID: {}\n- Short ID: {}\n- Exported At: {}\n\n---\n\n", 
+                        state.page_id, 
+                        short_id(&state.page_id),
+                        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+                    );
+                    for msg in messages {
+                        let role_name = match msg.role {
+                            MessageRole::User => "User",
+                            MessageRole::Assistant => "Hydra",
+                            MessageRole::System => "System",
+                            MessageRole::Tool => "Tool Call",
+                        };
+                        md.push_str(&format!("### {}\n\n{}\n\n", role_name, msg.content));
+                    }
+                    match std::fs::write(&filename, md) {
+                        Ok(_) => println!("  ✓ Conversation successfully exported to {}", filename),
+                        Err(e) => eprintln!("  ✗ Failed to write to {}: {}", filename, e),
+                    }
+                }
+                Err(e) => eprintln!("  ✗ Failed to load conversation history for export: {}", e),
+            }
+        }
+        "set" => {
+            if rest.is_empty() {
+                println!("  Current settings:");
+                println!("    stream_raw     = {}", if state.stream_raw { "on" } else { "off" });
+                println!("    show_reasoning = {}", if state.show_reasoning { "on" } else { "off" });
+            } else {
+                let mut parts = rest.splitn(2, char::is_whitespace);
+                let key = parts.next().unwrap_or("").to_lowercase();
+                let val = parts.next().unwrap_or("").to_lowercase();
+                if key == "stream_raw" {
+                    if val == "on" || val == "true" || val == "1" {
+                        state.stream_raw = true;
+                        println!("  ✓ stream_raw is now ON");
+                    } else if val == "off" || val == "false" || val == "0" {
+                        state.stream_raw = false;
+                        println!("  ✓ stream_raw is now OFF");
+                    } else {
+                        eprintln!("  ✗ Invalid value for stream_raw. Use on|off.");
+                    }
+                } else if key == "show_reasoning" {
+                    if val == "on" || val == "true" || val == "1" {
+                        state.show_reasoning = true;
+                        println!("  ✓ show_reasoning is now ON");
+                    } else if val == "off" || val == "false" || val == "0" {
+                        state.show_reasoning = false;
+                        println!("  ✓ show_reasoning is now OFF");
+                    } else {
+                        eprintln!("  ✗ Invalid value for show_reasoning. Use on|off.");
+                    }
+                } else {
+                    eprintln!("  ✗ Unknown setting: {}. Available: stream_raw, show_reasoning.", key);
+                }
             }
         }
         "model" => {
             if rest.is_empty() {
                 println!("  primary   = {}", state.app_config.effective_brain_model());
-                println!("  fallbacks = {:?}", state.app_config.effective_brain_fallbacks());
+                println!("  fallbacks = {}", state.app_config.effective_brain_fallbacks().join(", "));
             } else {
                 // In-session brain switch: updates the router so the
                 // next ReAct turn picks the new model (no .env edit).
@@ -792,19 +882,37 @@ async fn handle_slash_command(
 }
 
 async fn dispatch_user_message(
-    state: &ReplState,
+    state: &mut ReplState,
     message: &str,
     reasoning_history: &mut ReasoningHistory,
 ) -> Result<(), i32> {
+    let start_time = Instant::now();
+
     // Load recent history (capped to MAX_HISTORY_MESSAGES turns).
     const MAX_HISTORY_MESSAGES: u32 = 20;
-    let history = match state.store.load_recent(&state.page_id, MAX_HISTORY_MESSAGES).await {
+    let mut history = match state.store.load_recent(&state.page_id, MAX_HISTORY_MESSAGES).await {
         Ok(h) => h,
         Err(e) => {
             eprintln!("  ✗ Failed to load page history: {}", e);
             return Err(1);
         }
     };
+
+    // Inject page summary if present as the very first history message
+    if let Ok(Some(ref summary)) = state.store.get_page_summary(&state.page_id).await {
+        if !summary.trim().is_empty() {
+            history.insert(0, hydragent_types::Message {
+                id: 0,
+                page_id: state.page_id.clone(),
+                role: MessageRole::System,
+                content: format!("[Summary of previous conversation context on this Page]:\n\n{}", summary),
+                timestamp: 0,
+                token_count: None,
+            });
+        }
+    }
+    
+    let history_tokens: u64 = history.iter().map(|m| estimate_tokens(&m.content)).sum();
 
     // Persist the user turn.
     if let Err(e) = state
@@ -892,10 +1000,7 @@ async fn dispatch_user_message(
     // turn, in case the user later asks to see it (e.g. with
     // `/debug` or by setting HYDRAGENT_SHOW_REASONING=1).
     let mut reasoning_buffer = String::new();
-    let show_reasoning = std::env::var("HYDRAGENT_SHOW_REASONING")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let show_reasoning = state.show_reasoning;
     // `stream_raw` controls whether tokens are echoed to the
     // terminal as they arrive. Default is `false` (the REPL
     // buffers the full response and renders it as nicely-styled
@@ -905,10 +1010,7 @@ async fn dispatch_user_message(
     // "tokens-appear-one-at-a-time" live-stream behaviour; in
     // that mode the response is printed raw and the markdown
     // renderer is bypassed.
-    let stream_raw = std::env::var("HYDRAGENT_STREAM_RAW")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let stream_raw = state.stream_raw;
     // Local aliases for the format-string `{name}` syntax. The
     // streaming loop uses `{dim}` / `{cyan}` / `{reset}` heavily
     // so we re-bind the module-level constants once at the top
@@ -1085,7 +1187,7 @@ async fn dispatch_user_message(
             // a trailing newline so the next prompt has
             // breathing room.
             if !stream_raw && !collected.is_empty() {
-                let renderer = crate::markdown_render::MarkdownRenderer::new();
+                let renderer = &state.renderer;
                 if let Err(e) = renderer.print_to(&collected, &mut stdout) {
                     // Fall back to printing raw if the renderer
                     // itself fails (e.g. broken pipe). Never
@@ -1125,6 +1227,25 @@ async fn dispatch_user_message(
                 // in the history from a previous turn.
                 reasoning_history.clear();
             }
+
+            // Estimate and update token counters
+            let turn_input_tokens = estimate_tokens(message) + history_tokens + 1500;
+            let turn_output_tokens = estimate_tokens(&collected);
+            state.input_tokens += turn_input_tokens;
+            state.output_tokens += turn_output_tokens;
+            const CONTEXT_LIMIT: u64 = 100_000;
+            state.context_pct = ((turn_input_tokens + turn_output_tokens) * 100 / CONTEXT_LIMIT).min(100) as u8;
+
+            // Render turn duration
+            println!("  {dim}(responded in {:.1}s){reset}", start_time.elapsed().as_secs_f64());
+
+            // Auto-compaction check
+            if state.context_pct >= 80 {
+                println!("  {dim}◆ context fullness at {}% — running auto-compaction…{reset}", state.context_pct);
+                if let Err(e) = run_compaction_pass(state).await {
+                    eprintln!("  ✗ Auto-compaction failed: {}", e);
+                }
+            }
         }
         Ok(Err(e)) => {
             // Render a one-line, user-friendly error. The verbose
@@ -1157,6 +1278,7 @@ struct SpinnerHandle {
     /// to hold once the thread is gone).
     label_state: Option<Arc<std::sync::Mutex<String>>>,
     join: Option<std::thread::JoinHandle<()>>,
+    start_time: Instant,
 }
 
 impl SpinnerHandle {
@@ -1176,7 +1298,7 @@ impl SpinnerHandle {
     /// all torn down together. Best-effort: if the join hangs, we
     /// drop the thread and move on — the REPL should never block
     /// waiting for cosmetic output to clear.
-    fn stop(mut self) {
+    fn stop(mut self) -> f64 {
         self.stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
         // Drop the label state so callers can no longer poke the
         // (now-dying) thread with confusing late updates.
@@ -1190,6 +1312,7 @@ impl SpinnerHandle {
         let mut stdout = std::io::stdout();
         let _ = write!(stdout, "\r\x1b[2K");
         let _ = stdout.flush();
+        self.start_time.elapsed().as_secs_f64()
     }
 }
 
@@ -1213,6 +1336,7 @@ fn start_spinner(label: String) -> SpinnerHandle {
     let label_state = Arc::new(std::sync::Mutex::new(label));
     let flag_clone = stop_flag.clone();
     let label_clone = label_state.clone();
+    let start_time = Instant::now();
     let join = std::thread::spawn(move || {
         let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let mut i = 0usize;
@@ -1256,6 +1380,7 @@ fn start_spinner(label: String) -> SpinnerHandle {
         stop_flag,
         label_state: Some(label_state),
         join: Some(join),
+        start_time,
     }
 }
 
@@ -1282,11 +1407,17 @@ fn print_help() {
     println!("    /help, /?            Show this help");
     println!("    /exit, /quit, /q     Exit chat");
     println!();
-    println!("  Page:");
+    println!("  Page & Export:");
     println!("    /page                Show the current page ID");
     println!("    /pages               List past pages (most recent 20)");
     println!("    /resume <id>         (planned) switch to a past page");
     println!("    /new                 start a fresh page with a new id");
+    println!("    /compact             compress page history using LLM");
+    println!("    /export [filename]   export conversation history to a markdown file");
+    println!();
+    println!("  Settings:");
+    println!("    /set                 list current stream_raw and show_reasoning values");
+    println!("    /set <key> <on|off>  toggle stream_raw or show_reasoning at runtime");
     println!();
     println!("  Diagnostics:");
     println!("    /model [name]        Show or switch primary model (no name = show)");
@@ -1297,7 +1428,7 @@ fn print_help() {
     println!("    /audit head          Show the Merkle audit chain head");
     println!("    /debug               Dump env + config (same as --debug)");
     println!("    /clear, /cls         Clear the screen");
-    println!("    /paste               Toggle multi-line / paste mode");
+    println!("    /paste               Enter multi-line paste mode; finish with ``` or /paste");
     println!();
     println!("  Dream cycle (memory consolidation):");
     println!("    /dream               Show dream cycle status (enabled, interval)");
@@ -1308,8 +1439,8 @@ fn print_help() {
     println!();
     println!("  Reasoning dropdown:");
     println!("    /reasoning, /r       Toggle the last turn's scratchpad");
-    println!("    /r show             Force-expand the last turn's scratchpad");
-    println!("    /r hide             Force-collapse the last turn's scratchpad");
+    println!("      /r show            Force-expand the last turn's scratchpad");
+    println!("      /r hide            Force-collapse the last turn's scratchpad");
     println!("                         (Some models emit a <think>…</think>");
     println!("                         block before the final answer. It's");
     println!("                         hidden by default; this command reveals");
@@ -2194,17 +2325,6 @@ impl ReasoningDetector {
     }
 }
 
-/// Helper: scan `combined` for the earliest opening or closing
-/// marker, depending on the current `in_block` state. Returns
-/// `(kind, off, len)` where `kind` is `0` for an open marker
-/// (entering a reasoning block) and `1` for a close marker
-/// (leaving one). `off` is the byte offset within `combined`
-/// where the marker starts, and `len` is the marker length. If
-/// no marker is found, returns `None`.
-///
-/// We always pick the *earliest* match (smallest `off`), so a
-/// chunk that contains two markers correctly emits the text
-/// before the first one and then transitions.
 fn find_first_marker(combined: &str, in_block: bool) -> Option<(usize, usize, usize)> {
     let candidates: &[&str] = if in_block {
         REASONING_CLOSE
@@ -2221,6 +2341,866 @@ fn find_first_marker(combined: &str, in_block: bool) -> Option<(usize, usize, us
         }
     }
     best
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Interactive Keyboard Raw Mode Input Reader & Model Selector
+// ────────────────────────────────────────────────────────────────────────
+
+/// Read a line from stdout interactively, enabling raw mode to intercept key events:
+/// - Shift + Tab: cycles mode (Normal -> Plan -> Dream -> Normal)
+/// - Ctrl + P: opens the interactive model picker
+/// - Enter: submits prompt
+/// - Backspace: deletes char
+/// - Escape / Ctrl+C: exit/abort
+fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Result<Option<String>> {
+    use crossterm::{
+        event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+        terminal::{enable_raw_mode, disable_raw_mode},
+    };
+    use std::io::Write;
+
+    let mut line = String::new();
+    let mut stdout = std::io::stdout();
+
+    if let Err(_e) = enable_raw_mode() {
+        // Fallback if raw mode is not supported (e.g. non-TTY)
+        let mut fallback = String::new();
+        std::io::stdin().read_line(&mut fallback)?;
+        return Ok(Some(strip_line_ending(&fallback)));
+    }
+
+    struct RawGuard;
+    impl Drop for RawGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+    let _guard = RawGuard;
+
+    let mut history_idx: Option<usize> = None;
+    let mut saved_line = String::new();
+
+    loop {
+        let ev = match read() {
+            Ok(ev) => ev,
+            Err(e) => return Err(e.into()),
+        };
+
+        if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = ev {
+            if !matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                continue;
+            }
+
+            // Ctrl + C or Esc -> Exit REPL cleanly
+            if (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL)) || code == KeyCode::Esc {
+                return Ok(None);
+            }
+
+            // Backspace -> Delete character
+            if code == KeyCode::Backspace {
+                if !line.is_empty() {
+                    line.pop();
+                    print!("\x08 \x08");
+                    let _ = stdout.flush();
+                }
+                continue;
+            }
+
+            // Up Arrow -> Previous history item
+            if code == KeyCode::Up {
+                if !state.input_history.is_empty() {
+                    if history_idx.is_none() {
+                        saved_line = line.clone();
+                        history_idx = Some(state.input_history.len() - 1);
+                    } else if history_idx.unwrap() > 0 {
+                        history_idx = Some(history_idx.unwrap() - 1);
+                    }
+                    if let Some(idx) = history_idx {
+                        let prompt_str = if paste_mode {
+                            format!("{ANSI_DIM}…{ANSI_RESET} ")
+                        } else {
+                            format!("{ANSI_CYAN}❯{ANSI_RESET} ")
+                        };
+                        print!("\r\x1b[2K{}{}", prompt_str, state.input_history[idx]);
+                        let _ = stdout.flush();
+                        line = state.input_history[idx].clone();
+                    }
+                }
+                continue;
+            }
+
+            // Down Arrow -> Next history item or restore saved line
+            if code == KeyCode::Down {
+                if let Some(idx) = history_idx {
+                    let prompt_str = if paste_mode {
+                        format!("{ANSI_DIM}…{ANSI_RESET} ")
+                    } else {
+                        format!("{ANSI_CYAN}❯{ANSI_RESET} ")
+                    };
+                    if idx + 1 < state.input_history.len() {
+                        history_idx = Some(idx + 1);
+                        print!("\r\x1b[2K{}{}", prompt_str, state.input_history[idx + 1]);
+                        line = state.input_history[idx + 1].clone();
+                    } else {
+                        history_idx = None;
+                        print!("\r\x1b[2K{}{}", prompt_str, saved_line);
+                        line = saved_line.clone();
+                    }
+                    let _ = stdout.flush();
+                }
+                continue;
+            }
+
+            // Enter -> Submit prompt and save to history
+            if code == KeyCode::Enter {
+                println!();
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && state.input_history.last().map(|s| s.as_str()) != Some(trimmed) {
+                    state.input_history.push(trimmed.to_string());
+                }
+                return Ok(Some(line));
+            }
+
+            // Shift + Tab -> Cycle REPL Mode
+            if code == KeyCode::BackTab {
+                // Cycle: Normal -> Plan -> Dream -> Normal
+                state.status_mode = match state.status_mode {
+                    StatusMode::Normal => StatusMode::Plan,
+                    StatusMode::Plan => StatusMode::Dream,
+                    StatusMode::Dream => StatusMode::Normal,
+                };
+                // Repaint the status bar in place!
+                // We move up 1 line, clear line, draw status bar
+                print!("\r\x1b[A\x1b[2K");
+                print!("{}", render_status_bar(&status_state_from(state)));
+                // Draw prompt and typed line again
+                let prompt_str = if paste_mode {
+                    format!("{ANSI_DIM}…{ANSI_RESET} ")
+                } else {
+                    format!("{ANSI_CYAN}❯{ANSI_RESET} ")
+                };
+                print!("{}{}", prompt_str, line);
+                let _ = stdout.flush();
+                continue;
+            }
+
+            // Ctrl + P -> Model Picker
+            if code == KeyCode::Char('p') && modifiers.contains(KeyModifiers::CONTROL) {
+                // Open interactive model picker
+                let _ = disable_raw_mode(); // Disable raw mode temporarily for picker
+                if let Some(new_model) = select_model_interactive(state) {
+                    state.model_router.set_primary_model(new_model.clone());
+                    state.app_config.brain_model = new_model.clone();
+                    state.brand.model = new_model.clone();
+                }
+                let _ = enable_raw_mode(); // Re-enable raw mode
+                
+                // Repaint status bar & prompt
+                print!("\r\x1b[A\x1b[2K");
+                print!("{}", render_status_bar(&status_state_from(state)));
+                let prompt_str = if paste_mode {
+                    format!("{ANSI_DIM}…{ANSI_RESET} ")
+                } else {
+                    format!("{ANSI_CYAN}❯{ANSI_RESET} ")
+                };
+                print!("{}{}", prompt_str, line);
+                let _ = stdout.flush();
+                continue;
+            }
+
+            // Normal printable character
+            if let KeyCode::Char(c) = code {
+                line.push(c);
+                print!("{}", c);
+                let _ = stdout.flush();
+            }
+        }
+    }
+}
+
+/// Interactive model picker popup inside the REPL using crossterm arrow-key selection
+fn select_model_interactive(_state: &ReplState) -> Option<String> {
+    use crossterm::{
+        cursor::MoveUp,
+        event::{read, Event, KeyCode, KeyEvent, KeyEventKind},
+        queue,
+        terminal::{enable_raw_mode, disable_raw_mode, Clear, ClearType},
+    };
+    use std::io::Write;
+
+    let mut stdout = std::io::stdout();
+    let models = vec![
+        "google/gemini-2.0-flash-exp:free".to_string(),
+        "openai/gpt-4o-mini".to_string(),
+        "anthropic/claude-3.5-sonnet".to_string(),
+        "meta-llama/llama-3.1-70b-instruct".to_string(),
+    ];
+
+    println!("\n  Choose a primary model (↑/↓ to move, Enter to select, q/Esc to abort):");
+
+    let mut selected = 0;
+    let n = models.len() as u16;
+
+    if enable_raw_mode().is_err() {
+        return None;
+    }
+
+    struct RawGuard;
+    impl Drop for RawGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+    let _guard = RawGuard;
+
+    // Helper to render the selection block inline
+    let render = |stdout: &mut std::io::Stdout, selected: usize| -> std::io::Result<()> {
+        use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
+        for (i, model) in models.iter().enumerate() {
+            if i == selected {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Cyan),
+                    SetAttribute(Attribute::Bold),
+                    Print(format!("    ▸ {}\r\n", model)),
+                    ResetColor,
+                    SetAttribute(Attribute::Reset),
+                )?;
+            } else {
+                queue!(stdout, Print(format!("      {}\r\n", model)))?;
+            }
+        }
+        Ok(())
+    };
+
+    let _ = render(&mut stdout, selected);
+    let _ = stdout.flush();
+
+    loop {
+        let ev = match read() {
+            Ok(ev) => ev,
+            Err(_) => return None,
+        };
+
+        if let Event::Key(KeyEvent { code, kind, .. }) = ev {
+            if !matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                continue;
+            }
+
+            let mut advance = false;
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if selected == 0 {
+                        selected = models.len() - 1;
+                    } else {
+                        selected -= 1;
+                    }
+                    advance = true;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = (selected + 1) % models.len();
+                    advance = true;
+                }
+                KeyCode::Enter => {
+                    // Erase picker block before returning
+                    let _ = queue!(stdout, MoveUp(n), Clear(ClearType::FromCursorDown));
+                    let _ = stdout.flush();
+                    return Some(models[selected].clone());
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    let _ = queue!(stdout, MoveUp(n), Clear(ClearType::FromCursorDown));
+                    let _ = stdout.flush();
+                    return None;
+                }
+                _ => {}
+            }
+
+            if advance {
+                let _ = queue!(stdout, MoveUp(n), Clear(ClearType::FromCursorDown));
+                let _ = render(&mut stdout, selected);
+                let _ = stdout.flush();
+            }
+        }
+    }
+}
+
+/// A node in our interactive tree catalog browser.
+#[derive(Clone, Debug)]
+struct TreeItem {
+    id: String,
+    label: String,
+    level: usize, // 0 for Shelf, 1 for Book, 2 for Page
+    is_expanded: bool,
+    is_leaf: bool,
+    #[allow(dead_code)]
+    has_children: bool,
+}
+
+/// Run an interactive arrow-key tree catalog browser.
+/// Returns the selected Page ID, or None if cancelled.
+async fn run_tui_library_browser(state: &mut ReplState) -> anyhow::Result<Option<String>> {
+    use crossterm::{
+        event::{read, Event, KeyCode, KeyEvent, KeyEventKind},
+        queue,
+        terminal::{enable_raw_mode, disable_raw_mode, Clear, ClearType},
+        cursor::MoveUp,
+    };
+    use std::io::Write;
+
+    let mut stdout = std::io::stdout();
+
+    println!("\n  📂 Hydragent Library Catalog Browser");
+    println!("  (Use ↑/↓ to navigate, ←/→ to collapse/expand, Enter to select, q/Esc to cancel)\n");
+
+    // 1. Query shelves, books, pages and their relationships from SQLite database
+    let pool = state.store.pool();
+    
+    // Fetch all nodes
+    let nodes_rows = sqlx::query("SELECT node_id, type, label FROM nodes")
+        .fetch_all(pool).await?;
+    let mut pages_vec = Vec::new();
+    let mut books_vec = Vec::new();
+    let mut shelves_vec = Vec::new();
+
+    for row in nodes_rows {
+        let nid: String = row.get("node_id");
+        let ntype: String = row.get("type");
+        let nlabel: String = row.get("label");
+        match ntype.as_str() {
+            "page" => pages_vec.push((nid, nlabel)),
+            "book" => books_vec.push((nid, nlabel)),
+            "shelf" => shelves_vec.push((nid, nlabel)),
+            _ => {}
+        }
+    }
+
+    // Fetch edges
+    let edges_rows = sqlx::query("SELECT source_node_id, target_node_id, relation_type FROM edges")
+        .fetch_all(pool).await?;
+    let mut page_to_book = std::collections::HashMap::new(); // page -> book
+    let mut book_to_shelf = std::collections::HashMap::new(); // book -> shelf
+
+    for row in edges_rows {
+        let source: String = row.get("source_node_id");
+        let target: String = row.get("target_node_id");
+        let relation: String = row.get("relation_type");
+        if relation == "belongs_to" {
+            page_to_book.insert(source, target);
+        } else if relation == "sits_on" {
+            book_to_shelf.insert(source, target);
+        }
+    }
+
+    // Let's build the tree structure.
+    // Level 0: Shelves. If there are books not on any shelf, we put them under an "Unshelved" shelf.
+    // Level 1: Books. If there are pages not in any book, we put them under a "Miscellaneous" book.
+    // Level 2: Pages.
+    let mut shelf_to_books: std::collections::HashMap<String, Vec<(String, String)>> = std::collections::HashMap::new();
+    let mut book_to_pages: std::collections::HashMap<String, Vec<(String, String)>> = std::collections::HashMap::new();
+
+    // Populate book -> pages
+    for (pid, plabel) in &pages_vec {
+        let bid = page_to_book.get(pid).cloned().unwrap_or_else(|| "miscellaneous_book".to_string());
+        book_to_pages.entry(bid).or_default().push((pid.clone(), plabel.clone()));
+    }
+
+    // Populate shelf -> books
+    for (bid, blabel) in &books_vec {
+        let sid = book_to_shelf.get(bid).cloned().unwrap_or_else(|| "unshelved_shelf".to_string());
+        shelf_to_books.entry(sid).or_default().push((bid.clone(), blabel.clone()));
+    }
+    // Also check if miscellaneous_book needs to be shelved
+    if book_to_pages.contains_key("miscellaneous_book") {
+        let sid = book_to_shelf.get("miscellaneous_book").cloned().unwrap_or_else(|| "unshelved_shelf".to_string());
+        shelf_to_books.entry(sid).or_default().push(("miscellaneous_book".to_string(), "Miscellaneous (Unsorted)".to_string()));
+    }
+
+    // Ensure virtual/implicit shelves/books are in our lists if they have items
+    let mut all_shelves = shelves_vec.clone();
+    if shelf_to_books.contains_key("unshelved_shelf") {
+        all_shelves.push(("unshelved_shelf".to_string(), "Unshelved Books".to_string()));
+    }
+    let mut all_books = books_vec.clone();
+    if book_to_pages.contains_key("miscellaneous_book") && !all_books.iter().any(|(bid, _)| bid == "miscellaneous_book") {
+        all_books.push(("miscellaneous_book".to_string(), "Miscellaneous (Unsorted)".to_string()));
+    }
+
+    // Let's construct a flat list of TreeItems that represents the *fully expanded* tree first,
+    // and we will dynamically filter it during rendering based on is_expanded fields.
+    // Better yet: we build the tree and keep track of open/closed nodes.
+    
+    // We'll store expansion states in a helper map: node_id -> is_expanded (default true)
+    let mut expansion_states = std::collections::HashMap::new();
+    // Default expand all shelves and books so it's easy to see at first glance
+    for (sid, _) in &all_shelves {
+        expansion_states.insert(sid.clone(), true);
+    }
+    for (bid, _) in &all_books {
+        expansion_states.insert(bid.clone(), true);
+    }
+
+    if enable_raw_mode().is_err() {
+        return Ok(None);
+    }
+
+    struct RawGuard;
+    impl Drop for RawGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+    let _guard = RawGuard;
+
+    let mut selected_index = 0;
+
+    loop {
+        // Build the visible tree items based on expansion states
+        let mut visible_items: Vec<TreeItem> = Vec::new();
+        
+        for (sid, slabel) in &all_shelves {
+            let shelf_books = shelf_to_books.get(sid);
+            let has_books = shelf_books.map_or(false, |b| !b.is_empty());
+            let expanded = expansion_states.get(sid).cloned().unwrap_or(false);
+            
+            visible_items.push(TreeItem {
+                id: sid.clone(),
+                label: slabel.clone(),
+                level: 0,
+                is_expanded: expanded,
+                is_leaf: false,
+                has_children: has_books,
+            });
+
+            if expanded {
+                if let Some(books) = shelf_books {
+                    for (bid, blabel) in books {
+                        let book_pages = book_to_pages.get(bid);
+                        let has_pages = book_pages.map_or(false, |p| !p.is_empty());
+                        let book_expanded = expansion_states.get(bid).cloned().unwrap_or(false);
+
+                        visible_items.push(TreeItem {
+                            id: bid.clone(),
+                            label: blabel.clone(),
+                            level: 1,
+                            is_expanded: book_expanded,
+                            is_leaf: false,
+                            has_children: has_pages,
+                        });
+
+                        if book_expanded {
+                            if let Some(pages) = book_pages {
+                                for (pid, plabel) in pages {
+                                    visible_items.push(TreeItem {
+                                        id: pid.clone(),
+                                        label: plabel.clone(),
+                                        level: 2,
+                                        is_expanded: false,
+                                        is_leaf: true,
+                                        has_children: false,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if visible_items.is_empty() {
+            // No pages, shelves, or books at all. Just add a dummy item
+            visible_items.push(TreeItem {
+                id: "empty".to_string(),
+                label: "(Library is completely empty)".to_string(),
+                level: 0,
+                is_expanded: false,
+                is_leaf: true,
+                has_children: false,
+            });
+        }
+
+        // Keep selected index in bounds
+        if selected_index >= visible_items.len() {
+            selected_index = visible_items.len().saturating_sub(1);
+        }
+
+        // Render visible items
+        use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
+        for (idx, item) in visible_items.iter().enumerate() {
+            let is_selected = idx == selected_index;
+            let indent = "  ".repeat(item.level);
+            
+            let prefix = if item.is_leaf {
+                "📄 "
+            } else if item.is_expanded {
+                "▼ 📂 "
+            } else {
+                "▶ 📁 "
+            };
+
+            if is_selected {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Cyan),
+                    SetAttribute(Attribute::Bold),
+                    Print(format!("    ▸ {}{}{}\r\n", indent, prefix, item.label)),
+                    ResetColor,
+                    SetAttribute(Attribute::Reset),
+                )?;
+            } else {
+                // Dim non-leaf parent nodes slightly for premium depth, or highlight them differently
+                let color = match item.level {
+                    0 => Color::Yellow,
+                    1 => Color::Magenta,
+                    _ => Color::White,
+                };
+                queue!(
+                    stdout,
+                    Print("      "),
+                    Print(indent),
+                    SetForegroundColor(color),
+                    Print(prefix),
+                    ResetColor,
+                    Print(format!("{}\r\n", item.label)),
+                )?;
+            }
+        }
+        let _ = stdout.flush();
+
+        let n_lines = visible_items.len() as u16;
+
+        let ev = match read() {
+            Ok(ev) => ev,
+            Err(_) => return Ok(None),
+        };
+
+        if let Event::Key(KeyEvent { code, kind, .. }) = ev {
+            if !matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                continue;
+            }
+
+            let mut advance = false;
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if selected_index == 0 {
+                        selected_index = visible_items.len() - 1;
+                    } else {
+                        selected_index -= 1;
+                    }
+                    advance = true;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected_index = (selected_index + 1) % visible_items.len();
+                    advance = true;
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    let item = &visible_items[selected_index];
+                    if !item.is_leaf && !item.is_expanded {
+                        expansion_states.insert(item.id.clone(), true);
+                        advance = true;
+                    }
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    let item = &visible_items[selected_index];
+                    if !item.is_leaf && item.is_expanded {
+                        expansion_states.insert(item.id.clone(), false);
+                        advance = true;
+                    }
+                }
+                KeyCode::Enter => {
+                    let item = &visible_items[selected_index];
+                    if item.is_leaf && item.id != "empty" {
+                        // Erase block
+                        let _ = queue!(stdout, MoveUp(n_lines), Clear(ClearType::FromCursorDown));
+                        let _ = stdout.flush();
+                        return Ok(Some(item.id.clone()));
+                    } else if !item.is_leaf {
+                        // Toggle expansion
+                        let curr = expansion_states.get(&item.id).cloned().unwrap_or(false);
+                        expansion_states.insert(item.id.clone(), !curr);
+                        advance = true;
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    let _ = queue!(stdout, MoveUp(n_lines), Clear(ClearType::FromCursorDown));
+                    let _ = stdout.flush();
+                    return Ok(None);
+                }
+                _ => {}
+            }
+
+            if advance {
+                let _ = queue!(stdout, MoveUp(n_lines), Clear(ClearType::FromCursorDown));
+                let _ = stdout.flush();
+            }
+        }
+    }
+}
+
+/// Setup a new page interactively, allowing the user to select or create a Shelf and Book.
+async fn setup_new_page_interactive(state: &mut ReplState, new_page_id: &str) -> anyhow::Result<bool> {
+    use std::io::Write;
+    use hydragent_memory::library::{Library, NodeKind, EdgeRelation};
+
+    let pool = state.store.pool();
+    let library = Library::new(&state.store);
+
+    // 1. First, fetch existing shelves and let the user select one or choose "[Create New Shelf]"
+    let nodes_rows = sqlx::query("SELECT node_id, type, label FROM nodes WHERE type = 'shelf'")
+        .fetch_all(pool).await?;
+    let mut shelves: Vec<(String, String)> = nodes_rows.into_iter()
+        .map(|r| (r.get::<String, _>("node_id"), r.get::<String, _>("label")))
+        .collect();
+    
+    shelves.push(("new".to_string(), "[Create New Shelf]".to_string()));
+    shelves.push(("none".to_string(), "[No Shelf / Unshelved]".to_string()));
+
+    println!("\n  Choose a Shelf for the new Page (↑/↓ to navigate, Enter to select, Esc to cancel):");
+    let selected_shelf_idx = run_list_selector(&shelves)?;
+    if selected_shelf_idx.is_none() {
+        return Ok(false);
+    }
+    let shelf_choice = &shelves[selected_shelf_idx.unwrap()];
+
+    let shelf_id = if shelf_choice.0 == "new" {
+        print!("  Enter name for the new Shelf: ");
+        std::io::stdout().flush().ok();
+        let mut name = String::new();
+        std::io::stdin().read_line(&mut name)?;
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            println!("  Shelf creation cancelled.");
+            return Ok(false);
+        }
+        let new_sid = format!("shelf-{}", uuid::Uuid::new_v4());
+        library.upsert_node(&new_sid, NodeKind::Shelf, trimmed, &[], None).await?;
+        println!("  ✓ Created Shelf: {}", trimmed);
+        new_sid
+    } else {
+        shelf_choice.0.clone()
+    };
+
+    // 2. Fetch existing books under this shelf (or all books if none)
+    let books_query = if shelf_id != "none" {
+        sqlx::query(
+            "SELECT n.node_id, n.label FROM nodes n
+             JOIN edges e ON e.source_node_id = n.node_id
+             WHERE n.type = 'book' AND e.target_node_id = ? AND e.relation_type = 'sits_on'"
+        ).bind(&shelf_id)
+    } else {
+        sqlx::query("SELECT node_id, label FROM nodes WHERE type = 'book'")
+    };
+
+    let books_rows = books_query.fetch_all(pool).await?;
+    let mut books: Vec<(String, String)> = books_rows.into_iter()
+        .map(|r| (r.get::<String, _>("node_id"), r.get::<String, _>("label")))
+        .collect();
+
+    books.push(("new".to_string(), "[Create New Book]".to_string()));
+    books.push(("none".to_string(), "[No Book / Unsorted]".to_string()));
+
+    println!("\n  Choose a Book for the new Page (↑/↓ to navigate, Enter to select, Esc to cancel):");
+    let selected_book_idx = run_list_selector(&books)?;
+    if selected_book_idx.is_none() {
+        return Ok(false);
+    }
+    let book_choice = &books[selected_book_idx.unwrap()];
+
+    let book_id = if book_choice.0 == "new" {
+        print!("  Enter name for the new Book: ");
+        std::io::stdout().flush().ok();
+        let mut name = String::new();
+        std::io::stdin().read_line(&mut name)?;
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            println!("  Book creation cancelled.");
+            return Ok(false);
+        }
+        let new_bid = format!("book-{}", uuid::Uuid::new_v4());
+        library.upsert_node(&new_bid, NodeKind::Book, trimmed, &[], None).await?;
+        println!("  ✓ Created Book: {}", trimmed);
+        
+        // Link book to shelf if we have a shelf
+        if shelf_id != "none" {
+            library.link(&new_bid, &shelf_id, EdgeRelation::SitsOn, 1.0).await?;
+        }
+        new_bid
+    } else {
+        book_choice.0.clone()
+    };
+
+    // 3. Create the Page node and link it to the selected Book
+    // First ensure page is created in session store
+    state.store.create_page(new_page_id).await?;
+    
+    // Upsert the Page node in the library
+    let plabel = format!("Conversation on page {}", short_id(new_page_id));
+    library.upsert_node(new_page_id, NodeKind::Page, &plabel, &[], None).await?;
+
+    // Link page to book
+    if book_id != "none" {
+        library.link(new_page_id, &book_id, EdgeRelation::BelongsTo, 1.0).await?;
+    }
+
+    Ok(true)
+}
+
+/// Helper to run a simple arrow-key list selector on a slice of (id, label).
+fn run_list_selector(items: &[(String, String)]) -> anyhow::Result<Option<usize>> {
+    use crossterm::{
+        event::{read, Event, KeyCode, KeyEvent, KeyEventKind},
+        queue,
+        terminal::{enable_raw_mode, disable_raw_mode, Clear, ClearType},
+        cursor::MoveUp,
+    };
+    use std::io::Write;
+
+    let mut stdout = std::io::stdout();
+    let mut selected = 0usize;
+    let n = items.len() as u16;
+
+    if enable_raw_mode().is_err() {
+        return Ok(None);
+    }
+
+    struct RawGuard;
+    impl Drop for RawGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+    let _guard = RawGuard;
+
+    let render = |stdout: &mut std::io::Stdout, selected: usize| -> std::io::Result<()> {
+        use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
+        for (i, (_, label)) in items.iter().enumerate() {
+            if i == selected {
+                queue!(
+                    stdout,
+                    SetForegroundColor(Color::Cyan),
+                    SetAttribute(Attribute::Bold),
+                    Print(format!("    ▸ {}\r\n", label)),
+                    ResetColor,
+                    SetAttribute(Attribute::Reset),
+                )?;
+            } else {
+                queue!(stdout, Print(format!("      {}\r\n", label)))?;
+            }
+        }
+        Ok(())
+    };
+
+    let _ = render(&mut stdout, selected);
+    let _ = stdout.flush();
+
+    loop {
+        let ev = match read() {
+            Ok(ev) => ev,
+            Err(_) => return Ok(None),
+        };
+
+        if let Event::Key(KeyEvent { code, kind, .. }) = ev {
+            if !matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                continue;
+            }
+
+            let mut advance = false;
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if selected == 0 {
+                        selected = items.len() - 1;
+                    } else {
+                        selected -= 1;
+                    }
+                    advance = true;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = (selected + 1) % items.len();
+                    advance = true;
+                }
+                KeyCode::Enter => {
+                    let _ = queue!(stdout, MoveUp(n), Clear(ClearType::FromCursorDown));
+                    let _ = stdout.flush();
+                    return Ok(Some(selected));
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    let _ = queue!(stdout, MoveUp(n), Clear(ClearType::FromCursorDown));
+                    let _ = stdout.flush();
+                    return Ok(None);
+                }
+                _ => {}
+            }
+
+            if advance {
+                let _ = queue!(stdout, MoveUp(n), Clear(ClearType::FromCursorDown));
+                let _ = render(&mut stdout, selected);
+                let _ = stdout.flush();
+            }
+        }
+    }
+}
+
+/// Manually or automatically run LLM compaction on conversation history.
+async fn run_compaction_pass(state: &mut ReplState) -> anyhow::Result<()> {
+    let dim = ANSI_DIM;
+    let reset = ANSI_RESET;
+    println!("  {}◆ running compaction pass…{}", dim, reset);
+
+    // 1. Load all messages on the active page
+    let messages = state.store.load_recent(&state.page_id, 1000).await?;
+    if messages.is_empty() {
+        println!("    {}no active messages to compact.{}", dim, reset);
+        return Ok(());
+    }
+
+    // 2. Format as a conversation log
+    let mut log = String::new();
+    for msg in &messages {
+        let role_str = match msg.role {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::System => "system",
+            MessageRole::Tool => "tool",
+        };
+        log.push_str(&format!("{}: {}\n\n", role_str, msg.content));
+    }
+
+    // 3. Prompt the LLM to summarize the log dense and structured
+    let prompt = format!(
+        "You are the Hydragent compaction system. Your job is to compress the following conversation history into a highly dense, comprehensive, and structured summary. Focus on extracting key facts, user preferences, decisions made, and technical details. Do not lose important context. Keep the summary under 1000 words.\n\nConversation History:\n{}",
+        log
+    );
+
+    let chat_msg = hydragent_model::openrouter::ChatMessage {
+        role: "user".to_string(),
+        content: prompt,
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+    let drain = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
+    let (summary, _) = state.model_router.chat_stream(vec![chat_msg], tx, None).await?;
+    let _ = drain.await;
+
+    // 4. Update the page summary in SQLite
+    state.store.update_page_summary(&state.page_id, &summary).await?;
+
+    // 5. Truncate the messages table to 0 to clear active history
+    state.store.truncate_page_messages(&state.page_id, 0).await?;
+
+    // 6. Reset token counters and context_pct based on the summary size
+    let summary_tokens = estimate_tokens(&summary);
+    state.input_tokens = summary_tokens + 1500;
+    state.output_tokens = 0;
+    const CONTEXT_LIMIT: u64 = 100_000;
+    state.context_pct = (state.input_tokens * 100 / CONTEXT_LIMIT).min(100) as u8;
+
+    println!("  {}✓ compaction complete. summary size: {} tokens. active history cleared.{}", dim, summary_tokens, reset);
+    Ok(())
+}
+
+/// Simple proxy to estimate tokens: 1 token ≈ 4 characters for English text.
+fn estimate_tokens(text: &str) -> u64 {
+    (text.len() / 4).max(1) as u64
 }
 
 // ────────────────────────────────────────────────────────────────────────

@@ -159,6 +159,7 @@ fn install_ps1_url() -> String {
     format!("https://{}.github.io/{}/install.ps1", org, name)
 }
 
+#[allow(dead_code)]
 fn install_sh_url() -> String {
     let repo = github_repo();
     let (org, name) = repo.split_once('/').unwrap_or(("joker0210G", "Hydragent"));
@@ -776,6 +777,7 @@ async fn replace_binary(new_binary: &Path) -> Result<(), Box<dyn std::error::Err
 
 /// Return the human-facing one-line install command for the current OS.
 /// Used both in the prompt and in the "you can run this anytime" hint.
+#[allow(dead_code)]
 fn install_one_liner() -> &'static str {
     if cfg!(target_os = "windows") {
         "irm https://joker0210G.github.io/Hydragent/install.ps1 | iex"

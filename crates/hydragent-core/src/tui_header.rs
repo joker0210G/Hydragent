@@ -367,19 +367,48 @@ pub fn print_kimi_header(brand: &BrandInfo, tip: &TipBox) {
 /// command (`/paste` instead of `/ferment`) so we don't claim
 /// parity with a tool we don't have.
 pub fn default_tip_box() -> TipBox {
-    TipBox::with_after(
-        "Kimchi's special:".to_string(),
-        vec![
-            "Use /paste to drop in a long prompt that spans".to_string(),
-            "several lines. Finish with a line containing only".to_string(),
-            "```  (or /paste on its own).".to_string(),
-        ],
-        vec![
-            "Tip: /model [name] switches the active brain for this".to_string(),
-            "session; /brain shows the base URL + masked key. Both".to_string(),
-            "are shortcuts to the same data /debug prints.".to_string(),
-        ],
-    )
+    let tips = vec![
+        TipBox::with_after(
+            "Kimchi's special:".to_string(),
+            vec![
+                "Use /paste to drop in a long prompt that spans".to_string(),
+                "several lines. Finish with a line containing only".to_string(),
+                "```  (or /paste on its own).".to_string(),
+            ],
+            vec![
+                "Tip: /model [name] switches the active brain for this".to_string(),
+                "session; /brain shows the base URL + masked key. Both".to_string(),
+                "are shortcuts to the same data /debug prints.".to_string(),
+            ],
+        ),
+        TipBox::with_after(
+            "Kimchi's special:".to_string(),
+            vec![
+                "Try using /resume to open the interactive Library browser.".to_string(),
+                "Use the arrow keys to browse Shelves, Books, and Page".to_string(),
+                "nodes visually, and press Enter to load them.".to_string(),
+            ],
+            vec![
+                "Tip: /new lets you start a fresh page and choose exactly".to_string(),
+                "where to place it in the Library system.".to_string(),
+            ],
+        ),
+        TipBox::with_after(
+            "Kimchi's special:".to_string(),
+            vec![
+                "Run /compact to compress long conversations using the LLM.".to_string(),
+                "It summarizes history and clears active memory to keep".to_string(),
+                "context usage low and responses fast.".to_string(),
+            ],
+            vec![
+                "Tip: Auto-compaction will automatically trigger if your".to_string(),
+                "context fullness reaches 80%.".to_string(),
+            ],
+        ),
+    ];
+
+    let idx = (chrono::Local::now().timestamp() as usize) % tips.len();
+    tips[idx].clone()
 }
 
 #[cfg(test)]

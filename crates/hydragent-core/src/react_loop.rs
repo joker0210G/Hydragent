@@ -389,21 +389,6 @@ async fn inject_skill_context(
     user_query: &str,
     max_skills: usize,
 ) -> anyhow::Result<String> {
-    // Compute embedding for the user query
-    let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data".to_string());
-    let paths = match hydragent_embed::ensure_model_downloaded(&data_dir).await {
-        Ok(p) => p,
-        Err(_) => return Ok(String::new()),
-    };
-    let embedder = match hydragent_embed::LocalEmbedder::new(&paths.model_path, &paths.tokenizer_path) {
-        Ok(e) => e,
-        Err(_) => return Ok(String::new()),
-    };
-    let query_emb = match embedder.embed_text(user_query) {
-        Ok(v) => v,
-        Err(_) => return Ok(String::new()),
-    };
-
     // Search for Active-tier skills by keyword fallback, then filter by embedding similarity
     let candidates = library.search_by_keyword(user_query, max_skills as u32 * 3).await?;
     let active: Vec<_> = candidates

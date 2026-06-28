@@ -249,6 +249,7 @@ pub fn run(opts: OnboardOptions) -> i32 {
     let mut enforce_sandbox = false;
     let mut max_semantic_memories = 100;
     let mut telegram_token = String::new();
+    let mut telegram_chat_ids = String::new();
 
     if !opts.non_interactive {
         // Step 2: Persona
@@ -319,6 +320,9 @@ pub fn run(opts: OnboardOptions) -> i32 {
         if prompt_yes_no("  Configure Telegram integration?", false).unwrap_or(false) {
             if let Some(token) = prompt("  Enter your Telegram Bot Token:") {
                 telegram_token = token;
+                if let Some(chat_ids) = prompt("  Enter your Telegram User/Chat ID(s) (comma-separated, e.g. 12345678):") {
+                    telegram_chat_ids = chat_ids;
+                }
             }
         }
     }
@@ -432,6 +436,9 @@ pub fn run(opts: OnboardOptions) -> i32 {
     new_env.insert("MAX_SEMANTIC_MEMORIES".to_string(), max_semantic_memories.to_string());
     if !telegram_token.is_empty() {
         new_env.insert("TELEGRAM_BOT_TOKEN".to_string(), telegram_token.clone());
+    }
+    if !telegram_chat_ids.is_empty() {
+        new_env.insert("TELEGRAM_ALLOWED_CHAT_IDS".to_string(), telegram_chat_ids.clone());
     }
 
     // Re-render the file. write_env_file() creates the parent

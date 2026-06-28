@@ -1,0 +1,10 @@
+[application]
+name = "hydragent-control-ui"
+default_platform = "web"
+
+[web.app]
+title = "Hydragent Control UI"
+
+[web.watcher]
+watch_path = ["src"]
+reload_html = true

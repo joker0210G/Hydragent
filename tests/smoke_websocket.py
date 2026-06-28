@@ -13,7 +13,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-sys.path.insert(0, os.path.join(REPO, "adapters"))
+sys.path.insert(0, os.path.join(REPO, "adapters", "channels", "websocket"))
 
 import websocket_adapter as ws_ad
 

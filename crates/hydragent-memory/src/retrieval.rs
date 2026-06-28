@@ -60,7 +60,7 @@ pub async fn hybrid_search(
     let mut all_ids: HashSet<String> = fts_ranks.keys().cloned().collect();
     all_ids.extend(vector_ranks.keys().cloned());
 
-    let mut scored_docs: Vec<(String, f64)> = all_ids
+    let scored_docs: Vec<(String, f64)> = all_ids
         .into_iter()
         .map(|id| {
             let mut score = 0.0_f64;
@@ -74,22 +74,40 @@ pub async fn hybrid_search(
         })
         .collect();
 
-    scored_docs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored_docs.truncate(limit);
-
-    // ── Hydrate to MemoryDocument structures ─────────────────────────────────
+    // ── Hydrate to MemoryDocument structures with Temporal Decay ────────────
     let mut final_docs: Vec<MemoryDocument> = Vec::new();
+    let current_time = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
     for (id, rrf_score) in scored_docs {
         if let Ok(Some(mem)) = store.get_memory(&id).await {
+            // Calculate age in days
+            let age_in_days = (current_time.saturating_sub(mem.timestamp as u64) as f64) / 86400.0;
+            // Technical facts decay faster (90-day half-life) than personal facts (365-day half-life)
+            let tags = store.get_memory_tags(&id).await.unwrap_or_default();
+            let half_life = if tags.iter().any(|t| t == "technical" || t == "project_state") {
+                90.0
+            } else {
+                365.0
+            };
+            let decay = (-age_in_days / half_life).exp();
+            let decayed_score = rrf_score * decay;
+
             final_docs.push(MemoryDocument {
                 id: mem.id,
                 content: mem.content,
                 timestamp: mem.timestamp,
                 importance: mem.importance,
-                rrf_score,
+                rrf_score: decayed_score,
             });
         }
     }
+
+    // Sort by decayed RRF score descending and truncate to limit
+    final_docs.sort_by(|a, b| b.rrf_score.partial_cmp(&a.rrf_score).unwrap_or(std::cmp::Ordering::Equal));
+    final_docs.truncate(limit);
 
     // ── Append graph-expanded context docs (Books & Shelves) ─────────────────
     // These carry graph-level context (topic clusters and domain categories)

@@ -90,6 +90,18 @@ impl SessionStore {
         Ok(row)
     }
 
+    pub async fn get_memory_tags(&self, id: &str) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT tag FROM memory_tags WHERE memory_id = ?"
+        )
+        .bind(id)
+        .fetch_all(self.pool())
+        .await?;
+        use sqlx::Row;
+        let tags = rows.into_iter().map(|r| r.get::<String, _>("tag")).collect();
+        Ok(tags)
+    }
+
     pub async fn delete_memory(&self, id: &str) -> Result<()> {
         // Delete from all four stores in lockstep:
         //  1. main table

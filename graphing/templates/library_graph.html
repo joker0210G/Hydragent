@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hydragent Library Knowledge Graph</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="library_graph.css">
+</head>
+<body>
+
+    <div id="loader">
+        <div class="spinner"></div>
+        <div class="loader-text">Initializing Knowledge Graph...</div>
+    </div>
+
+    <button id="toggle-sidebar" title="Toggle Sidebar" aria-expanded="true" aria-controls="sidebar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+        </svg>
+    </button>
+
+    <div id="sidebar" role="complementary" aria-label="Knowledge Graph Sidebar">
+        <div class="sidebar-header">
+            <h1 class="sidebar-title">
+                <span style="font-size: 24px;">🐉</span> Hydragent Library
+            </h1>
+            <div class="sidebar-subtitle">Knowledge Graph Explorer</div>
+        </div>
+        
+        <div class="search-container">
+            <input type="text" id="search-input" class="search-box" placeholder="Search nodes or tags..." aria-label="Search nodes or tags">
+        </div>
+        
+        <div class="filter-section">
+            <h2 class="section-title">Filter Node Types</h2>
+            <div class="filter-grid">
+                <button class="filter-btn active" data-type="shelf">
+                    <span style="color: #a855f7;">●</span> Shelves
+                </button>
+                <button class="filter-btn active" data-type="book">
+                    <span style="color: #3b82f6;">●</span> Books
+                </button>
+                <button class="filter-btn active" data-type="page">
+                    <span style="color: #10b981;">●</span> Pages
+                </button>
+            </div>
+        </div>
+        
+        <div class="details-container" id="details-panel">
+            <div class="empty-details">
+                Select a node in the graph to view its connections and properties.
+            </div>
+        </div>
+    </div>
+
+    <div id="header-actions">
+        <button class="action-btn" id="btn-reset" aria-label="Reset view position">
+            Reset View
+        </button>
+    </div>
+
+    <div id="graph-container"></div>
+
+    <script>
+        const graphData = {{GRAPH_DATA_JSON}};
+    </script>
+    <script src="library_graph.js" defer></script>
+</body>
+</html>

@@ -29,10 +29,12 @@ pub enum Mode {
     Normal,
     /// Read-only planning mode (the user can ask questions but
     /// no tool calls fire). Shown on the bar as `plan`.
+    /// TODO: Fully integrate this mode in future planning features.
     Plan,
     /// Background-task mode (the model is running async, the
-    /// user is in a different conversation). Shown as `ferment`.
-    Ferment,
+    /// user is in a different conversation). Shown as `dream`.
+    /// TODO: Fully integrate this mode in future background/swarm dreaming features.
+    Dream,
 }
 
 impl Mode {
@@ -41,7 +43,7 @@ impl Mode {
         match self {
             Mode::Normal => "normal",
             Mode::Plan => "plan",
-            Mode::Ferment => "ferment",
+            Mode::Dream => "dream",
         }
     }
 }
@@ -250,7 +252,7 @@ mod tests {
     fn mode_as_str_is_lowercase() {
         assert_eq!(Mode::Normal.as_str(), "normal");
         assert_eq!(Mode::Plan.as_str(), "plan");
-        assert_eq!(Mode::Ferment.as_str(), "ferment");
+        assert_eq!(Mode::Dream.as_str(), "dream");
     }
 
     #[test]

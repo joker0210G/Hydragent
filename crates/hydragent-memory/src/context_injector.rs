@@ -55,7 +55,7 @@ pub fn build_system_prompt_with_memory(
     let mut lines: Vec<String> = Vec::new();
 
     // Helper: append a line if within budget
-    let mut try_append = |line: String, used: &mut usize, lines: &mut Vec<String>| {
+    let try_append = |line: String, used: &mut usize, lines: &mut Vec<String>| {
         let toks = bpe.encode_with_special_tokens(&line).len();
         if (*used - base_token_count) + toks <= max_memory_tokens {
             *used += toks;

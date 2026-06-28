@@ -135,6 +135,8 @@ impl CustomProviderConfig {
 pub struct CustomOpenAIClient {
     config: CustomProviderConfig,
     client: Client,
+    api_keys: Vec<String>,
+    active_key_index: std::sync::atomic::AtomicUsize,
 }
 
 /// Wire body for OpenAI-compatible `/v1/chat/completions`.
@@ -159,7 +161,17 @@ impl CustomOpenAIClient {
             .timeout(config.timeout)
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self { config, client }
+        let api_keys = config.api_key
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        Self {
+            config,
+            client,
+            api_keys,
+            active_key_index: std::sync::atomic::AtomicUsize::new(0),
+        }
     }
 
     /// Build from environment. Returns `None` if `CUSTOM_API_KEY` is unset —
@@ -179,6 +191,24 @@ impl CustomOpenAIClient {
             self.config.default_model.as_str()
         } else {
             requested
+        }
+    }
+
+    /// Retrieve the current active API key string.
+    fn get_active_key(&self) -> String {
+        if self.api_keys.is_empty() {
+            return String::new();
+        }
+        let idx = self.active_key_index.load(std::sync::atomic::Ordering::Relaxed) % self.api_keys.len();
+        self.api_keys[idx].clone()
+    }
+
+    /// Increment active key index to rotate to the next key.
+    fn rotate_key(&self) {
+        if self.api_keys.len() > 1 {
+            let old_idx = self.active_key_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let new_idx = (old_idx + 1) % self.api_keys.len();
+            warn!("Rotating API key from index {} to {}", old_idx % self.api_keys.len(), new_idx);
         }
     }
 
@@ -204,7 +234,7 @@ impl CustomOpenAIClient {
         let resp = self
             .client
             .post(&url)
-            .bearer_auth(&self.config.api_key)
+            .bearer_auth(self.get_active_key())
             .header("Content-Type", "application/json")
             .header("X-Provider", &self.config.provider_label)
             .body(tainted_body.expose_secret().to_string())
@@ -304,7 +334,7 @@ impl ModelProvider for CustomOpenAIClient {
     }
 
     fn is_available(&self) -> bool {
-        !self.config.api_key.is_empty() && !self.config.base_url.is_empty()
+        !self.api_keys.is_empty() && !self.config.base_url.is_empty()
     }
 
     async fn chat_stream(
@@ -318,6 +348,7 @@ impl ModelProvider for CustomOpenAIClient {
                 Ok(content) => return Ok(content),
                 Err(e) => {
                     attempt += 1;
+                    self.rotate_key();
                     if attempt > self.config.max_retries {
                         error!(
                             attempt,
@@ -333,7 +364,7 @@ impl ModelProvider for CustomOpenAIClient {
                         provider = %self.config.provider_label,
                         delay_ms = delay.as_millis(),
                         error = %e,
-                        "Custom provider: retrying after backoff"
+                        "Custom provider: rotating key and retrying after backoff"
                     );
                     sleep(delay).await;
                 }

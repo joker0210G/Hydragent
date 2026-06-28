@@ -103,7 +103,7 @@ def test_plugin_discovery_finds_builtin() -> None:
 
 def test_legacy_shim() -> None:
     """`from bus_client import BusClient` still works (backwards-compat)."""
-    sys.path.insert(0, str(_ADAPTERS))
+    sys.path.insert(0, str(_ADAPTERS / "utils"))
     # Remove any cached modules so we re-import the shim.
     for name in ("bus_client",):
         sys.modules.pop(name, None)
@@ -115,8 +115,8 @@ def test_legacy_shim() -> None:
 
 
 def test_cli_adapter_shim() -> None:
-    """`adapters/cli_adapter.py` exists and is a thin shim (≤ 60 lines)."""
-    shim = _ADAPTERS / "cli_adapter.py"
+    """`adapters/channels/cli/cli_adapter.py` exists and is a thin shim (≤ 60 lines)."""
+    shim = _ADAPTERS / "channels" / "cli" / "cli_adapter.py"
     assert shim.exists(), f"missing {shim}"
     line_count = sum(1 for _ in shim.open(encoding="utf-8"))
     assert line_count <= 60, (
@@ -141,9 +141,9 @@ if __name__ == "__main__":
             t()
         except Exception as e:
             failures += 1
-            print(f"  ✗ {t.__name__}: {e}")
+            print(f"  [FAIL] {t.__name__}: {e}")
         else:
-            print(f"  ✓ {t.__name__}")
+            print(f"  [PASS] {t.__name__}")
     if failures:
         print(f"\n{failures} test(s) FAILED")
         sys.exit(1)

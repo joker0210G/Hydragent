@@ -1,0 +1,4 @@
+Analyze the following conversation log and output ONLY valid JSON.
+
+CONVERSATION LOG:
+{CONVERSATION_LOG}

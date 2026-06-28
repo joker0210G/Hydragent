@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
@@ -11,9 +12,52 @@ use hydragent_model::openrouter::ChatMessage;
 use hydragent_skills::library::SkillLibrary;
 use tracing::{info, error, warn, debug};
 
+use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+struct CompactionCacheEntry {
+    path: PathBuf,
+    len: u64,
+    mtime: u64,
+}
+
+static COMPACTION_CACHE: OnceLock<Mutex<Vec<CompactionCacheEntry>>> = OnceLock::new();
+
+fn should_check_compaction(path: &std::path::Path) -> bool {
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return true,
+    };
+    let len = metadata.len();
+    let mtime = metadata.modified()
+        .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let cache = COMPACTION_CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    let mut cache_guard = cache.lock().unwrap();
+    if let Some(entry) = cache_guard.iter_mut().find(|e| e.path == path) {
+        if entry.len == len && entry.mtime == mtime {
+            return false;
+        }
+        entry.len = len;
+        entry.mtime = mtime;
+    } else {
+        cache_guard.push(CompactionCacheEntry {
+            path: path.to_path_buf(),
+            len,
+            mtime,
+        });
+    }
+    true
+}
+
 #[derive(Debug, Deserialize)]
 struct ExtractionResponse {
     summary: Option<String>,
+    suggested_books: Option<Vec<String>>,
+    suggested_shelves: Option<Vec<String>>,
     extracted_facts: Option<Vec<ExtractedFact>>,
     style_habits: Option<Vec<String>>,
     behavior_rules: Option<Vec<String>>,
@@ -61,6 +105,20 @@ pub struct DreamStats {
     /// this cycle. Non-zero means the file was over its
     /// [`SOUL_MD_CHAR_LIMIT`] budget and was re-synthesized.
     pub compactions_soul_md: usize,
+    /// Number of extraction JSON parse failures across all retries.
+    pub extraction_failures: usize,
+    /// Total retry attempts used across all pages.
+    pub extraction_retries: usize,
+    /// Facts skipped because they were near-duplicates of existing memories.
+    pub dedup_hits: usize,
+    /// Pages skipped because they contained no meaningful data (trivial/greeting).
+    pub pages_skipped_trivial: usize,
+    /// Facts that were inferred rather than verbatim in the conversation log.
+    pub facts_inferred: usize,
+    /// Facts that appeared verbatim (or near-verbatim) in the conversation log.
+    pub facts_verbatim: usize,
+    /// Page tasks that failed (panic or error) and produced no stats.
+    pub pages_failed: usize,
 }
 
 impl DreamStats {
@@ -76,6 +134,13 @@ impl DreamStats {
         self.pages_emitted += other.pages_emitted;
         self.compactions_user_md += other.compactions_user_md;
         self.compactions_soul_md += other.compactions_soul_md;
+        self.extraction_failures += other.extraction_failures;
+        self.extraction_retries += other.extraction_retries;
+        self.dedup_hits += other.dedup_hits;
+        self.pages_skipped_trivial += other.pages_skipped_trivial;
+        self.facts_inferred += other.facts_inferred;
+        self.facts_verbatim += other.facts_verbatim;
+        self.pages_failed += other.pages_failed;
         // The clustering pass runs once at the cycle level, not per-page,
         // so it doesn't participate in `merge()`. Cycle-level
         // `pages_clustered` / `books_organized` / `local_graphify_ops`
@@ -87,18 +152,18 @@ impl DreamStats {
 const MIN_IMPORTANCE: u8 = 3;
 const BATCH_SIZE: i64 = 100;
 
-/// Per-page concurrency cap. With up to 5 pages in flight, each page
-/// costs one LLM call (~30s). 5 pages sequential = ~150s; 5 pages
-/// concurrent ≈ 30s. 5 is also the cap on `SELECT DISTINCT page_id
-/// LIMIT 5` below, so this matches the source side.
-const MAX_CONCURRENT_PAGES: usize = 5;
-
 /// Dedup threshold for the word-overlap heuristic in
 /// `is_duplicate_fact`. If >= this fraction of the *new* fact's
 /// significant words are already present in an existing fact, treat
 /// the new one as a near-duplicate and skip it. 0.6 = "more than half
 /// the same words". Tunable; 0.5–0.7 is the useful range.
 const DEDUP_WORD_OVERLAP: f64 = 0.6;
+
+/// Circuit breaker: how many consecutive dream cycles can fail before
+/// we skip cycles to avoid burning API quota.
+const MAX_CONSECUTIVE_FAILURES: usize = 3;
+
+static CONSECUTIVE_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
 /// Memory-consolidation "dream" cycle. There is one live brain — the
 /// `ModelRouter` passed in by the main runtime — used for everything
@@ -122,6 +187,19 @@ pub async fn run_dream_cycle(
         provider = %model_router.provider_label(),
         "Dream cycle: using live brain"
     );
+
+    // ── Circuit breaker check ──────────────────────────────────────────────
+    // If too many consecutive cycles failed, skip this one to avoid burning
+    // API quota on a dead or rate-limited brain.
+    let failures = CONSECUTIVE_FAILURES.load(Ordering::SeqCst);
+    if failures >= MAX_CONSECUTIVE_FAILURES {
+        warn!(
+            failures,
+            max = MAX_CONSECUTIVE_FAILURES,
+            "Dream cycle: circuit breaker open — skipping cycle"
+        );
+        return Ok(stats);
+    }
 
     // ── Step 0: Startup compaction check ─────────────────────────────────
     // Immediately enforce the character budget on both personality files.
@@ -163,40 +241,44 @@ pub async fn run_dream_cycle(
 
     info!(
         page_count = page_ids.len(),
-        max_concurrent = MAX_CONCURRENT_PAGES,
-        "Dream cycle: fanning out across pages"
+        "Dream cycle: processing pages sequentially via queue"
     );
 
-    // 2. Fan out per-page tasks. `SqlitePool` is `Clone` (it's an Arc
-    // internally) and `Arc<SessionStore>` / `Arc<ModelRouter>` are
-    // already shared, so we can hand each task its own copy.
-    let mut tasks = Vec::with_capacity(page_ids.len());
+    // 2. Process pages sequentially in a queue (FIFO)
+    let mut success_count = 0usize;
+    let mut fail_count = 0usize;
     for page_id in page_ids {
-        let store = store.clone();
-        let model_router = model_router.clone();
-        let page_pool = pool.clone();
-        let skill_lib = skill_library.clone();
-        tasks.push(tokio::spawn(async move {
-            process_page(page_id, store, model_router, page_pool, skill_lib).await
-        }));
+        match process_page(
+            page_id,
+            store.clone(),
+            model_router.clone(),
+            pool.clone(),
+            skill_library.clone(),
+        )
+        .await
+        {
+            Ok(page_stats) => {
+                stats.merge(&page_stats);
+                success_count += 1;
+            }
+            Err(e) => {
+                error!(error = %e, "Dream cycle: page task failed");
+                stats.pages_failed += 1;
+                fail_count += 1;
+            }
+        }
     }
 
-    // 3. Collect results. All tasks were already spawned in step 2,
-    // so they're running concurrently in the background — awaiting
-    // them sequentially here just collects the completed results.
-    // The SQL `LIMIT 5` upstream caps the number of in-flight LLM
-    // calls, which is the actual concurrency bound. We previously
-    // had a `chunks(MAX_CONCURRENT_PAGES)` indirection that didn't
-    // actually do anything — it iterated `&[JoinHandle]`, which
-    // doesn't implement `Future` (only `JoinHandle` itself and
-    // `&mut JoinHandle` do), so the loop failed to compile. The
-    // fix is to consume the `Vec` and await each handle directly.
-    for handle in tasks {
-        match handle.await {
-            Ok(Ok(page_stats)) => stats.merge(&page_stats),
-            Ok(Err(e)) => error!(error = %e, "Dream cycle: page task failed"),
-            Err(e) => error!(error = %e, "Dream cycle: page task panicked"),
-        }
+    // Update circuit breaker: reset on any success, increment on all-failure.
+    if success_count > 0 {
+        CONSECUTIVE_FAILURES.store(0, Ordering::SeqCst);
+    } else if fail_count > 0 {
+        let new_count = CONSECUTIVE_FAILURES.fetch_add(1, Ordering::SeqCst) + 1;
+        warn!(
+            new_count,
+            max = MAX_CONSECUTIVE_FAILURES,
+            "Dream cycle: all page tasks failed, circuit breaker warming"
+        );
     }
 
     // ── 75% Graphify: cluster pages into Books and Books onto Shelves ──────
@@ -235,6 +317,47 @@ pub async fn run_dream_cycle(
             // cycle will retry it. Log at warn so the operator can
             // spot persistent failures.
             warn!(error = %e, "Dream cycle: Graphify clustering pass failed (will retry next cycle)");
+        }
+    }
+
+    // Trigger the Python graph generator to rebuild the D3 graph at ~/.hydragent/data/graph.html
+    let python_bin = if cfg!(target_os = "windows") {
+        let local_venv = std::path::Path::new(".venv").join("Scripts").join("python.exe");
+        if local_venv.exists() {
+            local_venv.to_string_lossy().to_string()
+        } else {
+            "python".to_string()
+        }
+    } else {
+        let local_venv = std::path::Path::new(".venv").join("bin").join("python");
+        if local_venv.exists() {
+            local_venv.to_string_lossy().to_string()
+        } else {
+            "python3".to_string()
+        }
+    };
+
+    let mut cmd = tokio::process::Command::new(python_bin);
+    cmd.args(&["-m", "graphing.main"]);
+    match cmd.spawn() {
+        Ok(mut child) => {
+            tokio::spawn(async move {
+                match child.wait().await {
+                    Ok(status) => {
+                        if !status.success() {
+                            warn!("Graph generation script exited with non-zero status: {:?}", status);
+                        } else {
+                            info!("Graph generation script completed successfully.");
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to wait on graph generation child process: {}", e);
+                    }
+                }
+            });
+        }
+        Err(e) => {
+            error!("Failed to spawn graph generation process: {}", e);
         }
     }
 
@@ -285,41 +408,28 @@ async fn process_page(
         row_ids.push(id);
         stats.messages_processed += 1;
     }
-    let log_text = log_lines.join("\n\n");
-
-    // Build and submit extraction prompt. The mpsc channel is required
-    // by `chat_stream`'s signature even for non-streaming callers;
-    // drain it in a side-task so the stream doesn't block.
-    let prompt = build_extraction_prompt(&log_text);
-    let system_message = ChatMessage {
-        role: "user".to_string(),
-        content: prompt,
-    };
-
-    let (tx, mut rx) = mpsc::channel(100);
-    let drain = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
-
-    let (raw_json, _model_used) = match model_router.chat_stream(vec![system_message], tx, None).await {
-        Ok(res) => res,
-        Err(e) => {
-            error!(error = %e, page_id = %page_id, "Dream cycle: LLM call failed");
-            let _ = drain.await;
-            return Ok(stats);
+    let mut log_text = log_lines.join("\n\n");
+    let word_count = log_text.split_whitespace().count();
+    let estimated_tokens = (word_count as f64 * 1.3) as usize;
+    if estimated_tokens > 8192 {
+        let keep_lines = log_lines.len();
+        let start_keep = (keep_lines as f64 * 0.2) as usize;
+        let end_keep = (keep_lines as f64 * 0.4) as usize;
+        if start_keep + end_keep < keep_lines {
+            let mut truncated = log_lines[..start_keep].to_vec();
+            truncated.push("... [CONVERSATION LOG TRUNCATED FROM MIDDLE TO SAVE TOKEN BUDGET] ...".to_string());
+            truncated.extend_from_slice(&log_lines[keep_lines - end_keep..]);
+            log_text = truncated.join("\n\n");
+            info!(page_id = %page_id, before_lines = keep_lines, after_lines = truncated.len(), "Dream cycle: truncated long conversation log from the middle");
         }
-    };
-    let _ = drain.await;
+    }
 
-    // Parse JSON. If parsing fails, mark consolidated to prevent
-    // forever looping on a bad response.
-    let extraction = match parse_json_extraction(&raw_json) {
-        Some(parsed) => parsed,
+    // Extract with retry: up to 3 attempts with stricter prompts on failure.
+    let extraction = match extract_with_retry(&model_router, &log_text, &page_id, &mut stats).await {
+        Some(ex) => ex,
         None => {
-            warn!(
-                page_id = %page_id,
-                raw_output_len = raw_json.len(),
-                "Dream cycle: failed to parse extraction JSON — skipping batch"
-            );
-            mark_consolidated(&pool, &row_ids).await?;
+            warn!(page_id = %page_id, "Dream cycle: extraction failed after all retries — deferring consolidation for a future retry");
+            stats.pages_failed += 1;
             return Ok(stats);
         }
     };
@@ -337,7 +447,7 @@ async fn process_page(
         .map(|facts| {
             let mut seen: HashSet<String> = HashSet::new();
             facts.iter()
-                .map(|f| f.category.to_lowercase())
+                .map(|f| normalize_category(&f.category))
                 .filter(|c| seen.insert(c.clone()))
                 .collect()
         })
@@ -348,17 +458,34 @@ async fn process_page(
     // that had been deleted or were paraphrases of an existing fact).
     if let Some(facts) = extraction.extracted_facts {
         for fact in facts {
+            let category = normalize_category(&fact.category);
+
             if fact.importance_1_to_10 < MIN_IMPORTANCE {
                 stats.facts_skipped += 1;
                 continue;
             }
-            if is_duplicate_fact(&store, &fact.fact).await {
-                debug!(page_id = %page_id, fact = %fact.fact, "Dream cycle: skipping near-duplicate fact");
+
+            // Grounding check: is the fact supported by the conversation log?
+            let grounded = fact_is_grounded(&fact.fact, &log_text);
+            if !grounded && fact.importance_1_to_10 < 6 {
+                debug!(page_id = %page_id, fact = %fact.fact, "Dream cycle: skipping ungrounded low-importance fact");
                 stats.facts_skipped += 1;
                 continue;
             }
+            if grounded {
+                stats.facts_verbatim += 1;
+            } else {
+                stats.facts_inferred += 1;
+            }
+
+            if is_duplicate_fact(&store, &fact.fact).await {
+                debug!(page_id = %page_id, fact = %fact.fact, "Dream cycle: skipping near-duplicate fact");
+                stats.facts_skipped += 1;
+                stats.dedup_hits += 1;
+                continue;
+            }
             let memory_id = uuid::Uuid::new_v4().to_string();
-            let tags = vec![fact.category];
+            let tags = vec![category];
             if let Err(e) = store.insert_memory(
                 &memory_id,
                 Some(&page_id),
@@ -426,54 +553,67 @@ async fn process_page(
     // ── LLM Role (25%): Compress Draft Paper → Page Node ────────────────────
     // The session summary extracted by the LLM becomes a Page node in the
     // Library's `nodes` table, ready for Graphify clustering into Books/Shelves.
-    //
-    // We use the typed `Library::upsert_node` (not the raw `create_node`)
-    // because it (a) records the on-graph `tag` edges the clusterer needs
-    // to organise Pages into Books, and (b) uses the typed `NodeKind` enum
-    // so this string is checked at compile time, not discovered by a bug
-    // report. Tags are derived from the fact categories (deduped) so a
-    // page with multiple `preference` facts still only contributes one
-    // `preference` tag edge.
-    if let Some(ref summary_text) = extraction.summary {
-        if !summary_text.trim().is_empty() {
-            // Update page_meta summary for compaction context
-            if let Err(e) = store.update_page_summary(&page_id, summary_text).await {
-                error!(page_id = %page_id, error = %e, "Dream cycle: failed to update page_meta summary");
-            }
-            // Upsert the Page as a node in the Library graph nodes table
-            // so Graphify clustering can discover it as a first-class Page node.
-            // `page_tags` was computed above from the same `extracted_facts`
-            // list we're about to consume, so it reflects the same deduped
-            // lowercased categories the clusterer will read.
-            let properties = serde_json::json!({
-                "source": "dream",
-                "page_id": page_id,
-            });
-            let library = Library::new(&store);
-            match library
-                .upsert_node(
-                    &page_id,
-                    NodeKind::Page,
-                    summary_text,
-                    &page_tags,
-                    Some(&properties),
-                )
-                .await
-            {
-                Ok(()) => {
-                    info!(
-                        page_id = %page_id,
-                        summary_len = summary_text.len(),
-                        tag_count = page_tags.len(),
-                        "Dream cycle: upserted Page node into Library graph"
-                    );
-                    stats.pages_emitted += 1;
+    let has_meaningful_data = {
+        let has_facts = stats.facts_stored > 0;
+        let has_habits = stats.style_habits_stored > 0;
+        let has_rules = stats.behavior_rules_stored > 0;
+        
+        let is_trivial_summary = if let Some(ref s) = extraction.summary {
+            let s_lower = s.to_lowercase();
+            s_lower.contains("trivial") || s_lower.contains("greeting") || s_lower.contains("no substantive") || s.trim().is_empty()
+        } else {
+            true
+        };
+        
+        (has_facts || has_habits || has_rules) && !is_trivial_summary
+    };
+
+    if has_meaningful_data {
+        if let Some(ref summary_text) = extraction.summary {
+            if !summary_text.trim().is_empty() {
+                // Update page_meta summary for compaction context
+                if let Err(e) = store.update_page_summary(&page_id, summary_text).await {
+                    error!(page_id = %page_id, error = %e, "Dream cycle: failed to update page_meta summary");
                 }
-                Err(e) => {
-                    error!(page_id = %page_id, error = %e, "Dream cycle: failed to upsert page node in library graph");
+                // Upsert the Page as a node in the Library graph nodes table
+                let properties = serde_json::json!({
+                    "source": "dream",
+                    "page_id": page_id,
+                    "suggested_books": extraction.suggested_books,
+                    "suggested_shelves": extraction.suggested_shelves,
+                });
+                let library = Library::new(&store);
+                match library
+                    .upsert_node(
+                        &page_id,
+                        NodeKind::Page,
+                        summary_text,
+                        &page_tags,
+                        Some(&properties),
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        info!(
+                            page_id = %page_id,
+                            summary_len = summary_text.len(),
+                            tag_count = page_tags.len(),
+                            "Dream cycle: upserted Page node into Library graph"
+                        );
+                        stats.pages_emitted += 1;
+                    }
+                    Err(e) => {
+                        error!(page_id = %page_id, error = %e, "Dream cycle: failed to upsert page node in library graph");
+                    }
                 }
             }
         }
+    } else {
+        stats.pages_skipped_trivial += 1;
+        info!(
+            page_id = %page_id,
+            "Dream cycle: Page has no meaningful data (no new facts, habits, or rules) — skipping graph node insertion to prevent clutter"
+        );
     }
 
     // Mark source messages as consolidated
@@ -485,10 +625,11 @@ async fn process_page(
     // and never propagated: a single bad page must not break the
     // dream cycle.
     if let Some(lib) = skill_library {
-        let stats_ind = crate::skill_induction::induce_skill_from_page_with_library(
+        let stats_ind = crate::skill_induction::induce_skill_from_page_with_library_and_router(
             lib,
             &pool,
             &page_id,
+            Some(model_router),
         )
         .await;
         if stats_ind.skills_inserted > 0 {
@@ -539,6 +680,47 @@ async fn is_duplicate_fact(store: &SessionStore, fact: &str) -> bool {
         return false;
     }
 
+    // Fast word-overlap check: if any candidate has overlap > 0.3,
+    // we run the full embedding similarity check on it.
+    let mut has_potential_dup = false;
+    for mem in candidates.iter().take(5) {
+        let existing_words: HashSet<String> = mem
+            .content
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .filter(|w| w.len() >= 3)
+            .collect();
+        if existing_words.is_empty() {
+            continue;
+        }
+        let intersection = new_words.intersection(&existing_words).count();
+        let ratio = intersection as f64 / new_words.len() as f64;
+        if ratio >= 0.3 {
+            has_potential_dup = true;
+            break;
+        }
+    }
+
+    if !has_potential_dup {
+        return false;
+    }
+
+    // Run embedding similarity check against HNSW vector index
+    if let Ok(embedder) = store.get_embedder().await {
+        if let Ok(query_vector) = embedder.embed_text(fact) {
+            let nearest = {
+                let vs = store.vector_store().lock().unwrap();
+                vs.search(&query_vector, 5)
+            };
+            for (_id, similarity) in nearest {
+                if similarity >= 0.85 {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // If embedding check didn't find a match, fall back to high word overlap
     for mem in candidates.iter().take(5) {
         let existing_words: HashSet<String> = mem
             .content
@@ -555,22 +737,128 @@ async fn is_duplicate_fact(store: &SessionStore, fact: &str) -> bool {
             return true;
         }
     }
+
     false
 }
 
 async fn mark_consolidated(pool: &SqlitePool, ids: &[i64]) -> anyhow::Result<()> {
-    for id in ids {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    if ids.len() == 1 {
         sqlx::query("UPDATE messages SET requires_consolidation = 0 WHERE id = ?")
-            .bind(id)
+            .bind(&ids[0])
             .execute(pool)
             .await?;
+        return Ok(());
     }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!("UPDATE messages SET requires_consolidation = 0 WHERE id IN ({})", placeholders);
+    let mut q = sqlx::query(&query);
+    for id in ids {
+        q = q.bind(id);
+    }
+    q.execute(pool).await?;
     Ok(())
 }
 
-fn build_extraction_prompt(log_text: &str) -> String {
-    let template = include_str!("prompts/extraction_prompt.txt");
-    template.replace("{CONVERSATION_LOG}", log_text)
+fn build_extraction_prompt(log_text: &str) -> (String, String) {
+    let system = include_str!("prompts/extraction_system.txt");
+    let user_template = include_str!("prompts/extraction_user.txt");
+    let user = user_template.replace("{CONVERSATION_LOG}", log_text);
+    (system.to_string(), user)
+}
+
+fn normalize_category(cat: &str) -> String {
+    let lower = cat.to_lowercase().trim().to_string();
+    match lower.as_str() {
+        "work" | "project" | "task" | "job" => "project_state".to_string(),
+        "general" | "misc" | "other" => "personal".to_string(),
+        "tech" | "coding" | "dev" | "development" | "software" => "technical".to_string(),
+        "pref" | "like" | "dislike" | "favorite" => "preference".to_string(),
+        "personal" | "technical" | "preference" | "project_state" => lower,
+        _ => {
+            warn!(category = %cat, "Dream cycle: unknown fact category, defaulting to 'personal'");
+            "personal".to_string()
+        }
+    }
+}
+
+fn fact_is_grounded(fact: &str, log_text: &str) -> bool {
+    let fact_norm = fact.to_lowercase()
+        .replace(|c: char| !c.is_alphanumeric() && c != ' ', "");
+    let log_norm = log_text.to_lowercase()
+        .replace(|c: char| !c.is_alphanumeric() && c != ' ', "");
+    if log_norm.contains(&fact_norm) {
+        return true;
+    }
+    let fact_lower = fact.to_lowercase();
+    let fact_words: HashSet<&str> = fact_lower
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| w.len() >= 4)
+        .collect();
+    if fact_words.is_empty() {
+        return true; // Too short to validate, assume grounded
+    }
+    let log_lower = log_text.to_lowercase();
+    let log_words: HashSet<&str> = log_lower
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| w.len() >= 4)
+        .collect();
+    let matched = fact_words.intersection(&log_words).count();
+    matched * 10 >= fact_words.len() * 6
+}
+
+async fn extract_with_retry(
+    model_router: &ModelRouter,
+    log_text: &str,
+    page_id: &str,
+    stats: &mut DreamStats,
+) -> Option<ExtractionResponse> {
+    let (system_prompt, user_prompt) = build_extraction_prompt(log_text);
+
+    let attempts = [
+        user_prompt.clone(),
+        format!("{}\n\nCRITICAL: Respond with ONLY a valid JSON object. No markdown fences, no explanation, no commentary.", user_prompt),
+        format!("{}\n\nOUTPUT ONLY JSON. NOTHING ELSE. NO ```. NO TEXT BEFORE OR AFTER THE JSON.", user_prompt),
+    ];
+
+    for (attempt, user) in attempts.iter().enumerate() {
+        if attempt > 0 {
+            stats.extraction_retries += 1;
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
+
+        let messages = vec![
+            ChatMessage { role: "system".to_string(), content: system_prompt.clone() },
+            ChatMessage { role: "user".to_string(), content: user.clone() },
+        ];
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let drain = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
+
+        match model_router.chat_stream(messages, tx, None).await {
+            Ok((raw_json, _)) => {
+                let _ = drain.await;
+                if let Some(extraction) = parse_json_extraction(&raw_json) {
+                    return Some(extraction);
+                }
+                stats.extraction_failures += 1;
+                warn!(page_id = %page_id, attempt = attempt + 1, "Dream cycle: JSON parse failed");
+            }
+            Err(e) => {
+                let _ = drain.await;
+                error!(page_id = %page_id, attempt = attempt + 1, error = %e, "Dream cycle: LLM call failed");
+                if attempt < attempts.len() - 1 {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn parse_json_extraction(raw: &str) -> Option<ExtractionResponse> {
@@ -604,28 +892,34 @@ async fn startup_compaction_check(
     user_md_compacted: &mut bool,
     soul_md_compacted: &mut bool,
 ) -> anyhow::Result<()> {
-    let user_bmd = BoundedMd::new(crate::paths::config_dir().join("USER.md"), USER_MD_CHAR_LIMIT);
-    if user_bmd.needs_compaction().unwrap_or(false) {
-        let current_len = user_bmd.len().unwrap_or(0);
-        warn!(
-            current_chars = current_len,
-            limit = USER_MD_CHAR_LIMIT,
-            "Dream cycle startup: USER.md exceeds budget — running LLM compaction"
-        );
-        compact_md_with_llm(&user_bmd, model_router, USER_MD_CHAR_LIMIT).await?;
-        *user_md_compacted = true;
+    let user_path = crate::paths::config_dir().join("USER.md");
+    if should_check_compaction(&user_path) {
+        let user_bmd = BoundedMd::new(user_path, USER_MD_CHAR_LIMIT);
+        if user_bmd.needs_compaction().unwrap_or(false) {
+            let current_len = user_bmd.len().unwrap_or(0);
+            warn!(
+                current_chars = current_len,
+                limit = USER_MD_CHAR_LIMIT,
+                "Dream cycle startup: USER.md exceeds budget — running LLM compaction"
+            );
+            compact_md_with_llm(&user_bmd, model_router, USER_MD_CHAR_LIMIT).await?;
+            *user_md_compacted = true;
+        }
     }
 
-    let soul_bmd = BoundedMd::new(crate::paths::config_dir().join("SOUL.md"), SOUL_MD_CHAR_LIMIT);
-    if soul_bmd.needs_compaction().unwrap_or(false) {
-        let current_len = soul_bmd.len().unwrap_or(0);
-        warn!(
-            current_chars = current_len,
-            limit = SOUL_MD_CHAR_LIMIT,
-            "Dream cycle startup: SOUL.md exceeds budget — running LLM compaction"
-        );
-        compact_md_with_llm(&soul_bmd, model_router, SOUL_MD_CHAR_LIMIT).await?;
-        *soul_md_compacted = true;
+    let soul_path = crate::paths::config_dir().join("SOUL.md");
+    if should_check_compaction(&soul_path) {
+        let soul_bmd = BoundedMd::new(soul_path, SOUL_MD_CHAR_LIMIT);
+        if soul_bmd.needs_compaction().unwrap_or(false) {
+            let current_len = soul_bmd.len().unwrap_or(0);
+            warn!(
+                current_chars = current_len,
+                limit = SOUL_MD_CHAR_LIMIT,
+                "Dream cycle startup: SOUL.md exceeds budget — running LLM compaction"
+            );
+            compact_md_with_llm(&soul_bmd, model_router, SOUL_MD_CHAR_LIMIT).await?;
+            *soul_md_compacted = true;
+        }
     }
 
     Ok(())

@@ -93,3 +93,4 @@ target/agent_reach_source/
 .kimchi
 
 **/admin_auth.hash
+.agents/

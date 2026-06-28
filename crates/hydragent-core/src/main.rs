@@ -81,7 +81,7 @@ impl hydragent_tools::tool_trait::Tool for SandboxedTool {
     name = "hydragent",
     author,
     version,
-    about = "Hydragent AI Agent core runtime",
+    about = "Hydragent AI Agent core runtime (engine, gateway daemon, and local administrator)",
     long_about = "Hydragent is a privacy-first, model-agnostic AI agent runtime.\n\
                   Run `hydragent onboard` for a guided first-time setup, or\n\
                   `hydragent doctor` to diagnose an existing installation.\n\
@@ -354,6 +354,30 @@ enum Commands {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// ⚙️ Manage environment configurations in the `.env` file
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
+enum ConfigAction {
+    /// Set a config variable (e.g. KEY=value)
+    Set {
+        key: String,
+        value: String,
+    },
+    /// Get the value of a config variable
+    Get {
+        key: String,
+    },
+    /// Delete a config variable from .env
+    Delete {
+        key: String,
+    },
+    /// List all defined variables in .env
+    List,
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]
@@ -827,6 +851,108 @@ ps -eo pid,ppid,etime,comm | awk '$4 ~ /hydragent/ {print $1, $2, $3, $4}'
 "#
 }
 
+fn cmd_config(action: &ConfigAction) {
+    let p = paths::env_file();
+    let contents = if p.exists() {
+        std::fs::read_to_string(&p).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    match action {
+        ConfigAction::Set { key, value } => {
+            let mut lines: Vec<String> = contents.lines().map(|s| s.to_string()).collect();
+            let mut found = false;
+            let target_prefix = format!("{key}=");
+            
+            // Format value: quote it if it contains spaces or special characters
+            let formatted_val = if value.contains(' ') || value.contains('"') || value.contains('\'') {
+                format!("\"{}\"", value.replace('"', "\\\""))
+            } else {
+                value.clone()
+            };
+
+            for line in lines.iter_mut() {
+                let trimmed = line.trim();
+                if trimmed.starts_with(&target_prefix) {
+                    *line = format!("{key}={formatted_val}");
+                    found = true;
+                    break;
+                }
+            }
+
+            if !found {
+                lines.push(format!("{key}={formatted_val}"));
+            }
+
+            let new_contents = lines.join("\n") + "\n";
+            if let Err(e) = paths::write_env_file(&new_contents) {
+                eprintln!("❌ Failed to write config to `.env` file: {e}");
+                std::process::exit(1);
+            }
+            println!("✓ Set config: {key} = {value}");
+        }
+        ConfigAction::Get { key } => {
+            let mut found = false;
+            let target_prefix = format!("{key}=");
+            for line in contents.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with(&target_prefix) {
+                    let val = &trimmed[target_prefix.len()..];
+                    // Strip enclosing quotes if present
+                    let val_clean = if (val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')) {
+                        &val[1..val.len()-1]
+                    } else {
+                        val
+                    };
+                    println!("{val_clean}");
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                eprintln!("❌ Config key not found: {key}");
+                std::process::exit(1);
+            }
+        }
+        ConfigAction::Delete { key } => {
+            let mut lines: Vec<String> = contents.lines().map(|s| s.to_string()).collect();
+            let original_len = lines.len();
+            let target_prefix = format!("{key}=");
+            
+            lines.retain(|line| !line.trim().starts_with(&target_prefix));
+
+            if lines.len() == original_len {
+                eprintln!("❌ Config key not found: {key}");
+                std::process::exit(1);
+            }
+
+            let new_contents = lines.join("\n") + "\n";
+            if let Err(e) = paths::write_env_file(&new_contents) {
+                eprintln!("❌ Failed to write config to `.env` file: {e}");
+                std::process::exit(1);
+            }
+            println!("✓ Deleted config: {key}");
+        }
+        ConfigAction::List => {
+            println!("------------------------------------------------------------------------");
+            println!("  📋 Config Variables (.env)");
+            println!("------------------------------------------------------------------------");
+            let mut count = 0;
+            for line in contents.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') && trimmed.contains('=') {
+                    println!("  {trimmed}");
+                    count += 1;
+                }
+            }
+            if count == 0 {
+                println!("  No environment variables configured.");
+            }
+        }
+    }
+}
+
 fn cmd_ps() {
     let script = ps_script();
     #[cfg(target_os = "windows")]
@@ -1182,6 +1308,11 @@ async fn main() {
             return "unknown".to_string();
         }
         s
+    }
+
+    if let Some(Commands::Config { action }) = &args.command {
+        cmd_config(action);
+        std::process::exit(0);
     }
 
     // ── First-run interception ────────────────────────────────────────
@@ -2372,6 +2503,7 @@ async fn main() {
             // "should I run the gateway path?".
             Commands::Chat => dispatch_chat = true,
             Commands::Serve => dispatch_chat = true, // fall through to gateway startup (same as no subcommand)
+            Commands::Config { .. } => unreachable!(),
             Commands::Memory { action } => {
                 match action {
                     MemoryAction::List => {
@@ -2814,6 +2946,15 @@ async fn main() {
             model: app_config.effective_brain_model(),
             tool_count: registry.len(),
         };
+        let stream_raw = std::env::var("HYDRAGENT_STREAM_RAW")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let show_reasoning = std::env::var("HYDRAGENT_SHOW_REASONING")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         let state = cli_repl::ReplState {
             page_id,
             user_id: "local-cli".to_string(),
@@ -2826,6 +2967,14 @@ async fn main() {
             workspace_dir: PathBuf::from(workspace_dir),
             brand,
             skill_library: skill_library.clone(),
+            status_mode: crate::status_bar::Mode::Normal,
+            input_tokens: 0,
+            output_tokens: 0,
+            context_pct: 0,
+            stream_raw,
+            show_reasoning,
+            input_history: Vec::new(),
+            renderer: crate::markdown_render::MarkdownRenderer::new(),
         };
         let code = cli_repl::run(state).await;
         std::process::exit(code);
@@ -2971,6 +3120,63 @@ async fn main() {
 
     // Create and start the Event Bus
     let bus = hydragent_bus::EventBus::new(router, app_config.bus_port);
+
+    // Spawn the Web Control UI adapter
+    let python_bin = if cfg!(target_os = "windows") {
+        let local_venv = std::path::Path::new(".venv").join("Scripts").join("python.exe");
+        if local_venv.exists() {
+            local_venv.to_string_lossy().to_string()
+        } else {
+            "python".to_string()
+        }
+    } else {
+        let local_venv = std::path::Path::new(".venv").join("bin").join("python");
+        if local_venv.exists() {
+            local_venv.to_string_lossy().to_string()
+        } else {
+            "python3".to_string()
+        }
+    };
+
+    let web_adapter_path = std::path::Path::new("adapters").join("channels").join("web").join("web_adapter.py");
+    if web_adapter_path.exists() {
+        info!("Auto-spawning Web Control UI adapter...");
+        let mut cmd = tokio::process::Command::new(&python_bin);
+        cmd.arg(web_adapter_path);
+        cmd.envs(std::env::vars());
+
+        match cmd.spawn() {
+            Ok(child) => {
+                info!("Successfully spawned Web Control UI adapter process (PID: {:?})", child.id());
+            }
+            Err(e) => {
+                error!("Failed to spawn Web Control UI adapter process: {}", e);
+            }
+        }
+    }
+
+    // Auto-spawn Telegram adapter if TELEGRAM_BOT_TOKEN is set
+    let telegram_token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default();
+    if !telegram_token.is_empty() {
+        info!("Telegram Bot Token detected. Auto-spawning Telegram channel adapter...");
+        let adapter_path = std::path::Path::new("adapters").join("telegram_adapter.py");
+        if adapter_path.exists() {
+            let mut cmd = tokio::process::Command::new(python_bin);
+            cmd.arg(adapter_path);
+            cmd.envs(std::env::vars());
+
+            match cmd.spawn() {
+                Ok(child) => {
+                    info!("Successfully spawned Telegram adapter process (PID: {:?})", child.id());
+                }
+                Err(e) => {
+                    error!("Failed to spawn Telegram adapter process: {}", e);
+                }
+            }
+        } else {
+            info!("adapters/telegram_adapter.py not found; skipping auto-spawn.");
+        }
+    }
 
     info!("Starting Event Bus server on port {}...", app_config.bus_port);
     if let Err(e) = bus.start().await {

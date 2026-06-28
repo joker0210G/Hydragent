@@ -186,7 +186,7 @@ pub async fn induce_skill_from_page_with_router(
     induce_skill_from_page_with_library_and_router(library, pool, page_id, Some(router)).await
 }
 
-async fn induce_skill_from_page_with_library_and_router(
+pub(crate) async fn induce_skill_from_page_with_library_and_router(
     library: Arc<SkillLibrary>,
     pool: &SqlitePool,
     page_id: &str,

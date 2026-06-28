@@ -578,11 +578,14 @@ pub struct ExpandHit {
 // Tag-based Louvain-style clusterer
 // ---------------------------------------------------------------------------
 
-/// Threshold for the Jaccard index above which two tag sets are
-/// "close enough" to merge. 0.3 = "at least 30% of the union of tags
-/// is shared". Tunable; 0.2–0.4 is the useful range. Higher values
-/// produce more, smaller books.
-pub const TAG_JACCARD_THRESHOLD: f64 = 0.3;
+/// Helper to calculate the adaptive Jaccard threshold dynamically.
+/// 1 tag -> threshold ≈ 0.5 (must match the single tag).
+/// 10 tags -> threshold ≈ 0.23 (looser).
+pub fn adaptive_threshold(avg_tag_count: f64) -> f64 {
+    let count = if avg_tag_count <= 0.0 { 1.0 } else { avg_tag_count };
+    let threshold = 0.1 + 0.4 / count.sqrt();
+    threshold.clamp(0.1, 0.5)
+}
 
 /// Jaccard similarity between two tag sets. Returns 0.0 for two
 /// empty sets (treating empty ∩ empty as "nothing in common").
@@ -632,6 +635,10 @@ async fn cluster_pages_into_books(
     let mut sorted: Vec<&(GraphNode, Vec<String>)> = pages.iter().collect();
     sorted.sort_by(|a, b| a.0.label.cmp(&b.0.label).then(a.0.id.cmp(&b.0.id)));
 
+    let total_tags: usize = pages.iter().map(|(_, tags)| tags.len()).sum();
+    let avg_tags = if pages.is_empty() { 1.0 } else { total_tags as f64 / pages.len() as f64 };
+    let threshold = adaptive_threshold(avg_tags);
+
     for (page_node, page_tags) in sorted {
         let page_tags_set: HashSet<String> = page_tags.iter().cloned().collect();
 
@@ -646,7 +653,7 @@ async fn cluster_pages_into_books(
             // case the book has explicit tag edges we can use.
             let _ = sim;
             let score = jaccard(page_tags, &book_tags.iter().cloned().collect::<Vec<_>>());
-            if score >= TAG_JACCARD_THRESHOLD && best.map_or(true, |(_, s)| score > s) {
+            if score >= threshold && best.map_or(true, |(_, s)| score > s) {
                 best = Some((idx, score));
             }
         }
@@ -741,9 +748,11 @@ async fn organize_books_onto_shelves(lib: &Library<'_>) -> Result<u64> {
 
         // Best-fit existing shelf.
         let mut best: Option<(&String, f64)> = None;
+        let avg_tags = if book_tags.is_empty() { 1.0 } else { book_tags.len() as f64 };
+        let threshold = adaptive_threshold(avg_tags);
         for (shelf_id, (_label, shelf_tags)) in &shelves {
             let score = jaccard(&book_tags, &shelf_tags.iter().cloned().collect::<Vec<_>>());
-            if score >= TAG_JACCARD_THRESHOLD && best.map_or(true, |(_, s)| score > s) {
+            if score >= threshold && best.map_or(true, |(_, s)| score > s) {
                 best = Some((shelf_id, score));
             }
         }

@@ -13,6 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+#[allow(dead_code)]
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum KeywordsInput {
