@@ -141,7 +141,6 @@ impl SessionStore {
                 page_id       TEXT    PRIMARY KEY,
                 created_at    INTEGER NOT NULL,
                 last_active   INTEGER NOT NULL,
-                turn_count    INTEGER NOT NULL DEFAULT 0,
                 model_used    TEXT,
                 summary       TEXT
             );"
@@ -334,8 +333,8 @@ impl SessionStore {
     pub async fn create_page(&self, page_id: &str) -> Result<()> {
         let now = chrono::Utc::now().timestamp_millis();
         sqlx::query(
-            "INSERT OR IGNORE INTO page_meta (page_id, created_at, last_active, turn_count)
-             VALUES (?, ?, ?, 0)"
+            "INSERT OR IGNORE INTO page_meta (page_id, created_at, last_active)
+             VALUES (?, ?, ?)"
         )
         .bind(page_id)
         .bind(now)
@@ -365,14 +364,16 @@ impl SessionStore {
         .execute(&self.pool)
         .await?;
 
-        // Update page meta
+        // Update page meta (upsert so it is guaranteed to exist in page_meta)
         sqlx::query(
-            "UPDATE page_meta
-             SET last_active = ?, turn_count = turn_count + 1
-             WHERE page_id = ?"
+            "INSERT INTO page_meta (page_id, created_at, last_active)
+             VALUES (?, ?, ?)
+             ON CONFLICT(page_id) DO UPDATE SET
+                 last_active = excluded.last_active"
         )
-        .bind(now)
         .bind(page_id)
+        .bind(now)
+        .bind(now)
         .execute(&self.pool)
         .await?;
 
@@ -395,11 +396,22 @@ impl SessionStore {
         Ok(rows)
     }
 
-    pub async fn list_pages(&self) -> Result<Vec<(String, i64, i64, i32)>> {
+    pub async fn list_pages(&self) -> Result<Vec<(String, String, i64, i64)>> {
         let rows = sqlx::query(
-            "SELECT page_id, created_at, last_active, turn_count
-             FROM page_meta
-             ORDER BY last_active DESC"
+            "SELECT 
+                 page_id,
+                 MAX(label) as label,
+                 MAX(created_at) as created_at,
+                 MAX(last_active) as last_active
+             FROM (
+                 SELECT page_id, '' AS label, created_at, last_active FROM page_meta
+                 UNION ALL
+                 SELECT node_id AS page_id, label, 0 AS created_at, 0 AS last_active 
+                 FROM nodes 
+                 WHERE type = 'page'
+             )
+             GROUP BY page_id
+             ORDER BY last_active DESC, page_id ASC"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -407,10 +419,10 @@ impl SessionStore {
         let mut list = Vec::new();
         for row in rows {
             let page_id: String = row.get("page_id");
+            let label: String = row.get("label");
             let created_at: i64 = row.get("created_at");
             let last_active: i64 = row.get("last_active");
-            let turn_count: i32 = row.get("turn_count");
-            list.push((page_id, created_at, last_active, turn_count));
+            list.push((page_id, label, created_at, last_active));
         }
 
         Ok(list)

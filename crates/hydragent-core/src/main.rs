@@ -330,6 +330,14 @@ enum Commands {
         /// (persists to .env as DREAMING_INTERVAL_SEC=<N>)
         #[arg(long, value_name = "SECS")]
         interval: Option<u64>,
+
+        /// Mark all existing messages as already consolidated (sets requires_consolidation=0)
+        #[arg(long)]
+        skip_all: bool,
+
+        /// Mark all existing messages as requiring consolidation (sets requires_consolidation=1)
+        #[arg(long, conflicts_with = "skip_all")]
+        unconsolidate_all: bool,
     },
     /// 🔄 Update Hydragent to the latest release
     #[command(
@@ -1462,7 +1470,7 @@ async fn main() {
             if args.verbose {
                 "debug".to_string()
             } else {
-                std::env::var("HYDRAGENT_CHAT_LOG").unwrap_or_else(|_| "error".to_string())
+                std::env::var("HYDRAGENT_CHAT_LOG").unwrap_or_else(|_| "off".to_string())
             }
         }
         _ => app_config.log_level.clone(),
@@ -1524,8 +1532,44 @@ async fn main() {
     // `.env` always lives at the canonical home location
     // (`paths::env_file()`), never in cwd — this is the single source
     // of truth shared with the installer and onboard command.
-    if let Some(Commands::Dream { enable, disable, interval }) = &args.command {
+    if let Some(Commands::Dream { enable, disable, interval, skip_all, unconsolidate_all }) = &args.command {
         let env_path = paths::env_file();
+
+        if *skip_all {
+            let db_path = format!("{}/sessions.db", app_config.data_dir);
+            let store = hydragent_memory::SessionStore::new(&db_path).await.unwrap_or_else(|e| {
+                eprintln!("Failed to initialize database: {}", e);
+                std::process::exit(1);
+            });
+            match sqlx::query("UPDATE messages SET requires_consolidation = 0").execute(store.pool()).await {
+                Ok(res) => {
+                    println!("  ✓ Marked {} messages as consolidated (they will not be processed by the dream cycle).", res.rows_affected());
+                }
+                Err(e) => {
+                    eprintln!("  ✗ Failed to update messages: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+
+        if *unconsolidate_all {
+            let db_path = format!("{}/sessions.db", app_config.data_dir);
+            let store = hydragent_memory::SessionStore::new(&db_path).await.unwrap_or_else(|e| {
+                eprintln!("Failed to initialize database: {}", e);
+                std::process::exit(1);
+            });
+            match sqlx::query("UPDATE messages SET requires_consolidation = 1").execute(store.pool()).await {
+                Ok(res) => {
+                    println!("  ✓ Marked {} messages as unconsolidated (they will be processed during the next dream cycle).", res.rows_affected());
+                }
+                Err(e) => {
+                    eprintln!("  ✗ Failed to update messages: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
 
         // Determine if we are making any changes
         let making_changes = *enable || *disable || interval.is_some();
@@ -2474,13 +2518,18 @@ async fn main() {
                 if pages.is_empty() {
                     println!("  No active Pages found.");
                 } else {
-                    println!("  {:<36} | {:<20} | {:<5}", "Page ID", "Last Active", "Turns");
-                    println!("  ----------------------------------------------------------------------");
-                    for (page_id, _, last_active, turn_count) in pages {
-                        let dt = chrono::DateTime::from_timestamp(last_active / 1000, 0)
-                            .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
-                            .unwrap_or_else(|| "Unknown".to_string());
-                        println!("  {:<36} | {:<20} | {:<5}", page_id, dt, turn_count);
+                    println!("  {:<36} | {:<25} | {:<20}", "Page ID", "Title", "Last Active");
+                    println!("  --------------------------------------------------------------------------------------");
+                    for (page_id, label, _, last_active) in pages {
+                        let dt = if last_active == 0 {
+                            "<graph-only>".to_string()
+                        } else {
+                            chrono::DateTime::from_timestamp(last_active / 1000, 0)
+                                .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+                                .unwrap_or_else(|| "Unknown".to_string())
+                        };
+                        let label_display = if label.is_empty() { "<no title>" } else { &label };
+                        println!("  {:<36} | {:<25} | {:<20}", page_id, label_display, dt);
                     }
                 }
             }

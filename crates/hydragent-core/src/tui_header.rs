@@ -277,46 +277,44 @@ pub fn render_kimi_header(brand: &BrandInfo, tip: &TipBox) -> String {
     let tip_str = render_tip_box(tip, 48);
     let tip_lines: Vec<&str> = tip_str.lines().collect();
 
-    // Build the "sidecar" text that sits next to the logo: a
-    // 🐉 emoji, the brand name in bold cyan, the version in dim,
-    // the branch in dim, and the path in dim. Each item gets its
-    // own line so it lines up with one row of the logo.
-    let sidecar: Vec<String> = vec![
-        format!(
-            "{}",
-            "🐉 HYDRAGENT".if_supports_color(Stdout, |s| s.style(
-                Style::new().bold().cyan()
-            ))
+    // Build the "sidecar" text that sits next to the logo. We define both
+    // the plain (uncolored) version to measure its visible character length,
+    // and the colored version.
+    let sidecar_raw = [
+        (
+            "🐉 HYDRAGENT".to_string(),
+            "🐉 HYDRAGENT".if_supports_color(Stdout, |s| s.style(Style::new().bold().cyan())).to_string()
         ),
-        format!(
-            "v{}",
-            brand.version.if_supports_color(Stdout, |v| v.style(
-                Style::new().dimmed()
-            ))
+        (
+            format!("v{}", brand.version),
+            format!("v{}", brand.version.if_supports_color(Stdout, |v| v.style(Style::new().dimmed())))
         ),
-        format!(
-            "{}",
-            brand
-                .branch
-                .if_supports_color(Stdout, |b| b.style(Style::new().dimmed()))
+        (
+            brand.branch.clone(),
+            brand.branch.if_supports_color(Stdout, |b| b.style(Style::new().dimmed())).to_string()
         ),
-        format!(
-            "{}",
-            brand
-                .path
-                .if_supports_color(Stdout, |p| p.style(Style::new().dimmed()))
+        (
+            brand.path.clone(),
+            brand.path.if_supports_color(Stdout, |p| p.style(Style::new().dimmed())).to_string()
         ),
-        format!(
-            "page {} · model {} · {} tools",
-            brand.page_id_short.if_supports_color(Stdout, |p| p.style(
-                Style::new().cyan()
-            )),
-            brand.model.if_supports_color(Stdout, |m| m.style(
-                Style::new().dimmed()
-            )),
-            brand.tool_count,
+        (
+            format!("page {} · model {} · {} tools", brand.page_id_short, brand.model, brand.tool_count),
+            format!(
+                "page {} · model {} · {} tools",
+                brand.page_id_short.if_supports_color(Stdout, |p| p.style(Style::new().cyan())),
+                brand.model.if_supports_color(Stdout, |m| m.style(Style::new().dimmed())),
+                brand.tool_count
+            )
         ),
     ];
+
+    let max_sidecar_width = sidecar_raw.iter().map(|(plain, _)| plain.chars().count()).max().unwrap_or(0);
+
+    let sidecar: Vec<String> = sidecar_raw.iter().map(|(plain, colored)| {
+        let visible_len = plain.chars().count();
+        let padding = " ".repeat(max_sidecar_width - visible_len);
+        format!("{}{}", colored, padding)
+    }).collect();
 
     // Join the two columns row-by-row. The logo has 8 lines; the
     // sidecar is 5 lines (which sits in the middle of the logo,
@@ -333,7 +331,7 @@ pub fn render_kimi_header(brand: &BrandInfo, tip: &TipBox) -> String {
         let right = if i >= sidecar_offset && i - sidecar_offset < sidecar.len() {
             sidecar[i - sidecar_offset].clone()
         } else {
-            String::new()
+            " ".repeat(max_sidecar_width)
         };
         // Pick the tip row, if any. The tip box can be taller
         // than the logo; the *extra* rows are rendered after the
@@ -346,7 +344,7 @@ pub fn render_kimi_header(brand: &BrandInfo, tip: &TipBox) -> String {
     }
     // Render any tip rows that extend below the logo.
     for extra in tip_lines.iter().skip(LOGO.len()) {
-        let pad = " ".repeat(LOGO_WIDTH + 2 + 24);
+        let pad = " ".repeat(LOGO_WIDTH + 2 + max_sidecar_width);
         let _ = writeln!(out, "  {pad}    {extra}");
     }
     out

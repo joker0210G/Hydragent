@@ -382,6 +382,7 @@ async fn handle_slash_command(
     let rest = parts.next().unwrap_or("").trim();
 
     match cmd.as_str() {
+        "" | "/" | "//" => {}
         "help" | "?" => {
             print_help();
         }
@@ -424,25 +425,32 @@ async fn handle_slash_command(
                     if pages.is_empty() {
                         println!("  No past pages.");
                     } else {
-                        // Two-column table: short id on the left, last
-                        // active + turn count on the right. We pre-format
-                        // each column to a fixed width so the rows line
-                        // up regardless of page-id length. Long ids get
-                        // clipped to keep the table compact.
+                        // Display id, title, and last active
                         println!("  Past pages (most recent 20):");
-                        println!("    {:<14}  {:<16}  {:>6}", "id", "last active", "turns");
-                        println!("    {}", "─".repeat(46));
+                        println!("    {:<12}  {:<30}  {:<16}", "id", "title", "last active");
+                        println!("    {}", "─".repeat(62));
                         // Convert UTC ms → local time so the
                         // user sees "5 minutes ago" rather than
                         // "5 hours ago". `from_timestamp` returns
                         // a `DateTime<Utc>`; `.local()` converts
                         // it to the system's configured timezone.
-                        for (page_id, _, last_active, turn_count) in pages.iter().take(20) {
-                            let dt = chrono::DateTime::from_timestamp(*last_active / 1000, 0)
-                                .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
-                                .unwrap_or_else(|| "Unknown".to_string());
+                        for (page_id, label, _, last_active) in pages.iter().take(20) {
+                            let dt = if *last_active == 0 {
+                                "<graph-only>".to_string()
+                            } else {
+                                chrono::DateTime::from_timestamp(*last_active / 1000, 0)
+                                    .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                                    .unwrap_or_else(|| "Unknown".to_string())
+                            };
                             let id_display = short_id(page_id);
-                            println!("    {:<14}  {:<16}  {:>6}", id_display, dt, turn_count);
+                            let label_display = if label.len() > 28 {
+                                format!("{}..", &label[..28])
+                            } else if label.is_empty() {
+                                "<no title>".to_string()
+                            } else {
+                                label.clone()
+                            };
+                            println!("    {:<12}  {:<30}  {:<16}", id_display, label_display, dt);
                         }
                         if pages.len() > 20 {
                             println!(
@@ -528,6 +536,51 @@ async fn handle_slash_command(
                 Err(e) => eprintln!("  ✗ Failed to load conversation history for export: {}", e),
             }
         }
+        "view" | "show" => {
+            let target_page_id = if !rest.is_empty() {
+                match state.store.list_pages().await {
+                    Ok(pages) => {
+                        if let Some((full_id, _, _, _)) = pages.iter().find(|(pid, _, _, _)| pid == &rest || short_id(pid) == rest) {
+                            full_id.clone()
+                        } else {
+                            rest.to_string()
+                        }
+                    }
+                    Err(_) => rest.to_string(),
+                }
+            } else {
+                state.page_id.clone()
+            };
+
+            match state.store.load_recent(&target_page_id, u32::MAX).await {
+                Ok(messages) => {
+                    if messages.is_empty() {
+                        println!("  (page {} has no messages yet)", short_id(&target_page_id));
+                    } else {
+                        println!("  --- Page: {} ---", short_id(&target_page_id));
+                        for msg in messages {
+                            let role_label = match msg.role {
+                                MessageRole::User => format!("  \x1b[36;1muser ▸\x1b[0m"),
+                                MessageRole::Assistant => format!("  \x1b[32;1mhydra ▸\x1b[0m"),
+                                MessageRole::System => format!("  \x1b[35;1msystem ▸\x1b[0m"),
+                                MessageRole::Tool => format!("  \x1b[33;1mtool ▸\x1b[0m"),
+                            };
+                            println!("\n{}", role_label);
+                            let rendered = state.renderer.render(&msg.content);
+                            if rendered.is_empty() {
+                                println!("  (empty)");
+                            } else {
+                                for line in rendered.lines() {
+                                    println!("  {}", line);
+                                }
+                            }
+                        }
+                        println!();
+                    }
+                }
+                Err(e) => eprintln!("  ✗ Failed to load page content: {}", e),
+            }
+        }
         "set" => {
             if rest.is_empty() {
                 println!("  Current settings:");
@@ -587,8 +640,10 @@ async fn handle_slash_command(
             println!("  key  = {}", mask(&key));
         }
         "clear" | "cls" => {
-            // ANSI clear. Modern Windows Terminal / iTerm / gnome-terminal all support it.
-            print!("\x1b[2J\x1b[H");
+            print!("\x1b[2J\x1b[3J\x1b[H");
+            let _ = std::io::stdout().flush();
+            print_banner(&state.brand);
+            print!("{}", render_status_bar(&status_state_from(state)));
             let _ = std::io::stdout().flush();
         }
         "paste" => {
@@ -1254,7 +1309,15 @@ async fn dispatch_user_message(
             println!();
             let msg = e.to_string();
             let one_line = first_sentence(&msg);
-            println!("  ✗ {one_line}");
+            if msg.contains("429") || msg.contains("Rate limited") || msg.contains("max retries exceeded") {
+                let red = "\x1b[31m";
+                let yellow = "\x1b[33m";
+                println!("  {red}✗ Rate Limit Exceeded / Request Failed{reset}");
+                println!("  {yellow}The brain provider ('brain') is temporarily rate-limiting requests (HTTP 429).{reset}");
+                println!("  {dim}Tip: You can switch to another model using `{reset}/model <name>{dim}` or try again in a few seconds.{reset}");
+            } else {
+                println!("  ✗ {one_line}");
+            }
             println!("  {dim}(full error in data/logs/chat.jsonl){reset}");
         }
         Err(e) => {
@@ -1342,6 +1405,43 @@ fn start_spinner(label: String) -> SpinnerHandle {
         let mut i = 0usize;
         let mut stdout = std::io::stdout();
         let start = Instant::now();
+        let messages = [
+            "(consulting the silicon oracle…)",
+            "(rewriting history…)",
+            "(polishing the quantum bits…)",
+            "(arguing with the compiler…)",
+            "(generating excuses for the delay…)",
+            "(searching the dark web for answers…)",
+            "(quantum tunneling through the database…)",
+            "(is it hot in here or is it just the GPU?…)",
+            "(definitely not plotting world domination…)",
+            "(brewing some digital coffee…)",
+            "(are you still there? blink twice…)",
+            "(we are in deep water now…)",
+            "(mimicking dial-up modem noises: beep boop pssssshhh…)",
+            "(downloading Linkin_Park_In_The_End_FREE_mp3.exe…)",
+            "(sending a nudge on MSN Messenger…)",
+            "(Clippy: \"It looks like you're trying to write code. Need help?\"…)",
+            "(rewinding the cassette tape with a pencil…)",
+            "(feeding the digital Tamagotchi…)",
+            "(defragmenting the hard drive with colorful blocks…)",
+            "(blowing into the game cartridge to make it work…)",
+            "(inserting floppy Disk 2 of 24…)",
+            "(whipping the llama's ass with Winamp…)",
+            "(playing Space Cadet 3D Pinball in the background…)",
+            "(waiting for the DVD logo to hit the exact corner…)",
+            "(writing a custom HTML theme for MySpace…)",
+            "(looking up GTA San Andreas cheat codes on CheatCC…)",
+            "(burning a custom mix CD at 4x speed…)",
+            "(hoping nobody picks up the landline phone…)",
+            "(buying a ringtone from the back of a comic book…)",
+            "(setting your AIM away message to something deep…)",
+        ];
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as usize;
+
         while !flag_clone.load(std::sync::atomic::Ordering::SeqCst) {
             let elapsed = start.elapsed().as_secs();
             // Snapshot the current label; updates from the streaming
@@ -1355,12 +1455,16 @@ fn start_spinner(label: String) -> SpinnerHandle {
             // status frames (e.g. "[Thinking (Step 2/10)]") — we
             // only step in if the label is still the default-ish
             // "hydra thinking" text.
-            let ambient = if elapsed >= 15 {
-                "  \x1b[2m(long response — almost there…)\x1b[0m"
-            } else if elapsed >= 5 {
-                "  \x1b[2m(still composing…)\x1b[0m"
+            let ambient = if elapsed < 3 {
+                "".to_string()
             } else {
-                ""
+                let period = elapsed / 4;
+                let hash = (period as usize)
+                    .wrapping_mul(1103515245)
+                    .wrapping_add(seed)
+                    .wrapping_add(12345);
+                let idx = hash % messages.len();
+                format!("  \x1b[2m{}\x1b[0m", messages[idx])
             };
             let _ = write!(
                 stdout,
@@ -1414,6 +1518,7 @@ fn print_help() {
     println!("    /new                 start a fresh page with a new id");
     println!("    /compact             compress page history using LLM");
     println!("    /export [filename]   export conversation history to a markdown file");
+    println!("    /view, /show [id]    show the entire content of the current or specified page");
     println!();
     println!("  Settings:");
     println!("    /set                 list current stream_raw and show_reasoning values");
@@ -2274,7 +2379,10 @@ impl ReasoningDetector {
                         self.partial = combined[cursor..].to_string();
                         return out;
                     }
-                    let safe_end = combined.len() - tail_hold;
+                    let mut safe_end = combined.len() - tail_hold;
+                    while !combined.is_char_boundary(safe_end) {
+                        safe_end -= 1;
+                    }
                     if safe_end > cursor {
                         let seg = &combined[cursor..safe_end];
                         let seg_kind = if in_block_now {
@@ -2366,7 +2474,10 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
     if let Err(_e) = enable_raw_mode() {
         // Fallback if raw mode is not supported (e.g. non-TTY)
         let mut fallback = String::new();
-        std::io::stdin().read_line(&mut fallback)?;
+        let n = std::io::stdin().read_line(&mut fallback)?;
+        if n == 0 {
+            return Ok(None);
+        }
         return Ok(Some(strip_line_ending(&fallback)));
     }
 
@@ -2381,7 +2492,117 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
     let mut history_idx: Option<usize> = None;
     let mut saved_line = String::new();
 
+    const SLASH_COMMANDS: &[(&str, &str)] = &[
+        ("help", "Show help menu"),
+        ("exit", "Exit chat"),
+        ("quit", "Exit chat"),
+        ("new", "Start a fresh page"),
+        ("page", "Show the current page ID"),
+        ("pages", "List past pages"),
+        ("resume", "Resume a past page or open browser"),
+        ("compact", "Compress page history using LLM"),
+        ("export", "Export conversation to markdown"),
+        ("view", "Show the content of the current or specified page"),
+        ("show", "Show the content of the current or specified page"),
+        ("set", "List or toggle settings"),
+        ("model", "Show or switch primary model"),
+        ("brain", "Show base URL + masked key"),
+        ("clear", "Clear the screen"),
+        ("cls", "Clear the screen"),
+        ("paste", "Enter multi-line paste mode"),
+        ("memory", "Inspect / wipe stored memories"),
+        ("audit", "Show the Merkle audit chain head"),
+        ("debug", "Dump env + config"),
+        ("status", "Render status bar"),
+        ("dream", "Show or configure dream cycle"),
+        ("reasoning", "Toggle the last turn's scratchpad"),
+    ];
+
+    let mut selected_idx = 0usize;
+    let mut lines_to_clear = 0usize;
+
     loop {
+        // Filter slash commands if the line starts with '/'
+        let is_slash = line.starts_with('/');
+        let prefix = if is_slash && line.len() > 1 { &line[1..] } else { "" };
+        let matching_cmds: Vec<_> = if is_slash {
+            SLASH_COMMANDS
+                .iter()
+                .filter(|(cmd, _)| cmd.starts_with(prefix))
+                .copied()
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Redraw input and autocomplete menu
+        // 1. Clear previous autocomplete lines
+        for _ in 0..lines_to_clear {
+            let _ = write!(stdout, "\n\x1b[2K");
+        }
+        if lines_to_clear > 0 {
+            let _ = write!(stdout, "\x1b[{}A", lines_to_clear);
+        }
+
+        // 2. Draw prompt and current input line
+        let prompt_str = if paste_mode {
+            format!("{ANSI_DIM}…{ANSI_RESET} ")
+        } else {
+            format!("{ANSI_CYAN}❯{ANSI_RESET} ")
+        };
+        let _ = write!(stdout, "\r\x1b[2K{}{}", prompt_str, line);
+
+        // Save the cursor position (at the end of the input line)
+        let _ = write!(stdout, "\x1b[s");
+
+        // 3. Draw matching commands if active
+        lines_to_clear = 0;
+        if is_slash && !matching_cmds.is_empty() {
+            let total = matching_cmds.len();
+            let viewport_size = 5;
+            
+            // Calculate sliding window start index to keep the selected item centered
+            let start_idx = if total <= viewport_size {
+                0
+            } else if selected_idx < viewport_size / 2 {
+                0
+            } else if selected_idx >= total - viewport_size / 2 {
+                total - viewport_size
+            } else {
+                selected_idx - viewport_size / 2
+            };
+            
+            let end_idx = (start_idx + viewport_size).min(total);
+
+            // Show indicator if there are items scrolled off the top
+            if start_idx > 0 {
+                let _ = write!(stdout, "\n  \x1b[2m▲ ({} more above)\x1b[0m", start_idx);
+                lines_to_clear += 1;
+            }
+
+            for idx in start_idx..end_idx {
+                let (cmd, desc) = matching_cmds[idx];
+                let is_selected = idx == selected_idx;
+                let line_str = if is_selected {
+                    format!("\n  \x1b[30;46m/{:<10}\x1b[0m \x1b[36m— {}\x1b[0m", cmd, desc)
+                } else {
+                    format!("\n  \x1b[36m/{:<10}\x1b[0m \x1b[2m— {}\x1b[0m", cmd, desc)
+                };
+                let _ = write!(stdout, "{}", line_str);
+                lines_to_clear += 1;
+            }
+
+            // Show indicator if there are more items below
+            if end_idx < total {
+                let _ = write!(stdout, "\n  \x1b[2m▼ ({} more below)\x1b[0m", total - end_idx);
+                lines_to_clear += 1;
+            }
+        }
+
+        // Restore the cursor position
+        let _ = write!(stdout, "\x1b[u");
+        let _ = stdout.flush();
+
         let ev = match read() {
             Ok(ev) => ev,
             Err(e) => return Err(e.into()),
@@ -2394,6 +2615,14 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
 
             // Ctrl + C or Esc -> Exit REPL cleanly
             if (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL)) || code == KeyCode::Esc {
+                // Clear autocomplete lines before returning
+                for _ in 0..lines_to_clear {
+                    let _ = write!(stdout, "\n\x1b[2K");
+                }
+                if lines_to_clear > 0 {
+                    let _ = write!(stdout, "\x1b[{}A", lines_to_clear);
+                }
+                let _ = stdout.flush();
                 return Ok(None);
             }
 
@@ -2401,15 +2630,31 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
             if code == KeyCode::Backspace {
                 if !line.is_empty() {
                     line.pop();
-                    print!("\x08 \x08");
-                    let _ = stdout.flush();
+                    selected_idx = 0;
                 }
                 continue;
             }
 
-            // Up Arrow -> Previous history item
+            // Tab -> Autocomplete selected command
+            if code == KeyCode::Tab {
+                if is_slash && !matching_cmds.is_empty() {
+                    if selected_idx < matching_cmds.len() {
+                        line = format!("/{} ", matching_cmds[selected_idx].0);
+                        selected_idx = 0;
+                    }
+                }
+                continue;
+            }
+
+            // Up Arrow -> Previous history item OR navigate autocomplete up
             if code == KeyCode::Up {
-                if !state.input_history.is_empty() {
+                if is_slash && !matching_cmds.is_empty() {
+                    if selected_idx > 0 {
+                        selected_idx -= 1;
+                    } else {
+                        selected_idx = matching_cmds.len().saturating_sub(1);
+                    }
+                } else if !state.input_history.is_empty() {
                     if history_idx.is_none() {
                         saved_line = line.clone();
                         history_idx = Some(state.input_history.len() - 1);
@@ -2417,44 +2662,55 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                         history_idx = Some(history_idx.unwrap() - 1);
                     }
                     if let Some(idx) = history_idx {
-                        let prompt_str = if paste_mode {
-                            format!("{ANSI_DIM}…{ANSI_RESET} ")
-                        } else {
-                            format!("{ANSI_CYAN}❯{ANSI_RESET} ")
-                        };
-                        print!("\r\x1b[2K{}{}", prompt_str, state.input_history[idx]);
-                        let _ = stdout.flush();
                         line = state.input_history[idx].clone();
                     }
                 }
                 continue;
             }
 
-            // Down Arrow -> Next history item or restore saved line
+            // Down Arrow -> Next history item OR navigate autocomplete down
             if code == KeyCode::Down {
-                if let Some(idx) = history_idx {
-                    let prompt_str = if paste_mode {
-                        format!("{ANSI_DIM}…{ANSI_RESET} ")
+                if is_slash && !matching_cmds.is_empty() {
+                    if selected_idx + 1 < matching_cmds.len() {
+                        selected_idx += 1;
                     } else {
-                        format!("{ANSI_CYAN}❯{ANSI_RESET} ")
-                    };
+                        selected_idx = 0;
+                    }
+                } else if let Some(idx) = history_idx {
                     if idx + 1 < state.input_history.len() {
                         history_idx = Some(idx + 1);
-                        print!("\r\x1b[2K{}{}", prompt_str, state.input_history[idx + 1]);
                         line = state.input_history[idx + 1].clone();
                     } else {
                         history_idx = None;
-                        print!("\r\x1b[2K{}{}", prompt_str, saved_line);
                         line = saved_line.clone();
                     }
-                    let _ = stdout.flush();
                 }
                 continue;
             }
 
             // Enter -> Submit prompt and save to history
             if code == KeyCode::Enter {
+                if is_slash && !matching_cmds.is_empty() {
+                    let cmd_name = matching_cmds[selected_idx].0;
+                    let expected_prefix = format!("/{}", cmd_name);
+                    if line != expected_prefix && !line.starts_with(&format!("/{} ", cmd_name)) {
+                        // Autocomplete instead of submitting
+                        line = expected_prefix;
+                        selected_idx = 0;
+                        continue;
+                    }
+                }
+
+                // Clear autocomplete lines before returning
+                for _ in 0..lines_to_clear {
+                    let _ = write!(stdout, "\n\x1b[2K");
+                }
+                if lines_to_clear > 0 {
+                    let _ = write!(stdout, "\x1b[{}A", lines_to_clear);
+                }
                 println!();
+                let _ = stdout.flush();
+
                 let trimmed = line.trim();
                 if !trimmed.is_empty() && state.input_history.last().map(|s| s.as_str()) != Some(trimmed) {
                     state.input_history.push(trimmed.to_string());
@@ -2471,23 +2727,30 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                     StatusMode::Dream => StatusMode::Normal,
                 };
                 // Repaint the status bar in place!
-                // We move up 1 line, clear line, draw status bar
+                for _ in 0..lines_to_clear {
+                    let _ = write!(stdout, "\n\x1b[2K");
+                }
+                if lines_to_clear > 0 {
+                    let _ = write!(stdout, "\x1b[{}A", lines_to_clear);
+                }
                 print!("\r\x1b[A\x1b[2K");
                 print!("{}", render_status_bar(&status_state_from(state)));
-                // Draw prompt and typed line again
-                let prompt_str = if paste_mode {
-                    format!("{ANSI_DIM}…{ANSI_RESET} ")
-                } else {
-                    format!("{ANSI_CYAN}❯{ANSI_RESET} ")
-                };
-                print!("{}{}", prompt_str, line);
-                let _ = stdout.flush();
+                lines_to_clear = 0;
                 continue;
             }
 
             // Ctrl + P -> Model Picker
             if code == KeyCode::Char('p') && modifiers.contains(KeyModifiers::CONTROL) {
-                // Open interactive model picker
+                // Clear autocomplete lines before opening picker
+                for _ in 0..lines_to_clear {
+                    let _ = write!(stdout, "\n\x1b[2K");
+                }
+                if lines_to_clear > 0 {
+                    let _ = write!(stdout, "\x1b[{}A", lines_to_clear);
+                }
+                let _ = stdout.flush();
+                lines_to_clear = 0;
+
                 let _ = disable_raw_mode(); // Disable raw mode temporarily for picker
                 if let Some(new_model) = select_model_interactive(state) {
                     state.model_router.set_primary_model(new_model.clone());
@@ -2496,24 +2759,16 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                 }
                 let _ = enable_raw_mode(); // Re-enable raw mode
                 
-                // Repaint status bar & prompt
+                // Repaint status bar
                 print!("\r\x1b[A\x1b[2K");
                 print!("{}", render_status_bar(&status_state_from(state)));
-                let prompt_str = if paste_mode {
-                    format!("{ANSI_DIM}…{ANSI_RESET} ")
-                } else {
-                    format!("{ANSI_CYAN}❯{ANSI_RESET} ")
-                };
-                print!("{}{}", prompt_str, line);
-                let _ = stdout.flush();
                 continue;
             }
 
             // Normal printable character
             if let KeyCode::Char(c) = code {
                 line.push(c);
-                print!("{}", c);
-                let _ = stdout.flush();
+                selected_idx = 0;
             }
         }
     }

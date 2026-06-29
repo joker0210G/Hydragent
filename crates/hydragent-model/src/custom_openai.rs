@@ -27,7 +27,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use tracing::{warn, error};
+use tracing::warn;
 use async_trait::async_trait;
 
 use crate::model_trait::ModelProvider;
@@ -350,7 +350,7 @@ impl ModelProvider for CustomOpenAIClient {
                     attempt += 1;
                     self.rotate_key();
                     if attempt > self.config.max_retries {
-                        error!(
+                        warn!(
                             attempt,
                             provider = %self.config.provider_label,
                             error = %e,

@@ -390,12 +390,77 @@ function Test-Command {
 }
 
 function Get-TargetTriple {
-    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-    switch ($arch.ToString()) {
-        'X64'    { return 'x86_64-pc-windows-msvc' }
-        'Arm64'  { return 'aarch64-pc-windows-msvc' }
-        default  { Write-Err "Unsupported architecture: $arch" }
+    $arch = $null
+    try {
+        $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+    } catch {
+        $arch = $env:PROCESSOR_ARCHITECTURE
+        if ($env:PROCESSOR_ARCHITEW6432) {
+            $arch = $env:PROCESSOR_ARCHITEW6432
+        }
     }
+
+    switch -regex ($arch) {
+        '^(X64|AMD64|IA64)$' { return 'x86_64-pc-windows-msvc' }
+        '^(Arm64|ARM64)$'    { return 'aarch64-pc-windows-msvc' }
+        default              { Write-Err "Unsupported architecture: $arch" }
+    }
+}
+
+function Ensure-MsvcLinker {
+    if (Test-Command link) {
+        return
+    }
+
+    # Try locating via vswhere if it exists
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $vsPath = & $vswhere -latest -property installationPath 2>$null
+        if ($vsPath -and (Test-Path $vsPath)) {
+            $linker = Get-ChildItem -Path $vsPath -Filter "link.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($linker) {
+                $env:Path = "$(Split-Path $linker.FullName);$env:Path"
+                return
+            }
+        }
+    }
+
+    # Also check typical default paths just in case
+    $typicalPaths = @(
+        "${env:ProgramFiles}\Microsoft Visual Studio",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
+    )
+    foreach ($path in $typicalPaths) {
+        if (Test-Path $path) {
+            $linker = Get-ChildItem -Path $path -Filter "link.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($linker) {
+                $env:Path = "$(Split-Path $linker.FullName);$env:Path"
+                return
+            }
+        }
+    }
+
+    # If still not found, we need to install MSVC build tools
+    Write-Step 'A1.5' "Visual Studio C++ Build Tools (link.exe) not found. Installing via winget..."
+    if (Test-Command winget) {
+        Write-Info "Running winget to install Microsoft.VisualStudio.2022.BuildTools..."
+        $process = Start-Process winget -ArgumentList "install --silent --rainy-day-override Microsoft.VisualStudio.2022.BuildTools --override `"--passive --locale en-US --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --includeRecommended`"" -Wait -PassThru -NoNewWindow
+        
+        # After installation, search again
+        foreach ($path in $typicalPaths) {
+            if (Test-Path $path) {
+                $linker = Get-ChildItem -Path $path -Filter "link.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($linker) {
+                    $env:Path = "$(Split-Path $linker.FullName);$env:Path"
+                    Write-OK "Visual Studio C++ Build Tools installed and configured successfully."
+                    return
+                }
+            }
+        }
+    }
+    
+    Write-WarningMessage "Could not automatically install or locate Visual Studio C++ Build Tools (link.exe)."
+    Write-WarningMessage "Please install Build Tools for Visual Studio manually with the 'Desktop development with C++' workload."
 }
 
 function Ensure-Directory {
@@ -454,6 +519,7 @@ function Install-FromSource {
     param()
 
     Install-RustIfMissing
+    Ensure-MsvcLinker
     Install-SourceCheckout
     Build-Source
 }

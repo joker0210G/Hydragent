@@ -28,9 +28,10 @@ use chrono::Utc;
 use hydragent_memory::{
     build_system_prompt_with_memory, hybrid_search,
     librarian::{Librarian, LlmFact, LlmSummariser, LlmSummary},
-    library::{EdgeRelation, Library, LibraryStats, NodeKind, TAG_JACCARD_THRESHOLD, jaccard},
+    library::{EdgeRelation, Library, LibraryStats, NodeKind, jaccard},
     IngestionResult, LibrarianStats, SessionStore,
 };
+const TAG_JACCARD_THRESHOLD: f64 = 0.3;
 use hydragent_types::MemoryDocument;
 use sqlx::Row;
 use std::sync::{

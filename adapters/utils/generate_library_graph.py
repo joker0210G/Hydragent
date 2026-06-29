@@ -1107,9 +1107,7 @@ def _write_d3_html(path: str, nodes: list[dict], links: list[dict]):
             
             if (d.type === 'page') {{
                 meta.append("div").attr("class", "meta-row").html(`<span class="meta-label">Consolidated:</span><span class="meta-value">${{d.properties.consolidated ? 'Yes' : 'No'}}</span>`);
-                if (d.properties.turn_count) {{
-                    meta.append("div").attr("class", "meta-row").html(`<span class="meta-label">Turn Count:</span><span class="meta-value">${{d.properties.turn_count}}</span>`);
-                }}
+                // No turn count displayed
             }} else if (d.type === 'book') {{
                 meta.append("div").attr("class", "meta-row").html(`<span class="meta-label">Page Count:</span><span class="meta-value">${{d.properties.page_count || 0}}</span>`);
             }} else if (d.type === 'shelf') {{

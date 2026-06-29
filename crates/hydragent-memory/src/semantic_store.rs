@@ -19,16 +19,15 @@ impl SessionStore {
     ) -> Result<()> {
         // Defensive clamp: the rest of the system (retrieval ranking,
         // LRU eviction, dream extraction prompt) assumes importance is
-        // in 1..=5. Without this, the LLM can hand us 0 or 6+ and we'd
+        // in 1..=10. Without this, the LLM can hand us 0 or 11+ and we'd
         // happily persist it, silently breaking importance-weighted
-        // retrieval. G2 (test) hit this when the dream worker stored
-        // importance=6 from a miscalibrated prompt.
-        let clamped_importance = importance.clamp(1, 5);
+        // retrieval.
+        let clamped_importance = importance.clamp(1, 10);
         if clamped_importance != importance {
             tracing::warn!(
                 original = importance,
                 clamped = clamped_importance,
-                "insert_memory: importance out of [1,5] bounds, clamped"
+                "insert_memory: importance out of [1,10] bounds, clamped"
             );
         }
 

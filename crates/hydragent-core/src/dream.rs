@@ -55,6 +55,7 @@ fn should_check_compaction(path: &std::path::Path) -> bool {
 
 #[derive(Debug, Deserialize)]
 struct ExtractionResponse {
+    title: Option<String>,
     summary: Option<String>,
     suggested_books: Option<Vec<String>>,
     suggested_shelves: Option<Vec<String>>,
@@ -339,6 +340,8 @@ pub async fn run_dream_cycle(
 
     let mut cmd = tokio::process::Command::new(python_bin);
     cmd.args(&["-m", "graphing.main"]);
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
     match cmd.spawn() {
         Ok(mut child) => {
             tokio::spawn(async move {
@@ -575,10 +578,25 @@ async fn process_page(
                 if let Err(e) = store.update_page_summary(&page_id, summary_text).await {
                     error!(page_id = %page_id, error = %e, "Dream cycle: failed to update page_meta summary");
                 }
+                // Get a short, suitable title (fallback to a shortened summary or "Chat Session" if missing)
+                let page_title = extraction.title.as_deref().unwrap_or_else(|| {
+                    if summary_text.len() > 35 {
+                        // Find a clean boundary or just truncate
+                        if let Some(idx) = summary_text[..35].rfind(' ') {
+                            &summary_text[..idx]
+                        } else {
+                            &summary_text[..35]
+                        }
+                    } else {
+                        summary_text
+                    }
+                }).trim();
+
                 // Upsert the Page as a node in the Library graph nodes table
                 let properties = serde_json::json!({
                     "source": "dream",
                     "page_id": page_id,
+                    "description": summary_text,
                     "suggested_books": extraction.suggested_books,
                     "suggested_shelves": extraction.suggested_shelves,
                 });
@@ -587,7 +605,7 @@ async fn process_page(
                     .upsert_node(
                         &page_id,
                         NodeKind::Page,
-                        summary_text,
+                        page_title,
                         &page_tags,
                         Some(&properties),
                     )
@@ -596,6 +614,7 @@ async fn process_page(
                     Ok(()) => {
                         info!(
                             page_id = %page_id,
+                            title = %page_title,
                             summary_len = summary_text.len(),
                             tag_count = page_tags.len(),
                             "Dream cycle: upserted Page node into Library graph"
