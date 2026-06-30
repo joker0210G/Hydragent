@@ -1499,7 +1499,7 @@ async fn main() {
             no_verify: *no_verify,
             force: *force,
             base_url: base_url.clone(),
-        });
+        }).await;
         std::process::exit(code);
     }
 
@@ -2354,28 +2354,46 @@ async fn main() {
         );
     }
 
+    let provider_type = app_config.effective_brain_provider();
     info!(
         base = brain_base.as_str(),
+        provider = provider_type.as_str(),
         primary = brain_model.as_str(),
         fallbacks = ?brain_fallbacks,
         "🧠 Building live brain"
     );
 
-    let brain_config = hydragent_model::custom_openai::CustomProviderConfig {
-        base_url: brain_base.clone(),
-        api_key: brain_key,
-        default_model: brain_model.clone(),
-        provider_label: "brain".to_string(),
-        // 180s gives slow LLM providers (tokenrouter rate-limits, long
-        // ReAct loops with multiple tool calls) enough headroom to
-        // complete without aborting. The test harness uses
-        // `TIMEOUT_LLM=90.0` / `TIMEOUT_LLM_LONG=180.0`; matching the
-        // upper bound here keeps the rust side from being the bottleneck.
-        timeout: std::time::Duration::from_secs(180),
-        max_retries: 3,
+    let brain_client: Arc<dyn hydragent_model::ModelProvider> = if provider_type == "ollama" {
+        let timeout_secs = std::env::var("OLLAMA_API_TIMEOUT_SEC")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(1800); // 30 minutes default for extremely slow CPU prompt evaluation
+
+        let brain_config = hydragent_model::ollama::OllamaProviderConfig {
+            base_url: brain_base.clone(),
+            default_model: brain_model.clone(),
+            timeout: std::time::Duration::from_secs(timeout_secs),
+            default_num_ctx: std::env::var("OLLAMA_NUM_CTX")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(8192),
+            keep_alive: std::env::var("OLLAMA_KEEP_ALIVE").ok().filter(|s| !s.trim().is_empty()),
+            num_thread: std::env::var("OLLAMA_NUM_THREAD").ok().and_then(|s| s.parse::<u32>().ok()),
+        };
+        Arc::new(hydragent_model::ollama::OllamaClient::new(brain_config))
+    } else if provider_type == "openrouter" {
+        Arc::new(hydragent_model::openrouter::OpenRouterClient::new(vec![brain_key]))
+    } else {
+        let brain_config = hydragent_model::custom_openai::CustomProviderConfig {
+            base_url: brain_base.clone(),
+            api_key: brain_key,
+            default_model: brain_model.clone(),
+            provider_label: "brain".to_string(),
+            timeout: std::time::Duration::from_secs(180),
+            max_retries: 3,
+        };
+        Arc::new(hydragent_model::custom_openai::CustomOpenAIClient::new(brain_config))
     };
-    let brain_client: Arc<dyn hydragent_model::ModelProvider> =
-        Arc::new(hydragent_model::custom_openai::CustomOpenAIClient::new(brain_config));
 
     let model_router = Arc::new(hydragent_model::router::ModelRouter::new(
         brain_client,

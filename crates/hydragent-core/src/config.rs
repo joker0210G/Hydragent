@@ -41,6 +41,10 @@ pub struct AppConfig {
     /// `PRIMARY_MODEL`.
     pub brain_model: String,
 
+    /// Explicit provider type (e.g. "openai", "openrouter", "ollama").
+    /// If empty, we auto-detect (e.g. Ollama if URL contains 11434).
+    pub brain_provider: String,
+
     /// Comma-separated fallback model list, all served by the same brain.
     /// Tried in order if the primary model errors out.
     pub brain_fallbacks: String,
@@ -101,6 +105,7 @@ impl std::fmt::Debug for AppConfig {
             .field("brain_base", &self.brain_base)
             .field("brain_key", &mask_key_for_debug(&self.brain_key))
             .field("brain_model", &self.brain_model)
+            .field("brain_provider", &self.brain_provider)
             .field("brain_fallbacks", &self.brain_fallbacks)
             .field("log_format", &self.log_format)
             .field("log_level", &self.log_level)
@@ -139,6 +144,7 @@ impl AppConfig {
             .set_default("brain_base", "")?
             .set_default("brain_key", "")?
             .set_default("brain_model", "")?
+            .set_default("brain_provider", "")?
             .set_default("brain_fallbacks", "")?
 
             // Runtime
@@ -192,6 +198,22 @@ impl AppConfig {
             "https://openrouter.ai/api/v1".to_string()
         } else {
             String::new()
+        }
+    }
+
+    /// Effective provider type for the live brain. If not explicitly
+    /// configured, auto-detects from the URL.
+    pub fn effective_brain_provider(&self) -> String {
+        if !self.brain_provider.is_empty() {
+            return self.brain_provider.trim().to_lowercase();
+        }
+        let base = self.effective_brain_base();
+        if base.contains("11434") || base.contains("ollama") {
+            "ollama".to_string()
+        } else if base.contains("openrouter.ai") {
+            "openrouter".to_string()
+        } else {
+            "custom-openai".to_string()
         }
     }
 
@@ -275,6 +297,7 @@ mod tests {
             brain_base: brain_base.to_string(),
             brain_key: brain_key.to_string(),
             brain_model: brain_model.to_string(),
+            brain_provider: String::new(),
             brain_fallbacks: brain_fallbacks.to_string(),
             log_format: "terminal".to_string(),
             log_level: "info".to_string(),

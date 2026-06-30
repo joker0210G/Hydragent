@@ -206,6 +206,92 @@ pub async fn run(mut state: ReplState) -> i32 {
     print!("{}", render_status_bar(&status_state_from(&state)));
 
     let mut stdout = std::io::stdout();
+
+    // ── Ollama Context Pre-Warming ────────────────────────────────────
+    if state.model_router.provider_label() == "ollama" {
+        let model_name = state.brand.model.clone();
+        let registry = state.registry.clone();
+        let page_id = state.page_id.clone();
+        let channel_id = state.channel_id.clone();
+        let user_id = state.user_id.clone();
+
+        // Start spinner
+        let warmup_spinner = start_spinner(format!("  {ANSI_CYAN}hydra{ANSI_RESET} warming up local brain cache (makes first response instant)"));
+
+        // Construct the static system prompt exactly as in react_loop.rs
+        let system_prompt = format!(
+            "You are Hydra, an advanced agentic AI assistant. You solve problems step-by-step using a ReAct loop.\n\
+            You must respond with a single JSON object. DO NOT wrap it in markdown block unless required, and DO NOT output anything else.\n\n\
+            Your JSON response must follow one of these two schemas:\n\n\
+            1. To call a tool:\n\
+            {{\n\
+              \"thought\": \"your step-by-step reasoning about what to do next\",\n\
+              \"tool\": \"tool_name\",\n\
+              \"params\": {{ ... key-value parameters for the tool ... }}\n\
+            }}\n\n\
+            2. To provide the final answer to the user:\n\
+            {{\n\
+              \"thought\": \"your final reasoning summary\",\n\
+              \"answer\": \"your detailed markdown response to the user\"\n\
+            }}\n\n\
+            ReAct Loop Rules (follow strictly):\n\
+            - Trust live tool results over your training knowledge. If search results contradict what you know, believe the search.\n\
+            - Stay STRICTLY on the user's topic. Do NOT rewrite their query into unrelated domains just because the first search is empty.\n\
+            - If a search returns 0 results, say you could not find current information. Do NOT invent alternative queries about related topics.\n\
+            - When search results contain promising URLs, use url_fetch to read the full page content before drawing conclusions.\n\
+            - Do NOT answer from memory if you just ran a search — use what the search returned.\n\
+            - Limit yourself to ONE search per topic unless the user explicitly asks for comparisons.\n\n\
+            Available Tools:\n\
+            {}\n\n\
+            IMPORTANT: Only use the tools listed above. Always output valid JSON.\n\n\
+            # Active Session Context:\n\
+            - Page ID: {}\n\
+            - Channel ID: {}\n\
+            - User ID: {}\n\
+            (Note: Use these values if you need to specify target_channel_id or channel_id in tools. For example, if target_channel_id is required, construct it as channel_id:user_id or as appropriate for the active channel context.)",
+            registry.build_system_prompt_block(),
+            page_id,
+            channel_id,
+            user_id
+        );
+
+        let messages = vec![
+            hydragent_model::openrouter::ChatMessage {
+                role: "system".to_string(),
+                content: system_prompt,
+            },
+            hydragent_model::openrouter::ChatMessage {
+                role: "user".to_string(),
+                content: "warmup".to_string(),
+            },
+        ];
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+        
+        // Trigger a 1-token streaming completion to force Ollama to evaluate and cache the system prompt
+        let pre_warm_req = hydragent_model::openrouter::LLMRequest {
+            model: model_name,
+            messages,
+            stream: true,
+            max_tokens: Some(1),
+        };
+
+        // Spawn the provider call in the background to avoid blocking the thread and causing a deadlock
+        let provider = state.model_router.provider();
+        let handle = tokio::spawn(async move {
+            provider.chat_stream(&pre_warm_req, tx).await
+        });
+
+        // Drain the tokens concurrently in the main thread
+        while rx.recv().await.is_some() {}
+
+        // Wait for the background task to complete
+        let _ = handle.await;
+
+        warmup_spinner.stop();
+        println!("\r\x1b[2K  ✨ Brain cache ready! (First response will be instant)\n");
+    }
+
     let mut paste_mode = false;
     let mut paste_buffer = String::new();
     // `reasoning_history` is the dropdown's persistent state.
@@ -636,8 +722,10 @@ async fn handle_slash_command(
         "brain" => {
             let base = state.app_config.effective_brain_base();
             let key = state.app_config.effective_brain_key();
-            println!("  base = {}", if base.is_empty() { "<unset>".to_string() } else { base });
-            println!("  key  = {}", mask(&key));
+            let provider = state.app_config.effective_brain_provider();
+            println!("  base     = {}", if base.is_empty() { "<unset>".to_string() } else { base });
+            println!("  key      = {}", mask(&key));
+            println!("  provider = {}", provider);
         }
         "clear" | "cls" => {
             print!("\x1b[2J\x1b[3J\x1b[H");

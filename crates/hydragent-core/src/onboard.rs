@@ -22,6 +22,7 @@
 //   --force                overwrite existing `.env` (default: update in place)
 
 use std::io::{BufRead, Write};
+use std::time::Duration;
 
 use crate::paths;
 
@@ -89,13 +90,13 @@ const PRESETS: &[Provider] = &[
     },
     Provider {
         label: "Ollama (local, no key needed — must be running on the same machine)",
-        base: "http://localhost:11434/v1",
+        base: "http://localhost:11434",
         needs_key: false,
         recommended: &[
+            "deepseek-r1",
+            "qwen2.5-coder",
             "llama3.1",
-            "qwen2.5",
             "mistral",
-            "gemma2",
         ],
     },
     Provider {
@@ -113,7 +114,7 @@ const PRESETS: &[Provider] = &[
 ];
 
 /// Top-level entry. Returns the process exit code.
-pub fn run(opts: OnboardOptions) -> i32 {
+pub async fn run(opts: OnboardOptions) -> i32 {
     // ── 1. Welcome ────────────────────────────────────────────────────
     if !opts.non_interactive {
         println!();
@@ -223,7 +224,7 @@ pub fn run(opts: OnboardOptions) -> i32 {
         if opts.non_interactive {
             provider.recommended[0].to_string()
         } else {
-            let m = pick_model(&provider);
+            let m = pick_model(&provider).await;
             if m.is_empty() {
                 eprintln!("✗ Setup aborted.");
                 return 1;
@@ -402,7 +403,7 @@ pub fn run(opts: OnboardOptions) -> i32 {
                     let v = v.trim().to_string();
                     // Only preserve these — everything else gets the new values.
                     if matches!(k.as_str(),
-                        "BRAIN_FALLBACKS" | "DATA_DIR" | "LOG_LEVEL" | "LOG_FORMAT" |
+                        "BRAIN_PROVIDER" | "BRAIN_FALLBACKS" | "DATA_DIR" | "LOG_LEVEL" | "LOG_FORMAT" |
                         "MAX_REACT_STEPS" | "BUS_PORT" |
                         "ENABLE_DREAMING" | "DREAMING_INTERVAL_SEC" |
                         "MAX_SEMANTIC_MEMORIES" | "WORKSPACE_DIR" |
@@ -420,11 +421,23 @@ pub fn run(opts: OnboardOptions) -> i32 {
         }
     }
 
-    // Now overlay the three values the wizard is responsible for.
+    // Now overlay the values the wizard is responsible for.
+    let provider_name = match provider.label {
+        l if l.starts_with("OpenAI") => "openai",
+        l if l.starts_with("OpenRouter") => "openrouter",
+        l if l.starts_with("Together") => "together",
+        l if l.starts_with("Groq") => "groq",
+        l if l.starts_with("Ollama") => "ollama",
+        l if l.starts_with("LM Studio") => "lmstudio",
+        _ => "custom-openai",
+    };
+    new_env.insert("BRAIN_PROVIDER".to_string(), provider_name.to_string());
     new_env.insert("BRAIN_BASE".to_string(), base.clone());
     new_env.insert("BRAIN_MODEL".to_string(), model.clone());
     if !api_key.is_empty() {
         new_env.insert("BRAIN_KEY".to_string(), api_key.clone());
+    } else {
+        new_env.insert("BRAIN_KEY".to_string(), String::new());
     }
     // Suggest two fallbacks (empty fallback list is fine).
     if !new_env.contains_key("BRAIN_FALLBACKS") {
@@ -548,7 +561,7 @@ fn render_env(values: &std::collections::BTreeMap<String, String>) -> String {
 
     // Group keys in a stable order.
     let order: &[&str] = &[
-        "BRAIN_BASE", "BRAIN_KEY", "BRAIN_MODEL", "BRAIN_FALLBACKS",
+        "BRAIN_BASE", "BRAIN_KEY", "BRAIN_PROVIDER", "BRAIN_MODEL", "BRAIN_FALLBACKS",
         "DATA_DIR", "LOG_LEVEL", "LOG_FORMAT", "MAX_REACT_STEPS", "BUS_PORT",
         "ENABLE_DREAMING", "DREAMING_INTERVAL_SEC", "MAX_SEMANTIC_MEMORIES",
         "WORKSPACE_DIR", "ENFORCE_SANDBOX", "MEMORY_CONTEXT_TOKEN_LIMIT",
@@ -594,7 +607,18 @@ fn pick_provider() -> Option<Provider> {
     Some(PRESETS[idx].clone())
 }
 
-fn pick_model(provider: &Provider) -> String {
+#[derive(serde::Deserialize)]
+struct OllamaTagsResp {
+    models: Vec<OllamaModelItem>,
+}
+
+#[derive(serde::Deserialize)]
+struct OllamaModelItem {
+    name: String,
+}
+
+async fn pick_model(provider: &Provider) -> String {
+    use std::io::Write;
     println!();
     println!(
         "  Pick a primary model for {} (↑/↓ to move, Enter to select):",
@@ -604,10 +628,48 @@ fn pick_model(provider: &Provider) -> String {
             .next()
             .unwrap_or("provider")
     );
-    let mut labels: Vec<&str> = provider.recommended.to_vec();
+    
+    let mut downloaded_models = Vec::new();
+    if provider.label.starts_with("Ollama") {
+        print!("  🔍 Querying local Ollama for downloaded models... ");
+        let _ = std::io::stdout().flush();
+        let base_url = provider.base;
+        match async {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()?;
+            let url = format!("{}/api/tags", base_url.trim_end_matches('/').replace("/v1", ""));
+            let resp = client.get(&url).send().await?.json::<OllamaTagsResp>().await?;
+            let mut names: Vec<String> = resp.models.into_iter().map(|m| m.name).collect();
+            names.sort();
+            Ok::<Vec<String>, anyhow::Error>(names)
+        }.await {
+            Ok(models) => {
+                if models.is_empty() {
+                    println!("none found (using recommended list)");
+                } else {
+                    println!("found {} model(s)", models.len());
+                    downloaded_models = models;
+                }
+            }
+            Err(_) => {
+                println!("failed to connect (is Ollama running? using recommended list)");
+            }
+        }
+    }
+
+    let mut labels: Vec<String> = if !downloaded_models.is_empty() {
+        downloaded_models.clone()
+    } else {
+        provider.recommended.iter().map(|s| s.to_string()).collect()
+    };
+
     let custom_idx = labels.len();
-    labels.push("custom — type your own");
-    let idx = match select(&labels, Some(("c", custom_idx))) {
+    labels.push("custom — type your own".to_string());
+    
+    let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+
+    let idx = match select(&label_refs, Some(("c", custom_idx))) {
         Some(i) => i,
         None => return String::new(), // user aborted; caller treats "" as "abort"
     };
@@ -617,7 +679,7 @@ fn pick_model(provider: &Provider) -> String {
             None => String::new(),
         }
     } else {
-        provider.recommended[idx].to_string()
+        labels[idx].clone()
     }
 }
 

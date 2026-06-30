@@ -179,6 +179,7 @@ impl OpenRouterClient {
             .bearer_auth(api_key)
             .header("HTTP-Referer", "https://github.com/joker0210G/Hydragent")
             .header("X-Title", "Hydragent")
+            .header("X-OpenRouter-Title", "Hydragent")
             .header("Content-Type", "application/json")
             .body(tainted_body.expose_secret().to_string())
             .send()

@@ -91,7 +91,7 @@ pub async fn run_react_loop(
         user_id
     );
 
-    // Prepend user profile and soul guidelines if present
+    // Prepend user profile and soul guidelines if present (these are static for the session)
     if let Some(soul) = soul_guidelines {
         if !soul.trim().is_empty() {
             system_prompt = format!(
@@ -109,30 +109,43 @@ pub async fn run_react_loop(
         }
     }
 
-    // ── Proactive skill injection ───────────────────────────────────────
+    // ── Build Dynamic Context (Memories & Skills) to append to the user's query ──
+    let mut dynamic_context = String::new();
+
+    // 1. Proactive skill injection
     let skill_context = if let Some(ref lib) = skill_library {
         inject_skill_context(lib, user_query, 3).await.unwrap_or_default()
     } else {
         String::new()
     };
     if !skill_context.is_empty() {
-        system_prompt.push_str("\n\n");
-        system_prompt.push_str(&skill_context);
+        dynamic_context.push_str(&skill_context);
+        dynamic_context.push_str("\n\n");
     }
 
-    // Apply persistent memory context injection if available
-    let max_memory_tokens = std::env::var("MEMORY_CONTEXT_TOKEN_LIMIT")
-        .unwrap_or_else(|_| "1000".to_string())
-        .parse::<usize>()
-        .unwrap_or(1000);
+    // 2. Persistent memory context injection
+    if !retrieved_memories.is_empty() {
+        dynamic_context.push_str("# Retrieved Memories\n");
+        // Limit memories to respect context window
+        let max_memory_tokens = std::env::var("MEMORY_CONTEXT_TOKEN_LIMIT")
+            .unwrap_or_else(|_| "1000".to_string())
+            .parse::<usize>()
+            .unwrap_or(1000);
+        
+        let mut current_tokens = 0;
+        for mem in &retrieved_memories {
+            // Rough approximation of tokens (4 chars per token)
+            let mem_tokens = mem.content.len() / 4;
+            if current_tokens + mem_tokens > max_memory_tokens {
+                break;
+            }
+            dynamic_context.push_str(&format!("- {}\n", mem.content));
+            current_tokens += mem_tokens;
+        }
+        dynamic_context.push_str("\n");
+    }
 
-    system_prompt = hydragent_memory::build_system_prompt_with_memory(
-        &system_prompt,
-        &retrieved_memories,
-        max_memory_tokens,
-    );
-
-    // Initial message stream starts with system prompt and history
+    // Initial message stream starts with the static system prompt and history
     let mut messages = vec![ModelChatMessage {
         role: "system".to_string(),
         content: system_prompt,
@@ -151,12 +164,19 @@ pub async fn run_react_loop(
         });
     }
 
-    // Add current user query if it's not already at the end of history
-    let last_content_is_query = messages.last().map(|m| m.content == user_query).unwrap_or(false);
+    // Add current user query. Prepend the dynamic context to the query
+    // so that the system prompt remains 100% static and cacheable by Ollama.
+    let decorated_query = if !dynamic_context.is_empty() {
+        format!("{}# User Query\n{}", dynamic_context, user_query)
+    } else {
+        user_query.to_string()
+    };
+
+    let last_content_is_query = messages.last().map(|m| m.content == decorated_query).unwrap_or(false);
     if !last_content_is_query {
         messages.push(ModelChatMessage {
             role: "user".to_string(),
-            content: user_query.to_string(),
+            content: decorated_query,
         });
     }
 
