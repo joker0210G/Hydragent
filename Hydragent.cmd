@@ -10,12 +10,15 @@ REM
 REM Usage (from any directory):
 REM     Hydragent                  - if no .env exists, run onboard; else serve
 REM     Hydragent install          - (re)run the one-command installer
-REM     Hydragent onboard          - run the first-run configuration wizard
+REM     Hydragent onboard          - staged setup wizard (lockbox -> brain -> desk/skills -> safety)
+REM     Hydragent doctor           - health diagnostics (runtime, vault, model ping, sandbox, skills)
 REM     Hydragent serve            - start the gateway in the foreground
 REM     Hydragent ps               - list running Hydragent processes
 REM     Hydragent status           - one-shot status dashboard
-REM     Hydragent stop [pid]      - stop a running gateway
-REM     Hydragent chat             - interactive REPL
+REM     Hydragent stop [pid]       - stop a running gateway
+REM     Hydragent chat             - interactive REPL (uses desk context)
+REM     Hydragent update           - update to latest release
+REM     Hydragent uninstall        - remove binary and launcher (vault and memory preserved)
 REM     Hydragent <subcommand> ... - any other subcommand of the binary
 REM
 REM If a .env is found at the canonical location (%HYDRAGENT_HOME%\.env,
@@ -37,11 +40,12 @@ set "HYDRAGENT_DATA_DIR=%HYDRAGENT_HOME%\data"
 set "HYDRAGENT_BIN_EXE=%HYDRAGENT_BIN%\hydragent.exe"
 set "HYDRAGENT_INSTALLER=%HYDRAGENT_BIN%\install.ps1"
 
-REM --- 2. Special subcommand: install -------------------------------------------
+REM --- 2. Special subcommands: install / doctor ----------------------------------
 REM `Hydragent install` runs the one-command installer. If the binary is
 REM missing, we run the installer unconditionally (it's the only way to
 REM put the binary in place).
 if /I "%~1"=="install" goto :do_install
+if /I "%~1"=="doctor" goto :do_doctor
 if not exist "%HYDRAGENT_BIN_EXE%" (
     echo [Hydragent] hydragent.exe not found at "%HYDRAGENT_BIN_EXE%".
     echo [Hydragent] Routing to the one-command installer.
@@ -64,6 +68,9 @@ exit /b %ERRORLEVEL%
 
 :no_args
 REM Canonical .env location: %HYDRAGENT_HOME%\.env (top-level, per paths.rs).
+REM If .env is absent the user has not onboarded yet: route to the staged wizard
+REM (lockbox -> brain -> desk/skills/Graphify -> safety posture).
+REM If .env exists, launch `serve` to start the gateway and channel adapters.
 if exist "%HYDRAGENT_HOME%\.env" (
     set "HYDRAGENT_DEFAULT_CMD=serve"
 ) else (
@@ -71,10 +78,18 @@ if exist "%HYDRAGENT_HOME%\.env" (
     echo.
     echo [Hydragent] No .env found at %HYDRAGENT_HOME%\.env.
     echo [Hydragent] Launching the first-run onboarding wizard...
+    echo [Hydragent] Stages: A=lockbox  B=brain  C=desk+skills  D=safety posture
     echo.
 )
 if exist "%HYDRAGENT_HOME%\.env" call :load_env "%HYDRAGENT_HOME%\.env"
 "%HYDRAGENT_BIN_EXE%" %HYDRAGENT_DEFAULT_CMD%
+exit /b %ERRORLEVEL%
+
+:do_doctor
+REM Run health diagnostics: runtime, Python/Rust toolchain, SQLite, vault lockbox,
+REM model provider ping, sandbox (Docker/WASM), and skill discovery roots.
+if exist "%HYDRAGENT_HOME%\.env" call :load_env "%HYDRAGENT_HOME%\.env"
+"%HYDRAGENT_BIN_EXE%" doctor %2 %3 %4 %5 %6 %7 %8 %9
 exit /b %ERRORLEVEL%
 
 :do_install

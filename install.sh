@@ -21,6 +21,30 @@
 set -euo pipefail
 
 # ----------------------------------------------------------------------------
+# Cleanup guard — runs on EXIT, INT (Ctrl+C), and TERM.
+# Any partial downloads or temp dirs registered here are wiped on abort.
+# ----------------------------------------------------------------------------
+TMPFILES=()
+cleanup_tmpfiles() {
+    local f
+    for f in "${TMPFILES[@]:-}"; do
+        rm -rf "$f" 2>/dev/null || true
+    done
+}
+trap cleanup_tmpfiles EXIT
+abort_install_int()  { cleanup_tmpfiles; echo ""; warn "Installation interrupted"; exit 130; }
+abort_install_term() { cleanup_tmpfiles; echo ""; warn "Installation terminated"; exit 143; }
+trap abort_install_int  INT
+trap abort_install_term TERM
+
+mktempdir() {
+    local d
+    d="$(mktemp -d)"
+    TMPFILES+=("$d")
+    printf '%s\n' "$d"
+}
+
+# ----------------------------------------------------------------------------
 # Config
 # ----------------------------------------------------------------------------
 REPO="${HYDRAGENT_REPO:-joker0210G/Hydragent}"
@@ -113,6 +137,65 @@ detect_target_triple() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+DOWNLOADER=""
+detect_downloader() {
+    if have curl; then
+        DOWNLOADER="curl"
+        return 0
+    fi
+    if have wget; then
+        DOWNLOADER="wget"
+        return 0
+    fi
+    err "Neither curl nor wget found. Install one and retry."
+}
+
+# download_file <url> <dest>
+download_file() {
+    local url="$1" dest="$2"
+    if [[ "$DOWNLOADER" == "curl" ]]; then
+        curl -fsSL --retry 3 -o "$dest" "$url"
+    else
+        wget -q --tries=3 -O "$dest" "$url"
+    fi
+}
+
+probe_uv() {
+    if have uv; then
+        ok "uv already installed: $(uv --version)"
+        return 0
+    fi
+    info "uv not found — bootstrapping via official install script..."
+    local uv_installer
+    uv_installer="$(mktemp)"
+    TMPFILES+=("$uv_installer")
+    if ! download_file "https://astral.sh/uv/install.sh" "$uv_installer"; then
+        warn "Could not download uv installer. Python steps will use pip instead."
+        return 1
+    fi
+    bash "$uv_installer" --quiet
+    # Reload PATH so the new uv binary is visible in this session.
+    export PATH="$HOME/.local/bin:$PATH"
+    have uv && ok "uv installed: $(uv --version)" || warn "uv install ran but binary not found on PATH."
+}
+
+init_env_file() {
+    local src="$SRC_DIR/.env.example"
+    local dest="$INSTALL_ROOT/.env"
+    # If installed from release, .env.example won't be in SRC_DIR — look next to the binary.
+    [[ -f "$src" ]] || src="$(dirname "$0")/.env.example"
+    if [[ -f "$dest" ]]; then
+        info ".env already exists at $dest — skipping copy."
+        return
+    fi
+    if [[ -f "$src" ]]; then
+        cp "$src" "$dest"
+        ok "Created $dest from .env.example. Edit it or run 'hydragent onboard'."
+    else
+        warn ".env.example not found; .env not created. Run 'hydragent onboard' to configure."
+    fi
+}
+
 mkdir_p() { mkdir -p "$1"; }
 
 # ----------------------------------------------------------------------------
@@ -135,11 +218,11 @@ install_from_release() {
 
     local asset="hydragent-$version-$triple.tar.gz"
     local url="$RELEASE_BASE/download/$version/$asset"
-    local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+    local tmp; tmp="$(mktempdir)"
 
     step 2 "Downloading prebuilt binary"
     info "URL: $url"
-    if ! curl -fSL --retry 3 -o "$tmp/$asset" "$url"; then
+    if ! download_file "$url" "$tmp/$asset"; then
         err "Download failed (release $version may not be published for $triple)"
     fi
 
@@ -167,22 +250,89 @@ install_from_source() {
 }
 
 install_rust_if_missing() {
+    # ── Already installed? ────────────────────────────────────────────────────
     if have cargo; then
-        ok "Rust already installed: $(cargo --version)"
-        return
+        local ver
+        ver="$(cargo --version 2>/dev/null)"
+        ok "Rust already installed: $ver"
+        return 0
     fi
+
+    # Also check ~/.cargo/bin in case PATH wasn't reloaded yet
+    if [[ -x "$HOME/.cargo/bin/cargo" ]]; then
+        export PATH="$HOME/.cargo/bin:$PATH"
+        ok "Rust found at ~/.cargo/bin: $("$HOME/.cargo/bin/cargo" --version)"
+        return 0
+    fi
+
     step A1 "Installing Rust toolchain via rustup"
-    if have curl; then
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
-    else
-        err "curl is required to install Rust. Install curl or Rust manually."
+
+    # ── Detect architecture for the correct rustup-init binary ───────────────
+    local arch
+    arch="$(uname -m)"
+    local rustup_url="https://sh.rustup.rs"
+
+    # Termux (Android) uses a different rustup bootstrap path
+    if [[ -n "${TERMUX_VERSION:-}" ]] || [[ -d "/data/data/com.termux" ]]; then
+        info "Detected Termux (Android) — using pkg to install rust"
+        if have pkg; then
+            pkg install -y rust
+            have cargo && ok "Rust installed via Termux pkg: $(cargo --version)" && return 0
+        fi
+        err "Could not install Rust on Termux. Run: pkg install rust"
     fi
+
+    info "Architecture: $arch"
+    info "Downloading rustup installer from: $rustup_url"
+
+    # ── Download and run the official rustup installer ────────────────────────
+    local rustup_init
+    rustup_init="$(mktempdir)/rustup-init.sh"
+
+    if ! download_file "$rustup_url" "$rustup_init"; then
+        err "Failed to download rustup installer from $rustup_url.
+  Try manually:
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  Or visit: https://rustup.rs"
+    fi
+
+    chmod +x "$rustup_init"
+
+    # Run non-interactively: stable toolchain, minimal profile, no PATH mutation
+    # (we handle PATH ourselves via $HOME/.cargo/env sourcing below)
+    RUSTUP_INIT_SKIP_PATH_CHECK=yes \
+        sh "$rustup_init" -y \
+            --default-toolchain stable \
+            --profile minimal \
+            --no-modify-path
+
+    # ── Reload PATH so cargo is visible in this session ───────────────────────
     # shellcheck disable=SC1091
-    source "$HOME/.cargo/env"
-    have cargo || err "Rust install reported success but cargo is not on PATH"
-    ok "Rust installed: $(cargo --version)"
+    if [[ -f "$HOME/.cargo/env" ]]; then
+        source "$HOME/.cargo/env"
+    else
+        export PATH="$HOME/.cargo/bin:$PATH"
+    fi
+
+    # ── Verify the installation succeeded ────────────────────────────────────
+    if ! have cargo; then
+        err "Rust installation reported success but 'cargo' was not found.
+  Path checked: $HOME/.cargo/bin
+  Install Rust manually and retry: https://rustup.rs"
+    fi
+
+    local installed_ver
+    installed_ver="$(cargo --version)"
+    ok "Rust installed: $installed_ver"
+
+    # ── Minimum version check (≥ 1.78) ───────────────────────────────────────
+    local installed_minor
+    installed_minor="$(cargo --version | grep -oP '1\.\K[0-9]+' | head -1)"
+    if [[ -n "$installed_minor" ]] && (( installed_minor < 78 )); then
+        warn "Rust $installed_ver is older than the required 1.78. Run: rustup update stable"
+    fi
 }
+
 
 checkout_source() {
     if [[ -f "$SRC_DIR/Cargo.toml" ]]; then
@@ -307,7 +457,9 @@ info "Repo:         $REPO"
 info "Version:      $VERSION"
 info "OS/Arch:      $(uname -s) $(uname -m)"
 
+detect_downloader
 mkdir_p "$BIN_DIR" "$DATA_DIR"
+probe_uv || true
 
 already_installed=0
 [[ -x "$BIN_DIR/$BIN_NAME" ]] && already_installed=1
@@ -342,6 +494,7 @@ fi
 
 install_launcher
 install_path_entry
+init_env_file
 
 ok "Hydragent installed to $BIN_DIR"
 ok "Data directory: $DATA_DIR"

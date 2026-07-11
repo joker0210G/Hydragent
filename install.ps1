@@ -469,6 +469,73 @@ function Ensure-Directory {
 }
 
 # ---------------------------------------------------------------------------
+# Download helper — Invoke-WebRequest first, curl.exe fallback on older PS
+# ---------------------------------------------------------------------------
+function Invoke-Download {
+    param([string]$Uri, [string]$OutFile)
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $OutFile -ErrorAction Stop
+    } catch {
+        if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+            & curl.exe -fsSL --retry 3 -o $OutFile $Uri
+            if ($LASTEXITCODE -ne 0) { throw "curl.exe download failed for $Uri" }
+        } else {
+            throw "Download failed and curl.exe is not available: $_"
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# uv probe — installs Astral uv if not present
+# ---------------------------------------------------------------------------
+function Install-Uv {
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        Write-Ok "uv already installed: $(uv --version)"
+        return
+    }
+    Write-Info 'uv not found — bootstrapping via official PowerShell install script...'
+    $uvScript = Join-Path $env:TEMP 'install-uv.ps1'
+    try {
+        Invoke-Download -Uri 'https://astral.sh/uv/install.ps1' -OutFile $uvScript
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $uvScript
+        $env:PATH = "$env:USERPROFILE\.local\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
+        if (Get-Command uv -ErrorAction SilentlyContinue) {
+            Write-Ok "uv installed: $(uv --version)"
+        } else {
+            Write-Warn 'uv install ran but binary not found on PATH. Python steps will use pip.'
+        }
+    } catch {
+        Write-Warn "Could not install uv: $_. Python steps will use pip instead."
+    } finally {
+        if (Test-Path $uvScript) { Remove-Item $uvScript -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# .env initializer — copies .env.example to .env only when absent
+# ---------------------------------------------------------------------------
+function Initialize-EnvFile {
+    $dest = Join-Path $InstallRoot '.env'
+    if (Test-Path $dest) {
+        Write-Info ".env already exists at $dest — skipping copy."
+        return
+    }
+    # Try alongside the script, then the source checkout.
+    $candidates = @(
+        (Join-Path $PSScriptRoot '.env.example'),
+        (Join-Path $SourceDir '.env.example')
+    )
+    foreach ($src in $candidates) {
+        if (Test-Path $src) {
+            Copy-Item $src $dest
+            Write-Ok "Created $dest from .env.example. Edit it or run 'Hydragent onboard'."
+            return
+        }
+    }
+    Write-Warn '.env.example not found; .env not created. Run Hydragent onboard to configure.'
+}
+
+# ---------------------------------------------------------------------------
 # 2. Install steps
 # ---------------------------------------------------------------------------
 
@@ -494,7 +561,7 @@ function Install-FromRelease {
     Write-Step 2 "Downloading prebuilt binary"
     Write-Info "URL: $download"
     try {
-        Invoke-WebRequest -UseBasicParsing -Uri $download -OutFile $zipPath
+        Invoke-Download -Uri $download -OutFile $zipPath
     } catch {
         throw "Download failed (network error or release $v not published): $_"
     }
@@ -528,6 +595,7 @@ function Install-RustIfMissing {
     $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
     $cargoExe = Join-Path $cargoBin 'cargo.exe'
 
+    # ── Already installed? (on PATH) ─────────────────────────────────────────
     if (Test-Command cargo) {
         $script:CargoCmd = 'cargo'
         $cv = (& cargo --version) -replace "`r`n", ''
@@ -535,34 +603,99 @@ function Install-RustIfMissing {
         return
     }
 
+    # ── Already installed? (cargo.exe in ~/.cargo/bin but not on PATH) ────────
     if (Test-Path $cargoExe) {
         $script:CargoCmd = $cargoExe
+        $env:Path = "$cargoBin;$env:Path"
         $cv = (& $cargoExe --version) -replace "`r`n", ''
         Write-OK "Rust already installed (found at $cargoExe): $cv"
         return
     }
 
-    Write-Step 'A1' "Installing Rust toolchain via rustup"
-    $url = 'https://win.rustup.rs/x86_64'
-    $tmp = Join-Path $env:TEMP 'rustup-init.exe'
-    Write-Info "Downloading $url"
-    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tmp
-    Write-Info "Running rustup-init -y (stable, minimal profile)"
-    & $tmp -y --default-toolchain stable --profile minimal --no-modify-path | Out-Null
-    Remove-Item $tmp -Force
-    
-    if (Test-Path $cargoBin) { 
-        $env:Path = "$cargoBin;$env:Path" 
+    Write-Step 'A1' 'Installing Rust toolchain via rustup'
+
+    # ── Architecture detection ────────────────────────────────────────────────
+    $arch = (Get-CimInstance Win32_ComputerSystem).SystemType
+    $isArm = $arch -match 'ARM'
+    $rustupUrl = if ($isArm) {
+        Write-Info 'Detected ARM64 — downloading ARM64 rustup-init.exe'
+        'https://win.rustup.rs/aarch64'
+    } else {
+        Write-Info 'Detected x86_64 — downloading x64 rustup-init.exe'
+        'https://win.rustup.rs/x86_64'
     }
-    
+
+    # ── Try winget first (cleanest, handles MSVC deps automatically) ──────────
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Info 'winget detected — attempting: winget install Rustlang.Rustup'
+        try {
+            & winget install --id Rustlang.Rustup --accept-source-agreements --accept-package-agreements --silent
+            if ($LASTEXITCODE -eq 0) {
+                # winget installs rustup but not necessarily cargo; run rustup to provision stable
+                $rustupExe = Join-Path $env:USERPROFILE '.cargo\bin\rustup.exe'
+                if (Test-Path $rustupExe) {
+                    Write-Info 'Provisioning stable toolchain via rustup...'
+                    & $rustupExe toolchain install stable --profile minimal --no-self-update | Out-Host
+                }
+                if (Test-Path $cargoBin) { $env:Path = "$cargoBin;$env:Path" }
+                $script:CargoCmd = $cargoExe
+                if (Test-Path $cargoExe) {
+                    $cv = (& $cargoExe --version) -replace "`r`n", ''
+                    Write-OK "Rust installed via winget: $cv"
+                    return
+                }
+            }
+        } catch {
+            Write-Warn "winget install failed ($_); falling back to rustup-init.exe"
+        }
+    }
+
+    # ── Fallback: download rustup-init.exe directly ───────────────────────────
+    $tmp = Join-Path $env:TEMP 'rustup-init.exe'
+    Write-Info "Downloading rustup-init.exe from $rustupUrl"
+    try {
+        Invoke-Download -Uri $rustupUrl -OutFile $tmp
+    } catch {
+        Write-Err "Failed to download rustup-init.exe: $_
+  Try manually:
+    Download https://win.rustup.rs and run: rustup-init.exe -y
+  Or visit: https://rustup.rs"
+        return
+    }
+
+    Write-Info 'Running rustup-init.exe -y (stable, minimal, no PATH modification)'
+    # Run visibly — do not Out-Null so the user sees progress/errors
+    & $tmp -y --default-toolchain stable --profile minimal --no-modify-path
+
+    # Cleanup temp installer
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+
+    # ── Reload PATH for this session ──────────────────────────────────────────
+    if (Test-Path $cargoBin) {
+        $env:Path = "$cargoBin;$env:Path"
+    }
+
+    # ── Verify success ────────────────────────────────────────────────────────
     if (Test-Path $cargoExe) {
         $script:CargoCmd = $cargoExe
         $cv = (& $cargoExe --version) -replace "`r`n", ''
         Write-OK "Rust installed successfully: $cv"
+
+        # ── Minimum version check (>= 1.78) ──────────────────────────────────
+        if ($cv -match '1\.(\d+)\.') {
+            $minor = [int]$Matches[1]
+            if ($minor -lt 78) {
+                Write-Warn "Rust $cv is older than required 1.78. Run: rustup update stable"
+            }
+        }
     } else {
-        Write-Err "Rust installation reported success but cargo was not found at $cargoExe. Install Rust manually and retry."
+        Write-Err "Rust installation reported success but cargo.exe was not found at $cargoExe.
+  MSVC Build Tools may be required. Install them with:
+    winget install --id Microsoft.VisualStudio.2022.BuildTools --override `"--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --passive`"
+  Then retry this installer, or install Rust manually: https://rustup.rs"
     }
 }
+
 
 function Install-SourceCheckout {
     $marker = Join-Path $SourceDir 'Cargo.toml'
@@ -927,6 +1060,7 @@ if (-not $CommitHash) {
     } catch {}
 }
 
+Install-Uv
 Write-Banner
 Write-Info "Install root: $InstallRoot"
 Write-Info "Repo:         $Repo"
@@ -951,6 +1085,7 @@ if ($alreadyInstalled -and -not $Force) {
     Install-Launcher
     Install-SelfCopy
     Install-PathEntry
+    Initialize-EnvFile
     Setup-PythonVenv
     if (-not $SkipOnboard) { Invoke-Onboarding }
     Write-NextSteps
@@ -973,6 +1108,7 @@ if ($Source) {
 Install-Launcher
 Install-SelfCopy
 Install-PathEntry
+Initialize-EnvFile
 Setup-PythonVenv
 
 Write-OK "Hydragent installed to $BinDir"

@@ -19,6 +19,10 @@ name: pages
 #      from the repo root plus a minimal index.html.
 #   2. Add a CNAME file if a custom domain is configured (see site/CNAME).
 #   3. Deploy site/ to the gh-pages branch using peaceiris/actions-gh-pages.
+#
+# Fix note: commit_message is now dynamic (includes SHA + timestamp) so that
+# every deployment produces a unique commit on gh-pages and is never silently
+# skipped by the action's identical-tree deduplication.
 # =============================================================================
 
 on:
@@ -65,10 +69,40 @@ jobs:
             echo "::notice title=Custom domain::$(cat docs/CNAME)"
           fi
 
+      - name: Fingerprint staged files
+        id: fingerprint
+        run: |
+          set -euo pipefail
+          HASH=$(find site -type f | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+          echo "content_hash=${HASH}" >> "$GITHUB_OUTPUT"
+          echo "Staged content hash: ${HASH}"
+
+      - name: Compare against deployed content
+        id: changed
+        run: |
+          set -euo pipefail
+          # Fetch the currently-deployed gh-pages content hash (if branch exists)
+          DEPLOYED_HASH=""
+          if git ls-remote --exit-code origin gh-pages > /dev/null 2>&1; then
+            git fetch origin gh-pages --depth=1 2>/dev/null || true
+            # Reconstruct hash of what's currently on gh-pages
+            DEPLOYED_HASH=$(git show origin/gh-pages:install.ps1 origin/gh-pages:install.sh origin/gh-pages:index.html 2>/dev/null \
+              | sha256sum | awk '{print $1}' || echo "")
+          fi
+          echo "Deployed hash: ${DEPLOYED_HASH:-<none>}"
+          if [ "${{ steps.fingerprint.outputs.content_hash }}" = "$DEPLOYED_HASH" ]; then
+            echo "skip=true"  >> "$GITHUB_OUTPUT"
+            echo "::notice title=No change::Content is identical to deployed gh-pages — skipping deploy."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Changed::Content differs — deploying."
+          fi
+
       - name: Show staged files
         run: ls -la site
 
       - name: Deploy to gh-pages branch
+        if: steps.changed.outputs.skip == 'false'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -78,4 +112,6 @@ jobs:
           force_orphan: true
           user_name: github-actions[bot]
           user_email: github-actions[bot]@users.noreply.github.com
-          commit_message: 'docs(pages): publish installer scripts and landing page'
+          commit_message: |
+            docs(pages): ${{ github.ref_name }} @ ${{ github.sha }} — ${{ github.event.head_commit.message || 'manual trigger' }}
+
