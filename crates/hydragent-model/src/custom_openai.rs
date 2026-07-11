@@ -184,6 +184,19 @@ impl CustomOpenAIClient {
         &self.config
     }
 
+    /// The full `/chat/completions` endpoint URL.
+    ///
+    /// If the configured base URL already ends with `/chat/completions`,
+    /// it is returned unchanged; otherwise `/chat/completions` is appended.
+    pub fn completion_url(&self) -> String {
+        let base = self.config.base_url.trim_end_matches('/');
+        if base.ends_with("/chat/completions") {
+            base.to_string()
+        } else {
+            format!("{}/chat/completions", base)
+        }
+    }
+
     /// Apply a few aliases so `generate_non_streaming` and short model names
     /// work transparently with whichever provider the user plugged in.
     fn resolve_model<'a>(&'a self, requested: &'a str) -> &'a str {
@@ -438,6 +451,23 @@ mod tests {
         assert!(s.contains("\"stream\":true"));
         assert!(s.contains("\"max_tokens\":64"));
         assert!(s.contains("\"messages\""));
+    }
+
+    #[test]
+    fn test_completion_url_normalizes_full_chat_completions_endpoint() {
+        let cfg = CustomProviderConfig {
+            base_url: "https://integrate.api.nvidia.com/v1/chat/completions".to_string(),
+            api_key: "sk-test".to_string(),
+            default_model: "llama-3".to_string(),
+            provider_label: "brain".to_string(),
+            timeout: Duration::from_secs(10),
+            max_retries: 1,
+        };
+        let client = CustomOpenAIClient::new(cfg);
+        assert_eq!(
+            client.completion_url(),
+            "https://integrate.api.nvidia.com/v1/chat/completions"
+        );
     }
 
     // ── P0: API-key leak prevention ────────────────────────────────────

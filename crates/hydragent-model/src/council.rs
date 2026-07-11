@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::profiles::{CostTier, ModelProfile};
+use crate::registry::ProviderRegistry;
 
 /// All the ways the council can fail to load or route.
 #[derive(Debug, Error)]
@@ -92,6 +93,8 @@ pub struct ModelCouncil {
     by_tag: Arc<HashMap<String, Vec<ModelProfile>>>,
     /// The single primary profile (always-fallback safety net).
     primary: Arc<ModelProfile>,
+    /// Optional provider registry for resolving `model_ref` entries.
+    registry: Option<Arc<ProviderRegistry>>,
 }
 
 impl ModelCouncil {
@@ -160,7 +163,15 @@ impl ModelCouncil {
             by_id: Arc::new(by_id),
             by_tag: Arc::new(by_tag),
             primary: Arc::new(primary),
+            registry: None,
         })
+    }
+
+    /// Attach a provider registry so the council can resolve `model_ref`
+    /// entries into concrete provider/model pairs.
+    pub fn with_registry(mut self, registry: Arc<ProviderRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
     }
 
     /// Number of profiles in the council.
@@ -199,6 +210,36 @@ impl ModelCouncil {
         v.into_iter()
     }
 
+    /// Resolve a profile through the attached registry when `model_ref` is set.
+    ///
+    /// If no registry is attached, resolution fails, or the profile has no
+    /// `model_ref`, the original profile is returned unchanged.
+    fn resolve_profile(&self, profile: &ModelProfile) -> Option<ModelProfile> {
+        let Some(model_ref) = profile.model_ref.as_ref() else {
+            return Some(profile.clone());
+        };
+        let Some(registry) = self.registry.as_ref() else {
+            return Some(profile.clone());
+        };
+        let Some(resolved) = registry.resolve(model_ref, None) else {
+            return Some(profile.clone());
+        };
+
+        if let Some(requirements) = profile.capability_requirements.as_ref() {
+            let Some(model) = registry.model_definition(&resolved.provider_id, &resolved.model_id) else {
+                return None;
+            };
+            if !registry.satisfies_requirements(model, requirements) {
+                return None;
+            }
+        }
+
+        let mut resolved_profile = profile.clone();
+        resolved_profile.provider = resolved.provider_id;
+        resolved_profile.model_id = resolved.api_model_id;
+        Some(resolved_profile)
+    }
+
     /// The main routing function.
     ///
     /// Algorithm:
@@ -208,17 +249,21 @@ impl ModelCouncil {
     /// 4. Else, if unfiltered matches exist, return the cheapest of
     ///    them (with a debug-log note that we're over budget).
     /// 5. Else, return the primary profile.
+    ///
+    /// When the council has an attached registry, returned profiles with a
+    /// `model_ref` are resolved to concrete provider/model ids.
     pub fn route(&self, task_tag: &str, budget: CostTier) -> RoutingDecision {
         let matches = self.profiles_for_tag(task_tag);
 
         // Pass 1: exact task match within budget.
-        let in_budget: Vec<&ModelProfile> = matches
+        let in_budget: Vec<ModelProfile> = matches
             .iter()
             .filter(|p| budget.accepts(p.cost_tier))
+            .filter_map(|p| self.resolve_profile(p))
             .collect();
         if let Some(best) = in_budget.first() {
             return RoutingDecision {
-                profile: (*best).clone(),
+                profile: best.clone(),
                 path: RoutingPath::ExactMatchInBudget,
                 candidates_considered: matches.len(),
                 candidates_in_budget: in_budget.len(),
@@ -226,13 +271,17 @@ impl ModelCouncil {
         }
 
         // Pass 2: exact task match but over budget — fall back to cheapest.
-        if !matches.is_empty() {
-            let cheapest = matches
+        let viable_matches: Vec<ModelProfile> = matches
+            .iter()
+            .filter_map(|p| self.resolve_profile(p))
+            .collect();
+        if !viable_matches.is_empty() {
+            let cheapest = viable_matches
                 .iter()
                 .min_by_key(|p| tier_rank(p.cost_tier))
-                .unwrap(); // matches is non-empty here
+                .unwrap();
             return RoutingDecision {
-                profile: (*cheapest).clone(),
+                profile: cheapest.clone(),
                 path: RoutingPath::OverBudgetCheapest,
                 candidates_considered: matches.len(),
                 candidates_in_budget: 0,
@@ -241,7 +290,7 @@ impl ModelCouncil {
 
         // Pass 3: no match — return primary.
         RoutingDecision {
-            profile: (*self.primary).clone(),
+            profile: self.resolve_profile(&self.primary).unwrap_or_else(|| self.primary.as_ref().clone()),
             path: RoutingPath::PrimaryFallback,
             candidates_considered: 0,
             candidates_in_budget: 0,
@@ -254,7 +303,7 @@ impl ModelCouncil {
     pub fn route_explicit(&self, model_id: &str) -> Option<RoutingDecision> {
         let p = self.by_id.get(model_id)?;
         Some(RoutingDecision {
-            profile: p.clone(),
+            profile: self.resolve_profile(p)?,
             path: RoutingPath::Explicit,
             candidates_considered: 0,
             candidates_in_budget: 0,
@@ -357,6 +406,8 @@ mod tests {
             task_tags: tags.iter().map(|s| s.to_string()).collect(),
             benchmark: HashMap::new(),
             primary,
+            model_ref: None,
+            capability_requirements: None,
         };
         if let Some(s) = score {
             for t in tags {
@@ -506,6 +557,34 @@ mod tests {
         let c = sample_council();
         assert_eq!(c.primary().model_id, "llama-70b-free");
         assert!(c.primary().primary);
+    }
+
+    #[test]
+    fn route_resolves_model_ref_through_registry() {
+        let registry = ProviderRegistry::builtin_default();
+        let mut profile = prof("gpt-4o-mini-ref", CostTier::Cheap, &["general"], Some(0.81), true);
+        profile.model_ref = Some("openrouter/openai-gpt-4o-mini".to_string());
+
+        let council = ModelCouncil::from_profiles(vec![profile])
+            .unwrap()
+            .with_registry(Arc::new(registry));
+
+        let decision = council.route("general", CostTier::Any);
+        assert_eq!(decision.profile.model_id, "openai/gpt-4o-mini");
+        assert_eq!(decision.profile.provider, "openrouter");
+        assert_eq!(decision.path, RoutingPath::ExactMatchInBudget);
+    }
+
+    #[test]
+    fn route_without_registry_keeps_original_model_ref_profile() {
+        let mut profile = prof("gpt-4o-mini-ref", CostTier::Cheap, &["general"], Some(0.81), true);
+        profile.model_ref = Some("openrouter/openai-gpt-4o-mini".to_string());
+
+        let council = ModelCouncil::from_profiles(vec![profile]).unwrap();
+
+        let decision = council.route("general", CostTier::Any);
+        assert_eq!(decision.profile.model_id, "gpt-4o-mini-ref");
+        assert_eq!(decision.profile.provider, "openrouter");
     }
 
     #[test]

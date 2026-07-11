@@ -1,0 +1,22 @@
+id: 6c2990f6-7380-44a2-b245-99283451cfe8
+name: a
+version: 1
+description: Convert a CSV string into a JSON array of objects.
+tier: candidate
+capability_tags:
+- rust
+- build
+params: []
+prompt_template: |-
+  Convert this CSV to JSON:
+  ```
+  {{csv}}
+  ```
+required_tools:
+- echo
+success_examples: []
+author: builtin
+created_at: 1783530701035
+last_updated: 1783530701035
+success_rate: 0.0
+execution_count: 0

@@ -1,0 +1,22 @@
+id: b31e7f85-b122-4b23-a9ff-e5a910a9351b
+name: summarize-github-issue
+version: 1
+description: Summarize a GitHub issue into a paragraph
+tier: candidate
+capability_tags:
+- csv
+- data
+params: []
+prompt_template: |-
+  Convert this CSV to JSON:
+  ```
+  {{csv}}
+  ```
+required_tools:
+- echo
+success_examples: []
+author: builtin
+created_at: 1783530701017
+last_updated: 1783530701017
+success_rate: 0.0
+execution_count: 0

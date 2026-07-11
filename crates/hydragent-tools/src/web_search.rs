@@ -1,10 +1,14 @@
 use std::env;
+use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use hydragent_types::{ToolResult, ToolStatus};
 use reqwest::Client;
 use serde_json::Value;
+use tokio::process::Command;
+use tokio::time::sleep;
 use tracing::warn;
 
 use crate::tool_trait::Tool;
@@ -32,7 +36,8 @@ use crate::tool_trait::Tool;
 // Configuration (env vars)
 // ------------------------
 //   SEARXNG_BASE_URL       Base URL of the SearXNG instance.
-//                          Default: https://searx.be (public instance, EU)
+//                          Default: http://127.0.0.1:7777 (local shim;
+//                          start adapters/utils/searchxng.py to enable it)
 //                          Other public instances:
 //                            - https://search.disroot.org
 //                            - https://searx.tiekoetter.com
@@ -57,11 +62,12 @@ use crate::tool_trait::Tool;
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DEFAULT_BASE_URL: &str = "https://searx.be";
+const DEFAULT_BASE_URL: &str = "http://127.0.0.1:7777";
 const DEFAULT_MAX_RESULTS: usize = 5;
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_CATEGORIES: &str = "general";
 const SNIPPET_MAX_CHARS: usize = 300;
+const LOCAL_BASE_URLS: &[&str] = &["http://127.0.0.1:7777", "http://localhost:7777"];
 
 /// Public SearXNG instances to rotate through if the default fails.
 /// These are updated periodically — stale entries will just fail fast.
@@ -91,6 +97,74 @@ pub struct WebSearchTool {
 }
 
 impl WebSearchTool {
+    fn is_local_shim_url(base: &str) -> bool {
+        let trimmed = base.trim().trim_end_matches('/');
+        trimmed.eq_ignore_ascii_case("http://127.0.0.1:7777")
+            || trimmed.eq_ignore_ascii_case("http://localhost:7777")
+    }
+
+    async fn ensure_local_search_shim(&self, base: &str) -> bool {
+        if !Self::is_local_shim_url(base) {
+            return true;
+        }
+
+        let health_url = format!("{}/healthz", base.trim_end_matches('/'));
+        for _ in 0..3 {
+            if let Ok(resp) = self.client.get(&health_url).send().await {
+                if resp.status().is_success() {
+                    return true;
+                }
+            }
+
+            if self.start_local_search_shim().await {
+                sleep(Duration::from_millis(600)).await;
+            } else {
+                break;
+            }
+        }
+
+        false
+    }
+
+    async fn start_local_search_shim(&self) -> bool {
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        let shim_path = workspace_root.join("adapters").join("utils").join("searchxng.py");
+
+        if !shim_path.exists() {
+            warn!("Search shim script not found at {:?}", shim_path);
+            return false;
+        }
+
+        let python_candidates = [
+            env::var("PYTHON").ok().filter(|s| !s.trim().is_empty()),
+            Some("python".to_string()),
+            Some("python3".to_string()),
+        ];
+
+        for candidate in python_candidates.into_iter().flatten() {
+            let mut child = match Command::new(&candidate)
+                .arg(&shim_path)
+                .arg("--host")
+                .arg("127.0.0.1")
+                .arg("--port")
+                .arg("7777")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(_) => continue,
+            };
+
+            let _ = child.wait().await;
+            return true;
+        }
+
+        false
+    }
+
     pub fn new() -> Self {
         let base_url = env::var("SEARXNG_BASE_URL")
             .ok()
@@ -538,22 +612,30 @@ impl Tool for WebSearchTool {
             .or(self.language.as_deref());
 
         // ── Multi-backend search strategy ────────────────────────────
-        // 1. Try the configured base URL first.
-        // 2. If that fails (network or HTTP error), rotate through
+        // 1. If the default local shim is configured, automatically start it
+        //    on first use so the end user does not need to run anything manually.
+        // 2. Try the configured base URL first.
+        // 3. If that fails (network or HTTP error), rotate through
         //    known public SearXNG instances.
-        // 3. If every SearXNG instance fails, fall back to DuckDuckGo
+        // 4. If every SearXNG instance fails, fall back to DuckDuckGo
         //    Lite scraper (no API key, no rate limit, pure HTML).
         // ─────────────────────────────────────────────────────────────
         let mut last_error = String::new();
+        let _ = self.ensure_local_search_shim(&self.base_url).await;
 
         let instances = {
             let mut list = vec![self.base_url.clone()];
-            list.extend(
-                FALLBACK_INSTANCES
-                    .iter()
-                    .filter(|&&u| u != self.base_url)
-                    .map(|s| s.to_string()),
-            );
+            for local in LOCAL_BASE_URLS {
+                if !list.iter().any(|u| u == local) {
+                    list.push(local.to_string());
+                }
+            }
+            let mut fallback = FALLBACK_INSTANCES
+                .iter()
+                .filter(|&&u| !list.iter().any(|existing| existing == u))
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+            list.append(&mut fallback);
             list
         };
 
@@ -740,6 +822,13 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_local_shim_url() {
+        assert!(WebSearchTool::is_local_shim_url("http://127.0.0.1:7777"));
+        assert!(WebSearchTool::is_local_shim_url("http://localhost:7777/"));
+        assert!(!WebSearchTool::is_local_shim_url("https://searx.be"));
+    }
 
     #[test]
     fn test_truncate_chars_short() {

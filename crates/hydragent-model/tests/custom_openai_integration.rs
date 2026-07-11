@@ -49,6 +49,8 @@ fn make_request() -> LLMRequest {
         }],
         stream: true,
         max_tokens: Some(64),
+        models: vec![],
+        reasoning_effort: None,
     }
 }
 

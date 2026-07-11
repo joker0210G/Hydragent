@@ -1,0 +1,22 @@
+id: 10cda8bf-cb5b-478c-80ef-520fcfdaecc1
+name: untouched
+version: 1
+description: Convert a CSV string into a JSON array of objects.
+tier: candidate
+capability_tags:
+- csv
+- data
+params: []
+prompt_template: |-
+  Convert this CSV to JSON:
+  ```
+  {{csv}}
+  ```
+required_tools:
+- echo
+success_examples: []
+author: builtin
+created_at: 1783530701157
+last_updated: 1783530701157
+success_rate: 0.0
+execution_count: 0

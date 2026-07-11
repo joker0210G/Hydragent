@@ -1,0 +1,16 @@
+id: s4
+name: healthy
+version: 1
+description: test
+tier: active
+capability_tags:
+- test
+params: []
+prompt_template: do {{x}}
+required_tools: []
+success_examples: []
+author: test
+created_at: 1783530700694
+last_updated: 1783530700694
+success_rate: 0.0
+execution_count: 0

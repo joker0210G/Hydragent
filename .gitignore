@@ -94,3 +94,5 @@ target/agent_reach_source/
 
 **/admin_auth.hash
 .agents/
+
+*.log

@@ -132,16 +132,8 @@ class LibraryGraphBuilder:
         # 2. Cluster Books into Shelves
         shelf_communities = self._cluster_books(book_metadata)
         
-        general_books = []
-        filtered_shelves = {}
-        for cid, bids in shelf_communities.items():
-            if len(bids) == 1:
-                general_books.extend(bids)
-                continue
-            filtered_shelves[cid] = bids
+        filtered_shelves = shelf_communities
 
-        if general_books:
-            filtered_shelves["__GENERAL__"] = general_books
 
         new_shelves: List[Node] = []
         new_sits_on_edges: List[Edge] = []
@@ -278,5 +270,48 @@ class LibraryGraphBuilder:
 
     @timed
     def _cluster_books(self, book_metadata: List[Dict]) -> Dict[str, List[str]]:
-        # Default simple grouping for Books -> Shelves
-        return {"1": [b["id"] for b in book_metadata]}
+        """
+        Cluster books into shelves by label-word overlap (greedy union-find).
+        Books that share ≥1 significant keyword in their label are placed on
+        the same shelf.  Singletons that share nothing are collected into a
+        single 'General Archive' shelf rather than creating N shelf-of-1.
+        """
+        if not book_metadata:
+            return {}
+
+        import re
+
+        def keywords(label: str) -> set:
+            words = re.findall(r'\b[a-zA-Z]{4,}\b', label.lower())
+            return {w for w in words if w not in self.config.stopwords}
+
+        # Union-find
+        parent = {b["id"]: b["id"] for b in book_metadata}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(x: str, y: str) -> None:
+            parent[find(x)] = find(y)
+
+        kw_cache = {b["id"]: keywords(b["label"]) for b in book_metadata}
+
+        for i, a in enumerate(book_metadata):
+            kw_a = kw_cache[a["id"]]
+            if not kw_a:
+                continue
+            for b in book_metadata[i + 1:]:
+                if kw_a & kw_cache[b["id"]]:
+                    union(a["id"], b["id"])
+
+        # Group by root
+        groups: Dict[str, List[str]] = {}
+        for b in book_metadata:
+            root = find(b["id"])
+            groups.setdefault(root, []).append(b["id"])
+
+        # Re-key with sequential IDs
+        return {str(i): ids for i, ids in enumerate(groups.values(), 1)}

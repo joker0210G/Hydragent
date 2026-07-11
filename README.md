@@ -69,6 +69,7 @@ cd Hydragent
 The documentation has been consolidated into a few high-value files:
 
 - **[ONBOARDING.md](ONBOARDING.md)**: Your guide to getting started. Contains developer onboarding, prerequisites, end-user installation options, contribution guidelines, and the project's changelog.
+- **[SECTIONS.md](SECTIONS.md)**: Workspace map and 8 focus sections to split tasks and focus on specific components.
 - **[doc/CLI.md](doc/CLI.md)**: Guide to the two CLIs (Rust `hydragent` vs Python `hydra-cli`) and their specific use cases.
 - **[doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)**: Deep technical specifications covering the core runtime stack, Event Bus wire protocol, JSON-RPC API, Python SDK, cryptographic vault, skill engine, and LoRA fine-tuning pipeline.
 - **[doc/FEATURES.md](doc/FEATURES.md)**: The complete capability catalog, active tool/crate listings, and the development roadmap.

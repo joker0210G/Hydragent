@@ -51,10 +51,10 @@ const PRESETS: &[Provider] = &[
         base: "https://openrouter.ai/api/v1",
         needs_key: true,
         recommended: &[
-            "openai/gpt-4o-mini",
-            "anthropic/claude-3.5-sonnet",
-            "meta-llama/llama-3.1-70b-instruct",
-            "google/gemini-2.0-flash-exp:free",
+            "google/gemma-4-31b-it:free",
+            "deepseek/deepseek-v4-flash:free",
+            "openai/gpt-oss-120b:free",
+            "openrouter/free",
         ],
     },
     Provider {
@@ -422,15 +422,18 @@ pub async fn run(opts: OnboardOptions) -> i32 {
     }
 
     // Now overlay the values the wizard is responsible for.
-    let provider_name = match provider.label {
-        l if l.starts_with("OpenAI") => "openai",
-        l if l.starts_with("OpenRouter") => "openrouter",
-        l if l.starts_with("Together") => "together",
-        l if l.starts_with("Groq") => "groq",
-        l if l.starts_with("Ollama") => "ollama",
-        l if l.starts_with("LM Studio") => "lmstudio",
-        _ => "custom-openai",
-    };
+    let registry = hydragent_model::ModelRegistry::builtin_default();
+    let provider_name = registry
+        .provider_id_for_label(provider.label)
+        .unwrap_or_else(|| match provider.label {
+            l if l.starts_with("OpenAI") => "openai",
+            l if l.starts_with("OpenRouter") => "openrouter",
+            l if l.starts_with("Together") => "custom",
+            l if l.starts_with("Groq") => "custom",
+            l if l.starts_with("Ollama") => "ollama",
+            l if l.starts_with("LM Studio") => "lmstudio",
+            _ => "custom",
+        });
     new_env.insert("BRAIN_PROVIDER".to_string(), provider_name.to_string());
     new_env.insert("BRAIN_BASE".to_string(), base.clone());
     new_env.insert("BRAIN_MODEL".to_string(), model.clone());

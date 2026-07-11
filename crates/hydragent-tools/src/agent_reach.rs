@@ -87,13 +87,43 @@ impl AgentReachTool {
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                // Prefer the venv inside `adapters/`. If the workspace
-                // layout ever changes, callers can still override via env.
-                let windows = workspace_root.join(RELATIVE_PY);
-                if windows.exists() {
-                    return windows;
+                let home_path = env::var("HYDRAGENT_HOME")
+                    .ok()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| {
+                        #[cfg(target_os = "windows")]
+                        {
+                            env::var("USERPROFILE")
+                                .ok()
+                                .map(|h| PathBuf::from(h).join(".hydragent"))
+                                .unwrap_or_else(|| PathBuf::from(".hydragent"))
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            env::var("HOME")
+                                .ok()
+                                .map(|h| PathBuf::from(h).join(".hydragent"))
+                                .unwrap_or_else(|| PathBuf::from(".hydragent"))
+                        }
+                    });
+
+                let home_venv = if cfg!(target_os = "windows") {
+                    home_path.join(".venv").join("Scripts").join("python.exe")
+                } else {
+                    home_path.join(".venv").join("bin").join("python")
+                };
+
+                if home_venv.exists() {
+                    home_venv
+                } else {
+                    // Prefer the venv inside `adapters/`. If the workspace
+                    // layout ever changes, callers can still override via env.
+                    let windows = workspace_root.join(RELATIVE_PY);
+                    if windows.exists() {
+                        return windows;
+                    }
+                    workspace_root.join(RELATIVE_PY_NIX)
                 }
-                workspace_root.join(RELATIVE_PY_NIX)
             });
 
         let runner_path = env::var("AGENT_REACH_RUNNER")

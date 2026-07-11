@@ -148,6 +148,10 @@ impl SkillLibrary {
         Ok(me)
     }
 
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+
     /// In-memory library (for tests). Schema is initialised
     /// automatically.
     pub async fn in_memory() -> Result<Self> {

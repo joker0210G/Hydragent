@@ -11,6 +11,7 @@ use hydragent_model::router::ModelRouter;
 use hydragent_model::openrouter::ChatMessage;
 use hydragent_skills::library::SkillLibrary;
 use tracing::{info, error, warn, debug};
+use crate::paths;
 
 use std::sync::Mutex;
 use std::path::PathBuf;
@@ -176,11 +177,28 @@ static CONSECUTIVE_FAILURES: AtomicUsize = AtomicUsize::new(0);
 /// in flight at once) — the prior sequential loop took ~30s × N pages,
 /// which blew D2 (test)'s 30s budget on a 5-page backlog. The merge
 /// happens at the end of the cycle, so the per-page `DreamStats`
+struct ModelRouterLlmClient(Arc<ModelRouter>);
+
+#[async_trait::async_trait]
+impl hydragent_skills::extractor::LlmClient for ModelRouterLlmClient {
+    async fn generate(&self, prompt: &str) -> anyhow::Result<String> {
+        let (tx, _rx) = mpsc::channel::<String>(100);
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: prompt.to_string(),
+        }];
+        let (content, _) = self.0.chat_stream(messages, tx, None).await?;
+        Ok(content)
+    }
+}
+
 /// fields stay accurate.
 pub async fn run_dream_cycle(
     store: Arc<SessionStore>,
     model_router: Arc<ModelRouter>,
     skill_library: Option<Arc<SkillLibrary>>,
+    enable_curator: bool,
+    curator_interval_sec: u64,
 ) -> anyhow::Result<DreamStats> {
     let mut stats = DreamStats::default();
     let pool = store.pool();
@@ -324,15 +342,21 @@ pub async fn run_dream_cycle(
     // Trigger the Python graph generator to rebuild the D3 graph at ~/.hydragent/data/graph.html
     let python_bin = if cfg!(target_os = "windows") {
         let local_venv = std::path::Path::new(".venv").join("Scripts").join("python.exe");
+        let installed_venv = paths::hydragent_home().join(".venv").join("Scripts").join("python.exe");
         if local_venv.exists() {
             local_venv.to_string_lossy().to_string()
+        } else if installed_venv.exists() {
+            installed_venv.to_string_lossy().to_string()
         } else {
             "python".to_string()
         }
     } else {
         let local_venv = std::path::Path::new(".venv").join("bin").join("python");
+        let installed_venv = paths::hydragent_home().join(".venv").join("bin").join("python");
         if local_venv.exists() {
             local_venv.to_string_lossy().to_string()
+        } else if installed_venv.exists() {
+            installed_venv.to_string_lossy().to_string()
         } else {
             "python3".to_string()
         }
@@ -361,6 +385,51 @@ pub async fn run_dream_cycle(
         }
         Err(e) => {
             error!("Failed to spawn graph generation process: {}", e);
+        }
+    }
+
+    // Run curation under the hood of the dream phase if enabled
+    if enable_curator {
+        if let Some(ref skill_lib) = skill_library {
+            let policy = hydragent_skills::curator::CuratorPolicy::load().unwrap_or_default();
+            let curator = hydragent_skills::curator::SevenDayCurator::new(skill_lib.clone(), policy);
+            
+            let state = curator.load_state();
+            let now = chrono::Utc::now();
+            let should_run = match state.last_run_at {
+                None => true,
+                Some(last) => {
+                    let diff = now.signed_duration_since(last);
+                    diff.num_seconds() >= curator_interval_sec as i64
+                }
+            };
+
+            if should_run {
+                info!("Curator run starting under the hood of dreaming...");
+                let start_time = chrono::Utc::now();
+                let llm_client = ModelRouterLlmClient(model_router.clone());
+                let run_with_llm = curator.policy.consolidation_enabled;
+                
+                match curator.run(if run_with_llm { Some(&llm_client) } else { None }).await {
+                    Ok(decs) => {
+                        let mut updated_state = curator.load_state();
+                        updated_state.last_run_at = Some(start_time);
+                        updated_state.run_count += 1;
+                        updated_state.last_run_duration_seconds = Some(
+                            chrono::Utc::now().signed_duration_since(start_time).num_milliseconds() as f64 / 1000.0
+                        );
+                        updated_state.last_run_summary = Some(format!(
+                            "Ran curator automatically during dream cycle, processed {} changes",
+                            decs.len()
+                        ));
+                        let _ = curator.save_state(&updated_state);
+                        info!(count = decs.len(), "Curator pass under the hood of dreaming completed successfully");
+                    }
+                    Err(e) => {
+                        error!("Curator pass error under the hood of dreaming: {}", e);
+                    }
+                }
+            }
         }
     }
 

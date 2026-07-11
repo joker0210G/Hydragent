@@ -823,6 +823,79 @@ function Pause-IfEphemeral {
     }
 }
 
+function Setup-PythonVenv {
+    Write-Step 4.5 "Setting up Python virtual environment"
+
+    if (-not (Test-Command python)) {
+        Write-WarningMessage "Python interpreter ('python') not found on PATH."
+        Write-WarningMessage "Please install Python 3.11+ manually to use graphing and adapters."
+        return
+    }
+
+    # Verify python version
+    $pyVersion = (& python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null)
+    if ($null -eq $pyVersion) {
+        Write-WarningMessage "Failed to query Python version. Skipping virtual environment setup."
+        return
+    }
+
+    try {
+        $parts = $pyVersion.Trim().Split('.')
+        $major = [int]$parts[0]
+        $minor = [int]$parts[1]
+        if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 11)) {
+            Write-WarningMessage "Found Python $pyVersion. Hydragent requires Python 3.11+."
+            Write-WarningMessage "Skipping virtual environment setup. Please upgrade Python."
+            return
+        }
+    } catch {
+        Write-WarningMessage "Failed to parse Python version '$pyVersion'. Skipping virtual environment setup."
+        return
+    }
+
+    Write-Info "Found Python $pyVersion"
+
+    $venvDir = Join-Path $InstallRoot '.venv'
+    $reqPath = Join-Path $SourceDir 'requirements.txt'
+    if (-not (Test-Path $reqPath)) {
+        $reqPath = Join-Path (Get-Item .).FullName 'requirements.txt'
+    }
+
+    if (-not (Test-Path $reqPath)) {
+        Write-WarningMessage "requirements.txt not found. Cannot install Python dependencies."
+        return
+    }
+
+    if (-not (Test-Path $venvDir)) {
+        Write-Info "Creating virtual environment at $venvDir..."
+        & python -m venv $venvDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-WarningMessage "Failed to create virtual environment."
+            return
+        }
+    } else {
+        Write-Info "Virtual environment already exists at $venvDir"
+    }
+
+    $pipExe = Join-Path $venvDir 'Scripts\pip.exe'
+    if (-not (Test-Path $pipExe)) {
+        $pipExe = Join-Path $venvDir 'Scripts\pip'
+    }
+
+    if (Test-Path $pipExe) {
+        Write-Info "Installing dependencies from $reqPath..."
+        & $pipExe install --upgrade pip | Out-Null
+        & $pipExe install -r $reqPath
+        if ($LASTEXITCODE -eq 0) {
+            Write-OK "Python virtual environment configured successfully."
+        } else {
+            Write-WarningMessage "Failed to install some Python dependencies. You may need to run pip install manually."
+        }
+    } else {
+        Write-WarningMessage "pip not found in virtual environment."
+    }
+}
+
 # ===========================================================================
 # 3. Main flow
 # ===========================================================================
@@ -878,6 +951,7 @@ if ($alreadyInstalled -and -not $Force) {
     Install-Launcher
     Install-SelfCopy
     Install-PathEntry
+    Setup-PythonVenv
     if (-not $SkipOnboard) { Invoke-Onboarding }
     Write-NextSteps
     Pause-IfEphemeral
@@ -899,6 +973,7 @@ if ($Source) {
 Install-Launcher
 Install-SelfCopy
 Install-PathEntry
+Setup-PythonVenv
 
 Write-OK "Hydragent installed to $BinDir"
 Write-OK "Data directory: $DataDir"
@@ -909,3 +984,4 @@ Show-UpdateStatus
 if (-not $SkipOnboard) { Invoke-Onboarding }
 Write-NextSteps
 Pause-IfEphemeral
+

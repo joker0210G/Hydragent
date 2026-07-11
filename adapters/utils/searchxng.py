@@ -37,27 +37,106 @@ import argparse
 import http.server
 import json
 import logging
+import re
 import socketserver
 import sys
 import time
+import urllib.request
+from html import unescape
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlencode, urlparse
 
 try:
     from ddgs import DDGS
-except ImportError as e:
-    print(
-        f"FATAL: ddgs is not installed. Run:\n"
-        f"    adapters\\.venv\\Scripts\\python.exe -m pip install ddgs\n"
-        f"Original error: {e}",
-        file=sys.stderr,
-    )
-    sys.exit(2)
+except ImportError:
+    DDGS = None
 
 
 # ---------------------------------------------------------------------------
 # SearXNG-shape transformer
 # ---------------------------------------------------------------------------
+
+def strip_html_tags(value: str) -> str:
+    return re.sub(r"<[^>]+>", " ", value)
+
+
+def html_to_text(value: str) -> str:
+    text = strip_html_tags(value)
+    text = re.sub(r"\s+", " ", text)
+    return unescape(text).strip()
+
+
+def decode_redirect_url(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+    if parsed.scheme in {"http", "https"}:
+        return url
+    if parsed.query:
+        params = parse_qs(parsed.query)
+        if "uddg" in params:
+            return params["uddg"][0]
+    return url
+
+
+def extract_results_from_duckduckgo_html(html: str, max_results: int = 10) -> list[dict[str, Any]]:
+    """Parse the HTML result page from DuckDuckGo into a lightweight result list."""
+    title_pattern = re.compile(
+        r'<a[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    snippet_pattern = re.compile(
+        r'<a[^>]*class=["\']result__snippet["\'][^>]*>(.*?)</a>|<td[^>]*class=["\']result-snippet["\'][^>]*>(.*?)</td>',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    titles = [
+        (match.group(1), html_to_text(match.group(2)))
+        for match in title_pattern.finditer(html)
+        if "result__a" in match.group(0) or "result-link" in match.group(0) or "result__snippet" not in match.group(0)
+    ]
+    snippets = [
+        html_to_text(match.group(1) or match.group(2))
+        for match in snippet_pattern.finditer(html)
+    ]
+
+    results: list[dict[str, Any]] = []
+    for index, (raw_url, title) in enumerate(titles[:max_results]):
+        url = decode_redirect_url(raw_url.strip())
+        snippet = snippets[index] if index < len(snippets) else ""
+        if title or url:
+            results.append({
+                "title": title,
+                "url": url,
+                "content": snippet,
+                "engine": "duckduckgo",
+                "engines": ["duckduckgo"],
+                "score": 1.0,
+                "category": "general",
+            })
+    return results
+
+
+def fetch_duckduckgo_html(query: str, language: str = "en", max_results: int = 10) -> list[dict[str, Any]]:
+    """Fetch DuckDuckGo HTML results using urllib when the ddgs library is unavailable or empty."""
+    form_data = urlencode({"q": query, "kl": language})
+    req = urllib.request.Request(
+        "https://html.duckduckgo.com/html/",
+        data=form_data.encode("utf-8"),
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as response:
+        html = response.read().decode("utf-8", errors="ignore")
+    return extract_results_from_duckduckgo_html(html, max_results=max_results)
+
 
 def ddgs_to_searxng(query: str, raw_results: list[dict[str, Any]],
                     language: str = "en") -> dict[str, Any]:
@@ -185,10 +264,15 @@ class SearchXNGHandler(http.server.BaseHTTPRequestHandler):
                         backend="auto",
                     )
                 )
+            if not raw:
+                raise RuntimeError("ddgs returned no results")
         except Exception as e:  # noqa: BLE001
-            logging.exception("ddgs search failed")
-            self._write_error(502, f"ddgs backend error: {e!s}")
-            return
+            logging.exception("ddgs search failed, trying fallback HTML scrape")
+            try:
+                raw = fetch_duckduckgo_html(query, language=language, max_results=max_results)
+            except (HTTPError, URLError, TimeoutError, ValueError) as scrape_error:
+                self._write_error(502, f"ddgs backend error: {e!s}; fallback error: {scrape_error!s}")
+                return
 
         payload = ddgs_to_searxng(query, raw, language=language)
         payload["search"] = {

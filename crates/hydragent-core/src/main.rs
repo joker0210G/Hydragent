@@ -367,6 +367,74 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// 🤖 Inspect and manage model providers
+    #[command(
+        long_about = "List configured providers and inspect their settings.\n\
+                      \n\
+                      Examples:\n\
+                      \x20 hydragent provider list        ← list all providers"
+    )]
+    Provider {
+        #[command(subcommand)]
+        action: ProviderAction,
+    },
+    /// 🧠 Inspect and manage models
+    #[command(
+        long_about = "List available models and configure role defaults.\n\
+                      \n\
+                      Examples:\n\
+                      \x20 hydragent model list                          ← list all models\n\
+                      \x20 hydragent model list --provider openrouter    ← filter by provider\n\
+                      \x20 hydragent model set --role coding openrouter/deepseek-deepseek-coder  ← set role default"
+    )]
+    Model {
+        #[command(subcommand)]
+        action: ModelAction,
+    },
+    /// 🎓 Manage the self-improving skill curator
+    Curator {
+        #[command(subcommand)]
+        action: CuratorAction,
+    },
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
+enum CuratorAction {
+    /// Show current curator status, tier counts, and last run metadata
+    Status,
+    /// Trigger on-demand curator pass to promote, demote, or archive skills
+    Run {
+        /// Preview changes without applying them to the SQLite library
+        #[arg(long)]
+        dry_run: bool,
+        /// Opt-in to LLM consolidation review (merging similar skills)
+        #[arg(long)]
+        consolidate: bool,
+    },
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
+enum ProviderAction {
+    /// List all configured providers
+    List,
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
+enum ModelAction {
+    /// List available models
+    List {
+        /// Filter by provider id
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Set the default model for a role
+    Set {
+        /// Role to set (e.g. chat, planning, coding, research, utility)
+        #[arg(long)]
+        role: String,
+        /// Model reference in the form provider/model_id
+        model_ref: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]
@@ -737,6 +805,9 @@ fn debug_dump_env_and_config(cfg: &config::AppConfig) {
     eprintln!("    log_format      : {}", cfg.log_format);
     eprintln!("    log_level       : {}  (FORCED to debug by --debug)", cfg.log_level);
     eprintln!("    data_dir        : {}", cfg.data_dir);
+    eprintln!("    model_registry  : {}", cfg.effective_model_providers_path());
+    eprintln!("    active_provider : {}", cfg.effective_active_provider());
+    eprintln!("    active_model    : {}", cfg.effective_active_model());
     eprintln!("    max_react_steps : {}", cfg.max_react_steps);
     eprintln!("    bus_port        : {}", cfg.bus_port);
     eprintln!("    enable_dreaming : {}", cfg.enable_dreaming);
@@ -869,6 +940,32 @@ fn cmd_config(action: &ConfigAction) {
 
     match action {
         ConfigAction::Set { key, value } => {
+            let is_key_field = key.ends_with("_KEY") || key == "BRAIN_KEY";
+            if is_key_field && value.is_empty() {
+                // If it already exists and is non-empty, do not overwrite it with empty
+                let mut exists_non_empty = false;
+                let target_prefix = format!("{key}=");
+                for line in contents.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with(&target_prefix) {
+                        let val = &trimmed[target_prefix.len()..];
+                        let val_clean = if (val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')) {
+                            &val[1..val.len()-1]
+                        } else {
+                            val
+                        };
+                        if !val_clean.is_empty() {
+                            exists_non_empty = true;
+                        }
+                        break;
+                    }
+                }
+                if exists_non_empty {
+                    println!("✓ Kept existing non-empty config for: {key}");
+                    return;
+                }
+            }
+
             let mut lines: Vec<String> = contents.lines().map(|s| s.to_string()).collect();
             let mut found = false;
             let target_prefix = format!("{key}=");
@@ -961,6 +1058,68 @@ fn cmd_config(action: &ConfigAction) {
     }
 }
 
+/// Batch update multiple environment variables in a single I/O pass.
+/// Protects API keys from being overwritten by empty values if they already exist.
+pub fn patch_env_keys_batch(pairs: &[(&str, &str)]) {
+    let p = paths::env_file();
+    let contents = if p.exists() {
+        std::fs::read_to_string(&p).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let mut lines: Vec<String> = contents.lines().map(|s| s.to_string()).collect();
+
+    for (key, value) in pairs {
+        let is_key_field = key.ends_with("_KEY") || *key == "BRAIN_KEY";
+        if is_key_field && value.is_empty() {
+            // Check if key already exists and has value
+            let mut exists_non_empty = false;
+            let target_prefix = format!("{key}=");
+            for line in &lines {
+                let trimmed = line.trim();
+                if trimmed.starts_with(&target_prefix) {
+                    let val = &trimmed[target_prefix.len()..];
+                    let val_clean = if (val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')) {
+                        &val[1..val.len()-1]
+                    } else {
+                        val
+                    };
+                    if !val_clean.is_empty() {
+                        exists_non_empty = true;
+                    }
+                    break;
+                }
+            }
+            if exists_non_empty {
+                continue; // Skip this key, preserve the existing non-empty value
+            }
+        }
+
+        let target_prefix = format!("{key}=");
+        let formatted_val = if value.contains(' ') || value.contains('"') || value.contains('\'') {
+            format!("\"{}\"", value.replace('"', "\\\""))
+        } else {
+            value.to_string()
+        };
+        let mut found = false;
+        for line in lines.iter_mut() {
+            let trimmed = line.trim();
+            if trimmed.starts_with(&target_prefix) {
+                *line = format!("{key}={formatted_val}");
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            lines.push(format!("{key}={formatted_val}"));
+        }
+    }
+
+    let new_contents = lines.join("\n") + "\n";
+    let _ = paths::write_env_file(&new_contents);
+}
+
+
 fn cmd_ps() {
     let script = ps_script();
     #[cfg(target_os = "windows")]
@@ -1021,6 +1180,152 @@ fn cmd_stop(pid: Option<u32>) {
                 return;
             }
             stop_pids(&pids);
+        }
+    }
+}
+
+/// Load the provider registry using the same precedence as the live brain:
+/// 1. `MODEL_PROVIDERS_PATH` / `model_providers_path` from config
+/// 2. `<hydragent_home>/config/model_providers.yaml`
+/// 3. `config/model_providers.yaml` in the current directory (dev checkout)
+/// 4. Built-in registry
+pub(crate) fn load_provider_registry(app_config: &config::AppConfig) -> hydragent_model::ProviderRegistry {
+    if !app_config.model_providers_path.trim().is_empty() {
+        match hydragent_model::ProviderRegistry::load_from_yaml(&app_config.model_providers_path) {
+            Ok(r) => return r,
+            Err(e) => {
+                eprintln!(
+                    "⚠️ Failed to load provider registry from {}: {}. Falling back to the default registry.",
+                    app_config.model_providers_path, e
+                );
+            }
+        }
+    }
+
+    let default_registry_path = app_config.effective_model_providers_path();
+    if std::path::Path::new(&default_registry_path).exists() {
+        match hydragent_model::ProviderRegistry::load_from_yaml(&default_registry_path) {
+            Ok(r) => return r,
+            Err(e) => {
+                eprintln!(
+                    "⚠️ Failed to load provider registry from {}: {}. Falling back to repo-local config and then built-in defaults.",
+                    default_registry_path, e
+                );
+            }
+        }
+    }
+
+    if std::path::Path::new("config/model_providers.yaml").exists() {
+        match hydragent_model::ProviderRegistry::load_from_yaml("config/model_providers.yaml") {
+            Ok(r) => return r,
+            Err(e) => {
+                eprintln!(
+                    "⚠️ Failed to load config/model_providers.yaml: {}. Falling back to built-in.",
+                    e
+                );
+            }
+        }
+    }
+    hydragent_model::ProviderRegistry::builtin_default()
+}
+
+/// Read `DEFAULT_MODEL_<ROLE>` environment variables and apply them as
+/// runtime role overrides to the registry.
+pub(crate) fn apply_role_overrides(registry: &mut hydragent_model::ProviderRegistry) {
+    for (key, value) in std::env::vars() {
+        let Some(role) = key.strip_prefix("DEFAULT_MODEL_") else {
+            continue;
+        };
+        let role = role.to_lowercase();
+        registry.set_role_default(role, value);
+    }
+}
+
+/// Handle `hydragent provider ...` subcommands.
+fn cmd_provider(action: &ProviderAction, app_config: &config::AppConfig) {
+    let mut registry = load_provider_registry(app_config);
+    apply_role_overrides(&mut registry);
+
+    match action {
+        ProviderAction::List => {
+            println!("------------------------------------------------------------------------");
+            println!("  🤖 Providers");
+            println!("------------------------------------------------------------------------");
+            let providers = registry.providers();
+            if providers.is_empty() {
+                println!("  No providers configured.");
+                return;
+            }
+            for p in providers {
+                let auth = match p.auth_mode {
+                    hydragent_model::AuthMode::None => "no auth",
+                    hydragent_model::AuthMode::ApiKey => "api key",
+                    hydragent_model::AuthMode::Custom => "custom",
+                };
+                let kind = format!("{:?}", p.kind).to_lowercase();
+                let mut caps = Vec::new();
+                if p.supports_tools { caps.push("tools"); }
+                if p.supports_reasoning { caps.push("reasoning"); }
+                if p.supports_vision { caps.push("vision"); }
+                if p.supports_custom_models { caps.push("custom-models"); }
+                println!(
+                    "  {:<14} {:<24} kind={:<12} auth={:<8} caps={}",
+                    p.id,
+                    p.display_name,
+                    kind,
+                    auth,
+                    if caps.is_empty() { "-".to_string() } else { caps.join(",") }
+                );
+            }
+        }
+    }
+}
+
+/// Handle `hydragent model ...` subcommands.
+fn cmd_model(action: &ModelAction, app_config: &config::AppConfig) {
+    let mut registry = load_provider_registry(app_config);
+    apply_role_overrides(&mut registry);
+
+    match action {
+        ModelAction::List { provider } => {
+            println!("------------------------------------------------------------------------");
+            println!("  🧠 Models");
+            println!("------------------------------------------------------------------------");
+            let models = registry.models(provider.as_deref());
+            if models.is_empty() {
+                println!("  No models found.");
+                return;
+            }
+            for m in models {
+                let tier = m
+                    .cost_tier
+                    .map(|t| t.as_str().to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let mut caps = Vec::new();
+                if m.tool_calling { caps.push("tools"); }
+                if m.vision { caps.push("vision"); }
+                if m.reasoning { caps.push("reasoning"); }
+                if m.streaming { caps.push("streaming"); }
+                println!(
+                    "  {:<28} {:<28} api={:<36} tier={:<8} caps={}",
+                    format!("{}/{}", m.provider_id, m.id),
+                    m.name,
+                    m.api_model_id,
+                    tier,
+                    if caps.is_empty() { "-".to_string() } else { caps.join(",") }
+                );
+            }
+        }
+        ModelAction::Set { role, model_ref } => {
+            // Validate the model reference against the registry.
+            if registry.resolve(model_ref, None).is_none() {
+                eprintln!("❌ Unknown model reference: {}", model_ref);
+                std::process::exit(1);
+            }
+
+            let env_key = format!("DEFAULT_MODEL_{}", role.to_uppercase());
+            patch_env_keys_batch(&[(env_key.as_str(), model_ref.as_str())]);
+            println!("✓ Set default model for role '{}' to {}", role, model_ref);
         }
     }
 }
@@ -1175,6 +1480,9 @@ fn cmd_status(app_config: &config::AppConfig) {
 
     let brain = app_config.effective_brain_model();
     let brain_base = app_config.effective_brain_base();
+    let registry_path = app_config.effective_model_providers_path();
+    let active_provider = app_config.effective_active_provider();
+    let active_model = app_config.effective_active_model();
 
     let dreaming = if app_config.enable_dreaming {
         format!(
@@ -1203,6 +1511,8 @@ fn cmd_status(app_config: &config::AppConfig) {
     println!("  Bus          : 127.0.0.1:{bus_port}");
     println!("  Brain        : {brain}");
     println!("                 via {brain_base}");
+    println!("  Registry     : {registry_path}");
+    println!("  Active model : {active_provider}/{active_model}");
     println!("  Dream worker : {dreaming}");
     println!("  Storage      : {db_size_human}  ({db_path})");
     println!("------------------------------------------------------------------------");
@@ -1387,6 +1697,14 @@ async fn main() {
         }
         Some(Commands::Uninstall { yes }) => {
             uninstall::run(*yes);
+            std::process::exit(0);
+        }
+        Some(Commands::Provider { action }) => {
+            cmd_provider(action, &app_config);
+            std::process::exit(0);
+        }
+        Some(Commands::Model { action }) => {
+            cmd_model(action, &app_config);
             std::process::exit(0);
         }
         // Handle `status` BEFORE the config-load failure path above is
@@ -2322,7 +2640,12 @@ async fn main() {
 
     // ── The "brain" (single live provider) ────────────────────────────
     //
-    // The agent has one brain, swappable via 4 env vars:
+    // The agent has one brain. It is selected using the registry-backed
+    // `ACTIVE_PROVIDER` / `ACTIVE_MODEL` settings when present, and falls
+    // back to the legacy `BRAIN_*` environment variables for backward
+    // compatibility.
+    //
+    // Legacy vars:
     //   BRAIN_BASE     = https://api.together.xyz/v1   (or openai, openrouter, ollama, ...)
     //   BRAIN_KEY      = sk-...                       (empty for local providers)
     //   BRAIN_MODEL    = meta-llama/Llama-3-70b-chat-hf
@@ -2333,7 +2656,7 @@ async fn main() {
     // and BRAIN_FALLBACKS falls back to FALLBACK_MODELS.
     let brain_base = app_config.effective_brain_base();
     let brain_key = app_config.effective_brain_key();
-    let brain_model = app_config.effective_brain_model();
+    let _brain_model = app_config.effective_brain_model();
     let brain_fallbacks = app_config.effective_brain_fallbacks();
 
     if brain_base.is_empty() {
@@ -2354,50 +2677,56 @@ async fn main() {
         );
     }
 
+    // Load the provider/model registry and apply any runtime role overrides
+    // from `DEFAULT_MODEL_<ROLE>` environment variables.
+    let mut registry = load_provider_registry(&app_config);
+    apply_role_overrides(&mut registry);
+
+    let active_provider = app_config.effective_active_provider();
+    let active_model = app_config.effective_active_model();
+
+    // Try to resolve the active provider/model through the registry. If the
+    // user is still on legacy `BRAIN_*` vars pointing at a custom endpoint
+    // that is not in the registry, resolution will fail and we fall back to
+    // the raw model id.
+    let resolved = registry.resolve(
+        &format!("{}/{}", active_provider, active_model),
+        Some("chat"),
+    );
+    let wire_model = resolved
+        .as_ref()
+        .map(|r| r.api_model_id.as_str())
+        .unwrap_or(active_model.as_str());
+
     let provider_type = app_config.effective_brain_provider();
     info!(
         base = brain_base.as_str(),
-        provider = provider_type.as_str(),
-        primary = brain_model.as_str(),
+        provider = active_provider.as_str(),
+        primary = wire_model,
         fallbacks = ?brain_fallbacks,
         "🧠 Building live brain"
     );
 
-    let brain_client: Arc<dyn hydragent_model::ModelProvider> = if provider_type == "ollama" {
-        let timeout_secs = std::env::var("OLLAMA_API_TIMEOUT_SEC")
+    let timeout_secs = if provider_type == "ollama" {
+        std::env::var("OLLAMA_API_TIMEOUT_SEC")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(1800); // 30 minutes default for extremely slow CPU prompt evaluation
-
-        let brain_config = hydragent_model::ollama::OllamaProviderConfig {
-            base_url: brain_base.clone(),
-            default_model: brain_model.clone(),
-            timeout: std::time::Duration::from_secs(timeout_secs),
-            default_num_ctx: std::env::var("OLLAMA_NUM_CTX")
-                .ok()
-                .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(8192),
-            keep_alive: std::env::var("OLLAMA_KEEP_ALIVE").ok().filter(|s| !s.trim().is_empty()),
-            num_thread: std::env::var("OLLAMA_NUM_THREAD").ok().and_then(|s| s.parse::<u32>().ok()),
-        };
-        Arc::new(hydragent_model::ollama::OllamaClient::new(brain_config))
-    } else if provider_type == "openrouter" {
-        Arc::new(hydragent_model::openrouter::OpenRouterClient::new(vec![brain_key]))
+            .unwrap_or(1800) // 30 minutes default for extremely slow CPU prompt evaluation
     } else {
-        let brain_config = hydragent_model::custom_openai::CustomProviderConfig {
-            base_url: brain_base.clone(),
-            api_key: brain_key,
-            default_model: brain_model.clone(),
-            provider_label: "brain".to_string(),
-            timeout: std::time::Duration::from_secs(180),
-            max_retries: 3,
-        };
-        Arc::new(hydragent_model::custom_openai::CustomOpenAIClient::new(brain_config))
+        180
     };
+
+    let brain_client: Arc<dyn hydragent_model::ModelProvider> = registry.build_provider(
+        active_provider.as_str(),
+        &brain_base,
+        &brain_key,
+        wire_model,
+        timeout_secs,
+    );
 
     let model_router = Arc::new(hydragent_model::router::ModelRouter::new(
         brain_client,
-        brain_model,
+        wire_model.to_string(),
         brain_fallbacks,
     ));
 
@@ -2526,6 +2855,116 @@ async fn main() {
         return;
     }
 
+    // ── `curator` subcommand ─────────────────────────────────────────────
+    if let Some(Commands::Curator { action }) = &args.command {
+        let skill_lib_path = std::path::PathBuf::from(&app_config.data_dir).join("skill_library.sqlite");
+        let skill_library = match hydragent_skills::library::SkillLibrary::open(&skill_lib_path).await {
+            Ok(l) => Arc::new(l),
+            Err(e) => {
+                eprintln!("Failed to open skill library: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        let policy = match hydragent_skills::curator::CuratorPolicy::load() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to load curator policy: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        let curator = hydragent_skills::curator::SevenDayCurator::new(skill_library.clone(), policy);
+
+        match action {
+            CuratorAction::Status => {
+                let state = curator.load_state();
+                let enabled = app_config.enable_curator;
+                let last_run = state.last_run_at;
+                let summary = state.last_run_summary.unwrap_or_else(|| "(none)".to_string());
+                let runs = state.run_count;
+
+                println!("------------------------------------------------------------------------");
+                println!("  🎓 Hydragent Skill Curator — current status");
+                println!("------------------------------------------------------------------------");
+                println!("  enabled       : {}", if enabled { "yes ✓" } else { "no ✗" });
+                println!("  runs          : {}", runs);
+                println!(
+                    "  last run      : {}",
+                    last_run
+                        .map(|dt| dt.to_rfc3339())
+                        .unwrap_or_else(|| "never".to_string())
+                );
+                println!("  last summary  : {}", summary);
+                println!("  interval      : {}s", app_config.curator_interval_sec);
+                println!("  stale after   : {} days idle", curator.policy.archive_after_days);
+                println!("  consolidate   : {}", if curator.policy.consolidation_enabled { "on ✓" } else { "off ✗" });
+
+                let skills = skill_library.list_skills(hydragent_skills::library::SkillFilter::default()).await.unwrap_or_default();
+                let mut counts = std::collections::HashMap::new();
+                for s in &skills {
+                    *counts.entry(s.tier).or_insert(0) += 1;
+                }
+                println!("\n  skill counts by tier:");
+                for tier in &[
+                    hydragent_types::SkillTier::Candidate,
+                    hydragent_types::SkillTier::Active,
+                    hydragent_types::SkillTier::Inactive,
+                    hydragent_types::SkillTier::Archived,
+                ] {
+                    println!("    {:?}: {}", tier, counts.get(tier).unwrap_or(&0));
+                }
+                println!("------------------------------------------------------------------------");
+            }
+            CuratorAction::Run { dry_run, consolidate } => {
+                println!("Running Skill Curator (dry_run: {}, consolidate: {})...", dry_run, consolidate);
+                
+                struct ModelRouterLlmClient(Arc<hydragent_model::router::ModelRouter>);
+
+                #[async_trait::async_trait]
+                impl hydragent_skills::extractor::LlmClient for ModelRouterLlmClient {
+                    async fn generate(&self, prompt: &str) -> anyhow::Result<String> {
+                        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(100);
+                        let messages = vec![hydragent_model::openrouter::ChatMessage {
+                            role: "user".into(),
+                            content: prompt.to_string(),
+                        }];
+                        let (content, _) = self.0.chat_stream(messages, tx, None).await?;
+                        Ok(content)
+                    }
+                }
+
+                let llm_client = ModelRouterLlmClient(model_router.clone());
+
+                let start_time = chrono::Utc::now();
+                let decisions = if *dry_run {
+                    curator.decide_all().await.unwrap_or_default()
+                } else {
+                    let mut policy = curator.policy.clone();
+                    policy.consolidation_enabled = *consolidate;
+                    let run_curator = hydragent_skills::curator::SevenDayCurator::new(skill_library.clone(), policy).with_clock(curator.clock.clone());
+                    
+                    let decs = run_curator.run(if *consolidate { Some(&llm_client) } else { None }).await.unwrap_or_default();
+                    
+                    // Persist state
+                    let mut state = curator.load_state();
+                    state.last_run_at = Some(start_time);
+                    state.run_count += 1;
+                    state.last_run_duration_seconds = Some(chrono::Utc::now().signed_duration_since(start_time).num_milliseconds() as f64 / 1000.0);
+                    state.last_run_summary = Some(format!("Ran curator manually, processed {} changes", decs.len()));
+                    let _ = curator.save_state(&state);
+                    decs
+                };
+
+                println!("Applied decisions (total: {}):", decisions.len());
+                for d in decisions {
+                    println!("  - Skill '{}' ({:?} -> {:?}) Reason: {}", d.skill_name, d.from, d.to, d.reason);
+                }
+            }
+        }
+        return;
+    }
+
     if args.list_pages {
         println!("------------------------------------------------------------------------");
         println!("  🐉 Hydragent Page History");
@@ -2606,6 +3045,8 @@ async fn main() {
                 }
             }
             Commands::Embed { .. }
+            | Commands::Provider { .. }
+            | Commands::Model { .. }
             | Commands::Vault { .. }
             | Commands::TestBrain { .. }
             | Commands::Audit { .. }
@@ -2614,12 +3055,13 @@ async fn main() {
             | Commands::Doctor
             | Commands::Dream { .. }
             | Commands::Examples { .. }
+            | Commands::Curator { .. }
             | Commands::Ps
             | Commands::Stop { .. }
             | Commands::Status
             | Commands::Update
             | Commands::Uninstall { .. } => unreachable!(
-                "Onboard/Doctor/Examples/Dream/Ps/Stop/Status/Update/Uninstall are early-returned before this match; Chat/Serve fall through"
+                "Onboard/Doctor/Examples/Dream/Ps/Stop/Status/Update/Uninstall/Curator are early-returned before this match; Chat/Serve fall through"
             ),
         }
         if !dispatch_chat {
@@ -2657,6 +3099,8 @@ async fn main() {
         let model_router_clone = model_router.clone();
         let interval_secs = app_config.dreaming_interval_sec;
         let skill_library_for_worker = skill_library.clone();
+        let enable_curator = app_config.enable_curator;
+        let curator_interval_sec = app_config.curator_interval_sec;
 
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
@@ -2668,6 +3112,8 @@ async fn main() {
                     store_clone.clone(),
                     model_router_clone.clone(),
                     skill_library_for_worker.clone(),
+                    enable_curator,
+                    curator_interval_sec,
                 ).await;
                 match cycle {
                     Ok(stats) => {
@@ -3191,15 +3637,21 @@ async fn main() {
     // Spawn the Web Control UI adapter
     let python_bin = if cfg!(target_os = "windows") {
         let local_venv = std::path::Path::new(".venv").join("Scripts").join("python.exe");
+        let installed_venv = paths::hydragent_home().join(".venv").join("Scripts").join("python.exe");
         if local_venv.exists() {
             local_venv.to_string_lossy().to_string()
+        } else if installed_venv.exists() {
+            installed_venv.to_string_lossy().to_string()
         } else {
             "python".to_string()
         }
     } else {
         let local_venv = std::path::Path::new(".venv").join("bin").join("python");
+        let installed_venv = paths::hydragent_home().join(".venv").join("bin").join("python");
         if local_venv.exists() {
             local_venv.to_string_lossy().to_string()
+        } else if installed_venv.exists() {
+            installed_venv.to_string_lossy().to_string()
         } else {
             "python3".to_string()
         }

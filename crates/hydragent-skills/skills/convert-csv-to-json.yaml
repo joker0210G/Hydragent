@@ -1,0 +1,22 @@
+id: cc85bb2c-e4d9-4792-a0da-e17b946b00f2
+name: convert-csv-to-json
+version: 1
+description: Convert CSV data to JSON records
+tier: candidate
+capability_tags:
+- csv
+- data
+params: []
+prompt_template: |-
+  Convert this CSV to JSON:
+  ```
+  {{csv}}
+  ```
+required_tools:
+- echo
+success_examples: []
+author: builtin
+created_at: 1783530701017
+last_updated: 1783530701017
+success_rate: 0.0
+execution_count: 0

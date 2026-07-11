@@ -38,6 +38,8 @@ pub struct CuratorPolicy {
     pub archive_after_days: u32,
     /// Cosine similarity threshold for deduplicating candidates.
     pub dedup_similarity_threshold: f32,
+    /// Whether LLM-based skill consolidation is enabled.
+    pub consolidation_enabled: bool,
 }
 
 impl Default for CuratorPolicy {
@@ -48,6 +50,7 @@ impl Default for CuratorPolicy {
             demote_rate: 0.5,
             archive_after_days: 30,
             dedup_similarity_threshold: 0.88,
+            consolidation_enabled: true,
         }
     }
 }
@@ -87,12 +90,18 @@ impl CuratorPolicy {
             .and_then(|v| v.as_float())
             .unwrap_or(0.88) as f32;
 
+        let consolidation_enabled = val.get("consolidation")
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
         Ok(Self {
             min_executions,
             promote_rate,
             demote_rate,
             archive_after_days,
             dedup_similarity_threshold,
+            consolidation_enabled,
         })
     }
 }
@@ -105,6 +114,26 @@ pub struct CuratorDecision {
     pub from: SkillTier,
     pub to: SkillTier,
     pub reason: String,
+    pub absorbed_into: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CuratorState {
+    pub last_run_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_run_duration_seconds: Option<f64>,
+    pub last_run_summary: Option<String>,
+    pub run_count: u32,
+}
+
+impl Default for CuratorState {
+    fn default() -> Self {
+        Self {
+            last_run_at: None,
+            last_run_duration_seconds: None,
+            last_run_summary: None,
+            run_count: 0,
+        }
+    }
 }
 
 /// Run over the library, decide, and apply.
@@ -122,6 +151,33 @@ impl SevenDayCurator {
     pub fn new(library: Arc<SkillLibrary>, policy: CuratorPolicy) -> Self {
         let clock: ClockFn = Arc::new(Utc::now);
         Self { policy, library, clock }
+    }
+
+    fn state_path(&self) -> std::path::PathBuf {
+        let db_path = self.library.db_path();
+        if db_path.to_string_lossy() == ":memory:" {
+            std::path::PathBuf::from("curator_state.json")
+        } else {
+            db_path.parent()
+                .map(|p| p.join("curator_state.json"))
+                .unwrap_or_else(|| std::path::PathBuf::from("curator_state.json"))
+        }
+    }
+
+    pub fn load_state(&self) -> CuratorState {
+        let path = self.state_path();
+        if !path.exists() {
+            return CuratorState::default();
+        }
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        serde_json::from_str(&content).unwrap_or_default()
+    }
+
+    pub fn save_state(&self, state: &CuratorState) -> Result<()> {
+        let path = self.state_path();
+        let content = serde_json::to_string_pretty(state)?;
+        std::fs::write(path, content)?;
+        Ok(())
     }
 
     /// Override the clock (for tests).
@@ -163,6 +219,7 @@ impl SevenDayCurator {
                 from: s.tier,
                 to: SkillTier::Archived,
                 reason: format!("no executions in {} days", age.num_days()),
+                absorbed_into: None,
             }));
         }
 
@@ -181,6 +238,7 @@ impl SevenDayCurator {
                             from: s.tier,
                             to: SkillTier::Active,
                             reason: format!("{n} executions in 7d, success rate {:.0}%", r * 100.0),
+                            absorbed_into: None,
                         }));
                     }
                 }
@@ -194,6 +252,7 @@ impl SevenDayCurator {
                             from: s.tier,
                             to: SkillTier::Inactive,
                             reason: format!("7d success rate {:.0}% < {:.0}%", r * 100.0, self.policy.demote_rate * 100.0),
+                            absorbed_into: None,
                         }));
                     }
                 }
@@ -210,6 +269,7 @@ impl SevenDayCurator {
                             from: s.tier,
                             to: SkillTier::Active,
                             reason: format!("recovered: {n} executions in 7d, success rate {:.0}%", r * 100.0),
+                            absorbed_into: None,
                         }));
                     }
                 }
@@ -242,6 +302,21 @@ impl SevenDayCurator {
         s.tier = d.to;
         s.last_updated = (self.clock)().timestamp_millis();
         self.library.update_skill(&s).await?;
+
+        // If this skill was absorbed/consolidated into another skill, update the target's stats
+        if let Some(ref target_id) = d.absorbed_into {
+            if let Some(mut target_skill) = self.library.get_skill(target_id).await? {
+                tracing::info!(
+                    from_skill = %s.name,
+                    into_skill = %target_skill.name,
+                    "Curator: Merging stats of consolidated skill into umbrella"
+                );
+                target_skill.execution_count += s.execution_count;
+                target_skill.success_rate = (target_skill.success_rate + s.success_rate) / 2.0;
+                target_skill.last_updated = (self.clock)().timestamp_millis();
+                self.library.update_skill(&target_skill).await?;
+            }
+        }
         Ok(())
     }
 
@@ -305,16 +380,128 @@ impl SevenDayCurator {
     }
 
     /// Decide and apply in one pass. Returns the applied decisions.
-    pub async fn run(&self) -> Result<Vec<CuratorDecision>> {
+    pub async fn run(&self, llm: Option<&dyn crate::extractor::LlmClient>) -> Result<Vec<CuratorDecision>> {
         // Run deduplication first
         if let Err(e) = self.deduplicate_candidates().await {
             tracing::warn!("Candidate deduplication failed: {e}");
         }
 
-        let decisions = self.decide_all().await?;
+        let mut decisions = self.decide_all().await?;
+
+        // Run LLM consolidation if enabled and client is provided
+        if self.policy.consolidation_enabled {
+            if let Some(llm_client) = llm {
+                match self.consolidate_with_llm(llm_client).await {
+                    Ok(mut llm_decisions) => {
+                        decisions.append(&mut llm_decisions);
+                    }
+                    Err(e) => {
+                        tracing::warn!("LLM-based consolidation failed: {e}");
+                    }
+                }
+            }
+        }
+
         for d in &decisions {
             self.apply(d).await?;
         }
+        Ok(decisions)
+    }
+
+    /// Perform LLM-based skill consolidation by grouping narrow/duplicate skills into umbrella ones.
+    pub async fn consolidate_with_llm(&self, llm: &dyn crate::extractor::LlmClient) -> Result<Vec<CuratorDecision>> {
+        let skills = self.library.list_skills(crate::library::SkillFilter {
+            tier: None, // Check all skills to form umbrella
+            ..Default::default()
+        }).await?;
+
+        if skills.len() < 2 {
+            return Ok(vec![]);
+        }
+
+        let mut skill_list_str = String::new();
+        for (i, s) in skills.iter().enumerate() {
+            skill_list_str.push_str(&format!(
+                "{}. ID: {}, Name: {}, Description: {}, Tier: {:?}\n",
+                i + 1, s.id, s.name, s.description, s.tier
+            ));
+        }
+
+        let prompt = format!(
+            "You are the background skill CURATOR for Hydragent.\n\
+             Your task is to review the active and candidate skills and group narrow, overlapping, or single-session skills into broader class-level umbrella skills.\n\n\
+             List of skills:\n\
+             {}\n\n\
+             Output your recommendation as a JSON object matching this structure EXACTLY (do not include any markdown or text packaging outside the JSON block):\n\
+             {{\n\
+               \"merges\": [\n\
+                 {{\n\
+                   \"from_skill_id\": \"id-of-narrow-skill\",\n\
+                   \"into_skill_id\": \"id-of-broad-umbrella-skill\",\n\
+                   \"reason\": \"reason for merging\"\n\
+                 }}\n\
+               ]\n\
+             }}",
+            skill_list_str
+        );
+
+        let response = llm.generate(&prompt).await?;
+        
+        let json_str = if let Some(start) = response.find('{') {
+            if let Some(end) = response.rfind('}') {
+                &response[start..=end]
+            } else {
+                &response
+            }
+        } else {
+            &response
+        };
+
+        #[derive(serde::Deserialize)]
+        struct MergeEntry {
+            from_skill_id: String,
+            into_skill_id: String,
+            reason: String,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct LlmConsolidationResponse {
+            merges: Vec<MergeEntry>,
+        }
+
+        let parsed: LlmConsolidationResponse = match serde_json::from_str(json_str) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Failed to parse LLM consolidation response JSON: {}. Response: {}", e, response);
+                return Ok(vec![]);
+            }
+        };
+
+        let mut decisions = Vec::new();
+        for merge in parsed.merges {
+            let from_skill = match self.library.get_skill(&merge.from_skill_id).await? {
+                Some(s) => s,
+                None => continue,
+            };
+            let into_skill = match self.library.get_skill(&merge.into_skill_id).await? {
+                Some(s) => s,
+                None => continue,
+            };
+
+            if from_skill.id == into_skill.id {
+                continue;
+            }
+
+            decisions.push(CuratorDecision {
+                skill_id: from_skill.id.clone(),
+                skill_name: from_skill.name.clone(),
+                from: from_skill.tier,
+                to: SkillTier::Archived,
+                reason: format!("LLM Consolidated into '{}': {}", into_skill.name, merge.reason),
+                absorbed_into: Some(into_skill.id.clone()),
+            });
+        }
+
         Ok(decisions)
     }
 }
@@ -366,7 +553,7 @@ mod tests {
         lib.insert_skill(&s).await.unwrap();
         for _ in 0..6 { record(&lib, "s1", true).await; }
         let curator = SevenDayCurator::new(lib.clone(), CuratorPolicy::default());
-        let decisions = curator.run().await.unwrap();
+        let decisions = curator.run(None).await.unwrap();
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].from, SkillTier::Candidate);
         assert_eq!(decisions[0].to, SkillTier::Active);
@@ -382,7 +569,7 @@ mod tests {
         for _ in 0..4 { record(&lib, "s2", true).await; }
         for _ in 0..6 { record(&lib, "s2", false).await; }
         let curator = SevenDayCurator::new(lib.clone(), CuratorPolicy::default());
-        let decisions = curator.run().await.unwrap();
+        let decisions = curator.run(None).await.unwrap();
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].to, SkillTier::Inactive);
     }
@@ -394,7 +581,7 @@ mod tests {
         let s = make_skill("s3", "stale", SkillTier::Active, old_ms);
         lib.insert_skill(&s).await.unwrap();
         let curator = SevenDayCurator::new(lib.clone(), CuratorPolicy::default());
-        let decisions = curator.run().await.unwrap();
+        let decisions = curator.run(None).await.unwrap();
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].to, SkillTier::Archived);
     }
@@ -406,7 +593,7 @@ mod tests {
         lib.insert_skill(&s).await.unwrap();
         for _ in 0..10 { record(&lib, "s4", true).await; }
         let curator = SevenDayCurator::new(lib.clone(), CuratorPolicy::default());
-        let decisions = curator.run().await.unwrap();
+        let decisions = curator.run(None).await.unwrap();
         assert!(decisions.is_empty());
     }
 }

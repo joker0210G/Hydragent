@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use crate::model_trait::ModelProvider;
 use crate::openrouter::{LLMRequest, ChatMessage};
@@ -6,7 +6,7 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 pub struct ModelRouter {
-    provider: Arc<dyn ModelProvider>,
+    provider: RwLock<Arc<dyn ModelProvider>>,
     primary: std::sync::RwLock<String>,
     fallbacks: Vec<String>,
 }
@@ -14,9 +14,16 @@ pub struct ModelRouter {
 impl ModelRouter {
     pub fn new(provider: Arc<dyn ModelProvider>, primary: String, fallbacks: Vec<String>) -> Self {
         Self {
-            provider,
+            provider: RwLock::new(provider),
             primary: std::sync::RwLock::new(primary),
             fallbacks,
+        }
+    }
+
+    /// Update the underlying provider client dynamically at runtime.
+    pub fn set_provider(&self, new_provider: Arc<dyn ModelProvider>) {
+        if let Ok(mut guard) = self.provider.write() {
+            *guard = new_provider;
         }
     }
 
@@ -36,15 +43,35 @@ impl ModelRouter {
     /// "custom-openai", "ollama"). Useful for logging when a "librarian"
     /// role is routed through a different provider than the primary.
     pub fn provider_label(&self) -> &str {
-        self.provider.provider_name()
+        // Since we return &str, we can leak or get the static name.
+        // We'll return the name from the current provider.
+        if let Ok(guard) = self.provider.read() {
+            // We need to return a static string, but provider_name returns &str.
+            // Let's change the trait or return a string, or since we only have static strs, we can return it.
+            // Let's check provider_name signature: fn provider_name(&self) -> &str;
+            // Since it returns a reference tied to &self, we can't easily return it if we drop the guard.
+            // Wait, provider_name returns a static string slice like "openrouter" or "ollama".
+            // So we can return it safely if we map it to a known static string or make it return String.
+            // Actually, the guard holds Arc, so we can't return a reference to the inner object.
+            // But we can match the name and return a static &'static str!
+            match guard.provider_name() {
+                "ollama" => "ollama",
+                "openrouter" => "openrouter",
+                _ => "custom-openai",
+            }
+        } else {
+            "unknown"
+        }
     }
 
     /// Direct access to the underlying `ModelProvider`. Use this when
-    /// you need to bypass the router's primary+fallback chain and
+    /// you need to bypass the router's primary + fallback chain and
     /// call the provider with a fully-formed `LLMRequest` of your
     /// own (e.g. the swarm supervisor's synthesis call).
     pub fn provider(&self) -> Arc<dyn ModelProvider> {
-        self.provider.clone()
+        self.provider.read().map(|g| g.clone()).unwrap_or_else(|_| {
+            panic!("ModelRouter provider lock poisoned");
+        })
     }
 
     /// Stream a chat completion to `token_tx`, trying `primary` first
@@ -72,12 +99,16 @@ impl ModelRouter {
                 messages: messages.clone(),
                 stream: true,
                 max_tokens: None,
+                models: vec![],
+                reasoning_effort: None,
             };
-            let content = self.provider.chat_stream(&request, token_tx).await?;
+            let content = self.provider().chat_stream(&request, token_tx).await?;
             return Ok((content, model.to_string()));
         }
 
         // Primary + fallback path.
+        // Pass the Rust-level fallback list into `models[]` so OpenRouter
+        // can handle server-side failover before we ever see an error.
         let primary = self.primary_model();
         info!("Attempting primary model: {}", primary);
         let mut request = LLMRequest {
@@ -85,9 +116,15 @@ impl ModelRouter {
             messages: messages.clone(),
             stream: true,
             max_tokens: None,
+            // Include primary + all fallbacks — OpenRouter tries them in order
+            models: std::iter::once(primary.clone())
+                .chain(self.fallbacks.iter().cloned())
+                .collect(),
+            reasoning_effort: None,
         };
 
-        match self.provider.chat_stream(&request, token_tx.clone()).await {
+        let provider = self.provider();
+        match provider.chat_stream(&request, token_tx.clone()).await {
             Ok(content) => return Ok((content, primary.clone())),
             Err(e) => {
                 warn!("Primary model {} failed: {}. Initiating fallbacks...", primary, e);
@@ -98,7 +135,7 @@ impl ModelRouter {
         for fallback in &self.fallbacks {
             info!("Attempting fallback model: {}", fallback);
             request.model = fallback.clone();
-            match self.provider.chat_stream(&request, token_tx.clone()).await {
+            match provider.chat_stream(&request, token_tx.clone()).await {
                 Ok(content) => return Ok((content, fallback.clone())),
                 Err(e) => {
                     warn!("Fallback model {} failed: {}", fallback, e);

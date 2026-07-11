@@ -161,6 +161,8 @@ impl Supervisor {
             }],
             max_tokens: Some(self.max_tokens),
             stream: false,
+            models: vec![],
+            reasoning_effort: None,
         };
 
         // We don't need a streaming channel for synthesis — it's a

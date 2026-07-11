@@ -102,6 +102,15 @@ pub struct ModelProfile {
     /// must be primary.
     #[serde(default)]
     pub primary: bool,
+    /// Optional registry model reference in the form `provider_id/model_id`.
+    /// When present, the council resolves the actual `api_model_id` and
+    /// capability metadata from the provider registry.
+    #[serde(default)]
+    pub model_ref: Option<String>,
+    /// Optional capability requirements that the resolved model must satisfy.
+    /// Only used when `model_ref` is present.
+    #[serde(default)]
+    pub capability_requirements: Option<Vec<String>>,
 }
 
 impl ModelProfile {
@@ -180,6 +189,8 @@ mod tests {
             task_tags: vec!["general".into()],
             benchmark: HashMap::new(),
             primary: false,
+            model_ref: None,
+            capability_requirements: None,
         }
     }
 

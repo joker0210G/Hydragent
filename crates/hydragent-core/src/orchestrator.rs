@@ -870,7 +870,7 @@ pub struct DreamRunHandler {
 #[async_trait]
 impl MethodHandler for DreamRunHandler {
     async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
-        match crate::dream::run_dream_cycle(self.store.clone(), self.model_router.clone(), None).await {
+        match crate::dream::run_dream_cycle(self.store.clone(), self.model_router.clone(), None, false, 0).await {
             Ok(stats) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: Some(serde_json::json!({

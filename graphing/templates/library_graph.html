@@ -3,65 +3,125 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hydragent Library Knowledge Graph</title>
+    <meta name="description" content="Hydragent Library Knowledge Graph — visualize your conversation memory as an interactive node graph.">
+    <title>Hydragent Library — Knowledge Graph</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="library_graph.css">
 </head>
 <body>
 
-    <div id="loader">
+    <!-- Loading overlay -->
+    <div id="loader" role="status" aria-live="polite">
         <div class="spinner"></div>
-        <div class="loader-text">Initializing Knowledge Graph...</div>
+        <div class="loader-text">Initializing Knowledge Graph…</div>
     </div>
 
-    <button id="toggle-sidebar" title="Toggle Sidebar" aria-expanded="true" aria-controls="sidebar">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Empty-state overlay (shown if no nodes) -->
+    <div id="empty-state" hidden>
+        <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="1.2">
+            <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
+        </svg>
+        <div class="empty-title">No memories yet</div>
+        <div class="empty-sub">Keep chatting — your Library will grow here.</div>
+    </div>
+
+    <!-- Sidebar toggle -->
+    <button id="toggle-sidebar" title="Toggle sidebar" aria-expanded="true" aria-controls="sidebar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="15 18 9 12 15 6"></polyline>
         </svg>
     </button>
 
-    <div id="sidebar" role="complementary" aria-label="Knowledge Graph Sidebar">
+    <!-- Sidebar -->
+    <aside id="sidebar" role="complementary" aria-label="Graph controls and details">
+
+        <!-- Header -->
         <div class="sidebar-header">
-            <h1 class="sidebar-title">
-                <span style="font-size: 24px;">🐉</span> Hydragent Library
-            </h1>
+            <div class="sidebar-brand">
+                <span class="sidebar-dragon" aria-hidden="true">🐉</span>
+                <span class="sidebar-title">Hydragent Library</span>
+            </div>
             <div class="sidebar-subtitle">Knowledge Graph Explorer</div>
         </div>
-        
-        <div class="search-container">
-            <input type="text" id="search-input" class="search-box" placeholder="Search nodes or tags..." aria-label="Search nodes or tags">
-        </div>
-        
-        <div class="filter-section">
-            <h2 class="section-title">Filter Node Types</h2>
-            <div class="filter-grid">
-                <button class="filter-btn active" data-type="shelf">
-                    <span style="color: #a855f7;">●</span> Shelves
-                </button>
-                <button class="filter-btn active" data-type="book">
-                    <span style="color: #3b82f6;">●</span> Books
-                </button>
-                <button class="filter-btn active" data-type="page">
-                    <span style="color: #10b981;">●</span> Pages
-                </button>
-            </div>
-        </div>
-        
-        <div class="details-container" id="details-panel">
-            <div class="empty-details">
-                Select a node in the graph to view its connections and properties.
-            </div>
-        </div>
-    </div>
 
-    <div id="header-actions">
-        <button class="action-btn" id="btn-reset" aria-label="Reset view position">
-            Reset View
+        <!-- Stats strip -->
+        <div class="stats-strip" id="stats-strip" aria-label="Graph statistics">
+            <div class="stat-chip shelf">
+                <span class="stat-chip-value" id="stat-shelves">0</span>
+                <span class="stat-chip-label">Shelves</span>
+            </div>
+            <div class="stat-chip book">
+                <span class="stat-chip-value" id="stat-books">0</span>
+                <span class="stat-chip-label">Books</span>
+            </div>
+            <div class="stat-chip page">
+                <span class="stat-chip-value" id="stat-pages">0</span>
+                <span class="stat-chip-label">Pages</span>
+            </div>
+        </div>
+
+        <!-- Search -->
+        <div class="search-container">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="search" id="search-input" class="search-box"
+                   placeholder="Search nodes…" aria-label="Search knowledge graph nodes" autocomplete="off">
+        </div>
+
+        <!-- Filters -->
+        <div class="filter-section">
+            <div class="filter-label">Show node types</div>
+            <div class="filter-grid" role="group" aria-label="Node type filters">
+                <button class="filter-btn active" data-type="shelf" id="filter-shelf" aria-pressed="true">
+                    <span class="dot" style="background:#a855f7;"></span> Shelves
+                </button>
+                <button class="filter-btn active" data-type="book" id="filter-book" aria-pressed="true">
+                    <span class="dot" style="background:#3b82f6;"></span> Books
+                </button>
+                <button class="filter-btn active" data-type="page" id="filter-page" aria-pressed="true">
+                    <span class="dot" style="background:#10b981;"></span> Pages
+                </button>
+            </div>
+        </div>
+
+        <!-- Details panel -->
+        <div class="details-container" id="details-panel" role="region" aria-label="Selected node details">
+            <div class="empty-details">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                Click any node to explore its connections and properties.
+            </div>
+        </div>
+
+    </aside>
+
+    <!-- Top-right actions -->
+    <div id="header-actions" aria-label="Graph actions">
+        <button class="action-btn" id="btn-fit" aria-label="Fit entire graph in view">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+            </svg>
+            Fit Graph
+        </button>
+        <button class="action-btn" id="btn-reset" aria-label="Reset view to center">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.21"/>
+            </svg>
+            Reset
         </button>
     </div>
 
-    <div id="graph-container"></div>
+    <!-- D3 canvas -->
+    <div id="graph-container" role="img" aria-label="Interactive knowledge graph"></div>
+
+    <!-- Hover tooltip -->
+    <div id="tooltip" role="tooltip" aria-hidden="true"></div>
+
+    <!-- Mini-map -->
+    <canvas id="minimap" width="160" height="100" aria-hidden="true" title="Graph overview"></canvas>
 
     <script>
         const graphData = {{GRAPH_DATA_JSON}};

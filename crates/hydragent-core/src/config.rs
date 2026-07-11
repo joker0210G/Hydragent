@@ -49,6 +49,17 @@ pub struct AppConfig {
     /// Tried in order if the primary model errors out.
     pub brain_fallbacks: String,
 
+    // ── Registry-backed provider/model selection (new) ─────────────────
+    /// Path to `model_providers.yaml`. If empty, the built-in registry is used
+    /// and the repo's `config/model_providers.yaml` is tried first.
+    pub model_providers_path: String,
+    /// Active provider id from the registry (e.g. `openrouter`, `ollama`).
+    /// Falls back to `effective_brain_provider()` when empty.
+    pub active_provider: String,
+    /// Active model ref from the registry (e.g. `openai-gpt-4o-mini`).
+    /// Falls back to `effective_brain_model()` when empty.
+    pub active_model: String,
+
     // ── Runtime ────────────────────────────────────────────────────────
     pub log_format: String,
     pub log_level: String,
@@ -64,6 +75,10 @@ pub struct AppConfig {
     // ── Dreaming (memory consolidation) ──────────────────────────────
     pub enable_dreaming: bool,
     pub dreaming_interval_sec: u64,
+
+    // ── Curator (skill curation) ─────────────────────────────────────
+    pub enable_curator: bool,
+    pub curator_interval_sec: u64,
 
     // ── Memory cap (LRU eviction) ────────────────────────────────────
     /// Maximum number of rows allowed in `semantic_memories`. When the
@@ -107,6 +122,9 @@ impl std::fmt::Debug for AppConfig {
             .field("brain_model", &self.brain_model)
             .field("brain_provider", &self.brain_provider)
             .field("brain_fallbacks", &self.brain_fallbacks)
+            .field("model_providers_path", &self.model_providers_path)
+            .field("active_provider", &self.active_provider)
+            .field("active_model", &self.active_model)
             .field("log_format", &self.log_format)
             .field("log_level", &self.log_level)
             .field("data_dir", &self.data_dir)
@@ -118,6 +136,8 @@ impl std::fmt::Debug for AppConfig {
             )
             .field("enable_dreaming", &self.enable_dreaming)
             .field("dreaming_interval_sec", &self.dreaming_interval_sec)
+            .field("enable_curator", &self.enable_curator)
+            .field("curator_interval_sec", &self.curator_interval_sec)
             .field("max_semantic_memories", &self.max_semantic_memories)
             .finish()
     }
@@ -147,6 +167,11 @@ impl AppConfig {
             .set_default("brain_provider", "")?
             .set_default("brain_fallbacks", "")?
 
+            // Registry-backed provider/model selection
+            .set_default("model_providers_path", "")?
+            .set_default("active_provider", "")?
+            .set_default("active_model", "")?
+
             // Runtime
             .set_default("log_format", "terminal")?
             .set_default("log_level", "info")?
@@ -164,6 +189,10 @@ impl AppConfig {
             // Dreaming
             .set_default("enable_dreaming", true)?
             .set_default("dreaming_interval_sec", 60_u64)?
+
+            // Curator
+            .set_default("enable_curator", true)?
+            .set_default("curator_interval_sec", 86400_u64)?
 
             // Memory cap
             .set_default("max_semantic_memories", 1_000_000_u64)?
@@ -267,6 +296,42 @@ impl AppConfig {
             .filter(|s| !s.is_empty())
             .collect()
     }
+
+    /// Effective active provider id from the registry. Falls back to the
+    /// legacy `effective_brain_provider()` when not explicitly set.
+    pub fn effective_active_provider(&self) -> String {
+        if !self.active_provider.is_empty() {
+            self.active_provider.trim().to_lowercase()
+        } else {
+            self.effective_brain_provider()
+        }
+    }
+
+    /// Effective active model id (within the provider). Falls back to the
+    /// legacy `effective_brain_model()` when not explicitly set.
+    pub fn effective_active_model(&self) -> String {
+        if !self.active_model.is_empty() {
+            self.active_model.trim().to_string()
+        } else {
+            self.effective_brain_model()
+        }
+    }
+
+    /// Effective registry file path.
+    ///
+    /// Production default: `<hydragent_home>/config/model_providers.yaml`.
+    /// Source checkout fallback: `config/model_providers.yaml` is still
+    /// tried by the runtime loader when this file does not exist.
+    pub fn effective_model_providers_path(&self) -> String {
+        if !self.model_providers_path.trim().is_empty() {
+            self.model_providers_path.trim().to_string()
+        } else {
+            paths::config_dir()
+                .join("model_providers.yaml")
+                .to_string_lossy()
+                .to_string()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -299,6 +364,9 @@ mod tests {
             brain_model: brain_model.to_string(),
             brain_provider: String::new(),
             brain_fallbacks: brain_fallbacks.to_string(),
+            model_providers_path: String::new(),
+            active_provider: String::new(),
+            active_model: String::new(),
             log_format: "terminal".to_string(),
             log_level: "info".to_string(),
             data_dir: "./data".to_string(),
@@ -308,6 +376,8 @@ mod tests {
             enable_dreaming: false,
             dreaming_interval_sec: 60,
             max_semantic_memories: 1_000_000,
+            enable_curator: true,
+            curator_interval_sec: 86400,
         }
     }
 
@@ -420,6 +490,23 @@ mod tests {
         assert_eq!(c.effective_brain_base(), "http://localhost:11434/v1");
         assert_eq!(c.effective_brain_key(), "");
         assert_eq!(c.effective_brain_model(), "llama3.1");
+    }
+
+    #[test]
+    fn effective_model_providers_path_prefers_explicit_override() {
+        let mut c = cfg("", "", "", "", "");
+        c.model_providers_path = "D:/custom/model_providers.yaml".to_string();
+        assert_eq!(c.effective_model_providers_path(), "D:/custom/model_providers.yaml");
+    }
+
+    #[test]
+    fn effective_model_providers_path_has_default_filename() {
+        let c = cfg("", "", "", "", "");
+        assert!(
+            c.effective_model_providers_path().ends_with("model_providers.yaml"),
+            "unexpected default registry path: {}",
+            c.effective_model_providers_path()
+        );
     }
 
     // ── P0: API-key leak prevention ────────────────────────────────────

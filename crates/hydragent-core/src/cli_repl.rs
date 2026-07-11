@@ -274,6 +274,8 @@ pub async fn run(mut state: ReplState) -> i32 {
             messages,
             stream: true,
             max_tokens: Some(1),
+            models: vec![],
+            reasoning_effort: None,
         };
 
         // Spawn the provider call in the background to avoid blocking the thread and causing a deadlock

@@ -5,9 +5,14 @@ pub mod ollama;
 pub mod model_trait;
 pub mod profiles;
 pub mod council;
+pub mod registry;
 
 pub use model_trait::ModelProvider;
 pub use profiles::{CostTier, ModelProfile};
 pub use council::{CouncilError, ModelCouncil, RoutingDecision, RoutingPath};
 pub use ollama::{OllamaClient, OllamaProviderConfig};
+pub use registry::{
+    AuthMode, ModelDefinition, ModelRegistry, ProviderDefinition, ProviderKind, ProviderRegistry,
+    RegistryError, ResolvedModel,
+};
 
