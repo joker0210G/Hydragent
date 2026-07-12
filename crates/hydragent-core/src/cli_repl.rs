@@ -88,7 +88,7 @@ fn get_or_load_audit_signer(data_dir: &str) -> anyhow::Result<std::sync::Arc<hyd
     static CACHED: OnceLock<std::sync::Mutex<Option<std::sync::Arc<hydragent_security::AgentSigner>>>> =
         OnceLock::new();
     let cache = CACHED.get_or_init(|| std::sync::Mutex::new(None));
-    let mut guard = cache.lock().unwrap();
+    let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(s) = guard.as_ref() {
         return Ok(s.clone());
     }
@@ -499,7 +499,7 @@ async fn handle_slash_command(
     let rest = parts.next().unwrap_or("").trim();
 
     match cmd.as_str() {
-        "" | "/" | "//" => {}
+        "" | "/" | "//" => return SlashExit::Continue,
         "help" | "?" => {
             print_help();
         }
@@ -576,7 +576,7 @@ async fn handle_slash_command(
                             );
                         }
                         println!();
-                        println!("  resume any of these with:  hydragent --page <id> chat");
+                        println!("  resume any of these with:  hydragent chat --page <id>");
                     }
                 }
                 Err(e) => eprintln!("  ✗ Failed to list pages: {}", e),
@@ -591,6 +591,9 @@ async fn handle_slash_command(
                         if let Some((target_id, _, _, _)) = pages.iter().find(|(pid, _, _, _)| pid == &rest || short_id(pid) == rest) {
                             state.page_id = target_id.clone();
                             state.brand.page_id_short = short_id(&target_id);
+                            // Repaint status bar
+                            print!("\r\x1b[A\x1b[2K");
+                            print!("{}", render_status_bar(&status_state_from(state)));
                             println!("  ✓ Resumed page {}", target_id);
                         } else {
                             eprintln!("  ✗ Page '{}' not found in store.", rest);
@@ -645,8 +648,9 @@ async fn handle_slash_command(
                         };
                         md.push_str(&format!("### {}\n\n{}\n\n", role_name, msg.content));
                     }
+                    let abs_path = std::env::current_dir().unwrap_or_default().join(&filename);
                     match std::fs::write(&filename, md) {
-                        Ok(_) => println!("  ✓ Conversation successfully exported to {}", filename),
+                        Ok(_) => println!("  ✓ Conversation successfully exported to {}", abs_path.display()),
                         Err(e) => eprintln!("  ✗ Failed to write to {}: {}", filename, e),
                     }
                 }
@@ -735,7 +739,8 @@ async fn handle_slash_command(
         "model" => {
             if rest.is_empty() {
                 println!("  primary   = {}", state.app_config.effective_brain_model());
-                println!("  fallbacks = {}", state.app_config.effective_brain_fallbacks().join(", "));
+                let fallbacks = state.app_config.effective_brain_fallbacks();
+                println!("  fallbacks = {}", if fallbacks.is_empty() { "<none>".to_string() } else { fallbacks.join(", ") });
             } else {
                 // In-session brain switch: updates the router so the
                 // next ReAct turn picks the new model (no .env edit).
@@ -747,7 +752,7 @@ async fn handle_slash_command(
                 state.app_config.brain_model = rest.to_string();
                 state.brand.model = rest.to_string();
                 println!("  ✓ Switched primary model to {}", rest);
-                println!("  (session only — restart hydragent to revert to .env default)");
+                println!("  (session only — restart hydragent to revert to .env default, or use `/model <name>` again)");
             }
         }
         "brain" => {
@@ -850,7 +855,7 @@ async fn handle_slash_command(
                             }
                             // /audit count
                             match chain.count().await {
-                                Ok(n) => println!("  event count= {}", n),
+                                Ok(n) => println!("  event count = {}", n),
                                 Err(e) => eprintln!("  ✗ Failed to read count: {}", e),
                             }
                         } else if sub == "head" {
@@ -960,6 +965,7 @@ async fn handle_slash_command(
                     } else {
                         match arg.parse::<u64>() {
                             Ok(0) => eprintln!("  ✗ Interval must be > 0 seconds."),
+                            Ok(n) if n > 86400 => eprintln!("  ✗ Interval too large (max 1 day)."),
                             Ok(n) => {
                                 match patch_env_key(&env_path, "DREAMING_INTERVAL_SEC", &n.to_string()) {
                                     Ok(true)  => println!("  ✓ DREAMING_INTERVAL_SEC={} written to .env (restart bus to apply)", n),
@@ -1068,7 +1074,7 @@ async fn dispatch_user_message(
         Ok(h) => h,
         Err(e) => {
             eprintln!("  ✗ Failed to load page history: {}", e);
-            return Err(1);
+            return Ok(());
         }
     };
 
@@ -1432,7 +1438,7 @@ async fn dispatch_user_message(
                 let red = "\x1b[31m";
                 let yellow = "\x1b[33m";
                 println!("  {red}✗ Rate Limit Exceeded / Request Failed{reset}");
-                println!("  {yellow}The brain provider ('brain') is temporarily rate-limiting requests (HTTP 429).{reset}");
+                println!("  {yellow}The brain provider ('{}') is temporarily rate-limiting requests (HTTP 429).{reset}", state.app_config.effective_brain_provider());
                 println!("  {dim}Tip: You can switch to another model using `{reset}/model <name>{dim}` or try again in a few seconds.{reset}");
             } else {
                 println!("  ✗ {one_line}");
@@ -1633,7 +1639,7 @@ fn print_help() {
     println!("  Page & Export:");
     println!("    /page                Show the current page ID");
     println!("    /pages               List past pages (most recent 20)");
-    println!("    /resume <id>         (planned) switch to a past page");
+    println!("    /resume [id]         switch to a past page or open the interactive library browser");
     println!("    /new                 start a fresh page with a new id");
     println!("    /compact             compress page history using LLM");
     println!("    /export [filename]   export conversation history to a markdown file");
@@ -1693,7 +1699,11 @@ fn patch_env_key(
     key: &str,
     value: &str,
 ) -> anyhow::Result<bool> {
-    let content = std::fs::read_to_string(env_path).unwrap_or_default();
+    let content = match std::fs::read_to_string(env_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(anyhow::anyhow!("Failed to read .env file at {}: {}", env_path.display(), e)),
+    };
     let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
     let prefix_active = format!("{}=", key);
     let prefix_comment = format!("# {}=", key);

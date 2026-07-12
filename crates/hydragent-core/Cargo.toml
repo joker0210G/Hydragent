@@ -43,6 +43,7 @@ rpassword        = "7.3"
 # Used by `onboard` for the arrow-key navigable picker. Kept off
 # the workspace table because no other crate needs it yet.
 crossterm        = "0.29"
+serde_yaml       = { workspace = true }
 # Terminal-flavoured markdown rendering for LLM responses. Used by
 # the REPL (`hydragent chat`) and the `test-brain` subcommand to
 # turn the model's markdown reply into nicely styled terminal

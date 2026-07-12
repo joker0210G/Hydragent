@@ -682,7 +682,11 @@ fn debug_dump_env_and_config(cfg: &config::AppConfig) {
             eprintln!("    status    : LOADED ✓");
             eprintln!("    path      : {}", env_path.display());
             eprintln!("    size      : {} bytes", md.len());
-            eprintln!("    modified  : {:?}", md.modified().ok());
+            if let Ok(st) = md.modified() {
+                eprintln!("    modified  : {}", chrono::DateTime::<chrono::Local>::from(st).format("%Y-%m-%d %H:%M:%S"));
+            } else {
+                eprintln!("    modified  : {:?}", md.modified().ok());
+            }
         }
         Err(e) => {
             eprintln!("    status    : NOT FOUND ✗");
@@ -1510,7 +1514,7 @@ fn cmd_status(app_config: &config::AppConfig) {
     }
     println!("  Bus          : 127.0.0.1:{bus_port}");
     println!("  Brain        : {brain}");
-    println!("                 via {brain_base}");
+    println!("                 via {}", crate::doctor::redact_url(&brain_base));
     println!("  Registry     : {registry_path}");
     println!("  Active model : {active_provider}/{active_model}");
     println!("  Dream worker : {dreaming}");
@@ -1659,10 +1663,10 @@ async fn main() {
         eprintln!();
         eprintln!("  ✗ Failed to load configuration: {}", e);
         eprintln!();
-        eprintln!("  Most likely cause: no `.env` file in the current directory.");
+        eprintln!("  Most likely cause: no `.env` file at {}", paths::env_file().display());
         eprintln!();
         eprintln!("  Quickest fix:    hydragent onboard");
-        eprintln!("  Or manually:     cp .env.example .env   (then edit the keys)");
+        eprintln!("  Or manually:     cp .env.example {}   (then edit the keys)", paths::env_file().display());
         eprintln!("  Diagnose:        hydragent doctor");
         eprintln!();
         std::process::exit(1);
@@ -1895,7 +1899,17 @@ async fn main() {
         if making_changes {
             // Read the existing .env, patch the relevant keys, and write back.
             // We do a line-by-line rewrite so every other setting is preserved.
-            let content = std::fs::read_to_string(&env_path).unwrap_or_default();
+            let content = match std::fs::read_to_string(&env_path) {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    eprintln!("  ✗ .env file not found at {}. Run `hydragent onboard` first.", env_path.display());
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("  ✗ Failed to read .env: {}", e);
+                    std::process::exit(1);
+                }
+            };
             let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
 
             // Flags for whether we found (and replaced) each key in-place
@@ -2049,7 +2063,10 @@ async fn main() {
             });
 
         let chain = hydragent_security::MerkleAuditChain::connect(
-            chain_path.to_str().unwrap(),
+            chain_path.to_str().unwrap_or_else(|| {
+                eprintln!("Audit chain path contains invalid UTF-8: {}", chain_path.display());
+                std::process::exit(1);
+            }),
             std::sync::Arc::new(signer),
         )
         .await
@@ -2313,7 +2330,10 @@ async fn main() {
                         }
                     };
                     let chain = match hydragent_security::MerkleAuditChain::connect(
-                        chain_path.to_str().unwrap(),
+                        chain_path.to_str().unwrap_or_else(|| {
+                            eprintln!("Audit chain path contains invalid UTF-8: {}", chain_path.display());
+                            std::process::exit(1);
+                        }),
                         std::sync::Arc::new(signer),
                     )
                     .await
@@ -3106,6 +3126,7 @@ async fn main() {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // skip first immediate tick
             loop {
                 ticker.tick().await;
                 info!("Dreaming worker waking up...");
@@ -3135,8 +3156,14 @@ async fn main() {
         .unwrap_or_else(|_| ".".to_string());
     
     let mut registry = ToolRegistry::new();
-    let wasm_engine = hydragent_sandbox::create_sandbox_engine().unwrap();
-    let sandbox_tools_dir = PathBuf::from("./sandbox/tools");
+    let wasm_engine = hydragent_sandbox::create_sandbox_engine().unwrap_or_else(|e| {
+        eprintln!("Failed to initialize WASM sandbox engine: {}", e);
+        std::process::exit(1);
+    });
+    let sandbox_tools_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("sandbox/tools")))
+        .unwrap_or_else(|| PathBuf::from("./sandbox/tools"));
 
     let enforce_sandbox = std::env::var("ENFORCE_SANDBOX")
         .map(|v| v.trim().to_lowercase() == "true")
@@ -3150,7 +3177,10 @@ async fn main() {
             &echo_wasm_path,
             hydragent_sandbox::ResourceLimits::default(),
             None,
-        ).unwrap();
+        ).unwrap_or_else(|e| {
+            eprintln!("Failed to load sandboxed tool 'echo.wasm': {}", e);
+            std::process::exit(1);
+        });
         registry.register(SandboxedTool {
             name: "echo".to_string(),
             description: "Echoes back the input message inside a WASM sandbox.".to_string(),
@@ -3161,7 +3191,8 @@ async fn main() {
         info!("Registered sandboxed echo tool.");
     } else {
         if enforce_sandbox {
-            panic!("Security Violation: ENFORCE_SANDBOX is enabled but sandboxed tool 'echo.wasm' is missing at {:?}", echo_wasm_path);
+            eprintln!("Security Violation: ENFORCE_SANDBOX is enabled but sandboxed tool 'echo.wasm' is missing at {:?}", echo_wasm_path);
+            std::process::exit(1);
         } else {
             tracing::warn!("Warning: Bypassing WASM sandbox for 'echo' tool, registering local native fallback.");
             registry.register(EchoTool);
@@ -3184,7 +3215,10 @@ async fn main() {
             &file_read_wasm_path,
             hydragent_sandbox::ResourceLimits::default(),
             Some(PathBuf::from(&workspace_dir)),
-        ).unwrap();
+        ).unwrap_or_else(|e| {
+            eprintln!("Failed to load sandboxed tool 'file_read.wasm': {}", e);
+            std::process::exit(1);
+        });
         registry.register(SandboxedTool {
             name: "file_read".to_string(),
             description: "Reads a file in the workspace securely inside a WASM sandbox.".to_string(),
@@ -3195,7 +3229,8 @@ async fn main() {
         info!("Registered sandboxed file_read tool.");
     } else {
         if enforce_sandbox {
-            panic!("Security Violation: ENFORCE_SANDBOX is enabled but sandboxed tool 'file_read.wasm' is missing at {:?}", file_read_wasm_path);
+            eprintln!("Security Violation: ENFORCE_SANDBOX is enabled but sandboxed tool 'file_read.wasm' is missing at {:?}", file_read_wasm_path);
+            std::process::exit(1);
         } else {
             tracing::warn!("Warning: Bypassing WASM sandbox for 'file_read' tool, registering local native fallback.");
             registry.register(FileReadTool::new(PathBuf::from(&workspace_dir)));
@@ -3514,7 +3549,10 @@ async fn main() {
     });
     let audit_chain = Arc::new(
         hydragent_security::MerkleAuditChain::connect(
-            chain_path.to_str().unwrap(),
+            chain_path.to_str().unwrap_or_else(|| {
+                eprintln!("Audit chain path contains invalid UTF-8: {}", chain_path.display());
+                std::process::exit(1);
+            }),
             Arc::new(signer),
         )
         .await

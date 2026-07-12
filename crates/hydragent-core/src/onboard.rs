@@ -34,84 +34,15 @@ fn is_tty() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// Provider preset: a name + default base URL + a list of recommended
-/// model choices. This is the catalogue the wizard offers.
-#[derive(Debug, Clone)]
-struct Provider {
-    label: &'static str,
-    base: &'static str,
-    needs_key: bool,
-    recommended: &'static [&'static str],
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct RegistryFile {
+    version: u32,
+    #[serde(default)]
+    defaults: std::collections::HashMap<String, String>,
+    providers: Vec<hydragent_model::ProviderDefinition>,
+    #[serde(default)]
+    models: Vec<hydragent_model::ModelDefinition>,
 }
-
-/// Built-in presets. Matches the comment block at the top of `.env.example`.
-const PRESETS: &[Provider] = &[
-    Provider {
-        label: "OpenRouter (recommended for getting started — many free models)",
-        base: "https://openrouter.ai/api/v1",
-        needs_key: true,
-        recommended: &[
-            "google/gemma-4-31b-it:free",
-            "deepseek/deepseek-v4-flash:free",
-            "openai/gpt-oss-120b:free",
-            "openrouter/free",
-        ],
-    },
-    Provider {
-        label: "OpenAI (gpt-4o, gpt-4o-mini, o1-mini…)",
-        base: "https://api.openai.com/v1",
-        needs_key: true,
-        recommended: &[
-            "gpt-4o-mini",
-            "gpt-4o",
-            "o1-mini",
-            "gpt-3.5-turbo",
-        ],
-    },
-    Provider {
-        label: "Together AI (Llama, Mixtral, Qwen — generous free tier)",
-        base: "https://api.together.xyz/v1",
-        needs_key: true,
-        recommended: &[
-            "meta-llama/Llama-3-70b-chat-hf",
-            "mistralai/Mixtral-8x7B-Instruct-v0.1",
-            "Qwen/Qwen2.5-72B-Instruct-Turbo",
-        ],
-    },
-    Provider {
-        label: "Groq (very fast inference, free tier)",
-        base: "https://api.groq.com/openai/v1",
-        needs_key: true,
-        recommended: &[
-            "llama-3.1-70b-versatile",
-            "llama-3.1-8b-instant",
-            "mixtral-8x7b-32768",
-        ],
-    },
-    Provider {
-        label: "Ollama (local, no key needed — must be running on the same machine)",
-        base: "http://localhost:11434",
-        needs_key: false,
-        recommended: &[
-            "deepseek-r1",
-            "qwen2.5-coder",
-            "llama3.1",
-            "mistral",
-        ],
-    },
-    Provider {
-        label: "LM Studio (local, OpenAI-compat server)",
-        base: "http://localhost:1234/v1",
-        needs_key: false,
-        recommended: &["local-model"],
-    },
-    Provider {
-        label: "Custom (paste your own OpenAI-compatible base URL)",
-        base: "",
-        needs_key: true,
-        recommended: &[],
-    },
-];
 
 /// Top-level entry. Returns the process exit code.
 pub async fn run(opts: OnboardOptions) -> i32 {
@@ -134,25 +65,66 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         println!();
     }
 
+    // Load config and registry
+    let app_config = crate::config::AppConfig::load().unwrap_or_default();
+    let registry_path_str = app_config.effective_model_providers_path();
+    let registry_path = std::path::PathBuf::from(&registry_path_str);
+
+    let final_registry_path = if !registry_path.exists() {
+        let fallback = std::env::current_dir().unwrap_or_default().join("config/model_providers.yaml");
+        if fallback.exists() {
+            fallback
+        } else {
+            registry_path
+        }
+    } else {
+        registry_path
+    };
+
+    let mut registry = if final_registry_path.exists() {
+        match hydragent_model::ProviderRegistry::load_from_yaml(&final_registry_path) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("⚠ Failed to load model_providers.yaml: {}. Falling back to builtin defaults.", e);
+                hydragent_model::ProviderRegistry::builtin_default()
+            }
+        }
+    } else {
+        hydragent_model::ProviderRegistry::builtin_default()
+    };
+
     // ── 2. Pick provider ──────────────────────────────────────────────
     let provider = match &opts.provider {
-        Some(name) => match find_preset(name) {
-            Some(p) => p.clone(),
+        Some(name) => match find_provider(&registry, name) {
+            Some(p) => p,
             None => {
                 eprintln!(
-                    "✗ Unknown provider: '{}'. Valid: openai, openrouter, together, groq, ollama, lmstudio, custom",
-                    name
+                    "✗ Unknown provider: '{}'. Valid options: {}",
+                    name,
+                    registry.providers().iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
                 );
                 return 2;
             }
         },
         None => {
-            // When --base-url is passed without --provider, auto-select
-            // "custom" so the user doesn't have to type it.
             if opts.base_url.is_some() {
-                PRESETS.last().unwrap().clone()
+                hydragent_model::ProviderDefinition {
+                    id: "custom".to_string(),
+                    display_name: "Custom Endpoint".to_string(),
+                    kind: hydragent_model::ProviderKind::CustomOpenAi,
+                    default_base_url: opts.base_url.clone().unwrap_or_default(),
+                    auth_mode: hydragent_model::AuthMode::ApiKey,
+                    supports_custom_models: true,
+                    supports_reasoning: true,
+                    supports_tools: true,
+                    supports_vision: true,
+                    default_headers: std::collections::HashMap::new(),
+                    timeout_secs: 180,
+                    max_retries: 3,
+                    default_params: std::collections::HashMap::new(),
+                }
             } else {
-                match pick_provider() {
+                match pick_provider(&mut registry, &final_registry_path) {
                     Some(p) => p,
                     None => {
                         eprintln!("✗ Setup aborted.");
@@ -163,46 +135,22 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         }
     };
 
-    let provider_label = provider.label;
+    let provider_label = &provider.display_name;
     let base = if let Some(url) = &opts.base_url {
-        // Explicit --base-url overrides everything (preset or custom).
         url.trim().trim_end_matches('/').to_string()
     } else if let Some(name) = &opts.provider {
-        // If the user passed a raw URL as --provider, use it directly.
         let n = name.trim().to_lowercase();
         if n.starts_with("http://") || n.starts_with("https://") {
             name.trim().trim_end_matches('/').to_string()
-        } else if provider.base.is_empty() {
-            // Custom without --base-url: must prompt interactively.
-            if opts.non_interactive {
-                eprintln!("✗ `--provider custom` requires `--base-url` in non-interactive mode.");
-                return 2;
-            }
-            match prompt("Custom base URL (e.g. https://api.together.xyz/v1):") {
-                Some(s) => s.trim().trim_end_matches('/').to_string(),
-                None => {
-                    eprintln!("✗ Setup aborted.");
-                    return 1;
-                }
-            }
         } else {
-            provider.base.to_string()
-        }
-    } else if provider.base.is_empty() {
-        // Interactive custom path (user picked Custom from menu).
-        match prompt("Custom base URL (e.g. https://api.together.xyz/v1):") {
-            Some(s) => s.trim().trim_end_matches('/').to_string(),
-            None => {
-                eprintln!("✗ Setup aborted.");
-                return 1;
-            }
+            provider.default_base_url.to_string()
         }
     } else {
-        provider.base.to_string()
+        provider.default_base_url.to_string()
     };
 
     // ── 3. API key ────────────────────────────────────────────────────
-    let api_key = if !provider.needs_key {
+    let api_key = if provider.auth_mode == hydragent_model::AuthMode::None {
         String::new()
     } else if let Some(k) = &opts.api_key {
         k.clone()
@@ -226,28 +174,16 @@ pub async fn run(opts: OnboardOptions) -> i32 {
     // ── 4. Model ──────────────────────────────────────────────────────
     let model = if let Some(m) = &opts.model {
         m.clone()
-    } else if !provider.recommended.is_empty() {
-        if opts.non_interactive {
-            provider.recommended[0].to_string()
-        } else {
-            let m = pick_model(&provider).await;
-            if m.is_empty() {
-                eprintln!("✗ Setup aborted.");
-                return 1;
-            }
-            m
-        }
     } else if opts.non_interactive {
-        eprintln!("✗ No model provided and no recommended default. Pass --model <NAME>.");
-        return 2;
+        let first_model = registry.models(Some(&provider.id)).first().map(|m| m.api_model_id.clone()).unwrap_or_else(|| "gpt-4o-mini".to_string());
+        first_model
     } else {
-        match prompt("Model name (e.g. gpt-4o-mini):") {
-            Some(s) => s.trim().to_string(),
-            None => {
-                eprintln!("✗ Setup aborted.");
-                return 1;
-            }
+        let m = pick_model(&final_registry_path, &provider, &registry).await;
+        if m.is_empty() {
+            eprintln!("✗ Setup aborted.");
+            return 1;
         }
+        m
     };
 
     // ── New Steps: Vault, Persona, Sandbox, Memory, Integrations ─────────────
@@ -286,6 +222,50 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         println!("  Configure durable work surfaces (pages, books, shelves), skills,");
         println!("  and Graphify relationship mapping.");
         println!("------------------------------------------------------------------------");
+
+        // Probe existing durable work surfaces & files
+        let data_dir = paths::data_dir();
+        let db_file = data_dir.join("sessions.db");
+        let vec_file = data_dir.join("vectors.bin");
+
+        println!("  Checking existing work surfaces & durable storage...");
+        let mut found_any = false;
+
+        if db_file.exists() {
+            if let Ok(meta) = db_file.metadata() {
+                let size_kb = meta.len() / 1024;
+                println!("  · Existing durable work surfaces database: {} ({} KB) [Found]", db_file.display(), size_kb);
+                found_any = true;
+            }
+        }
+        if vec_file.exists() {
+            if let Ok(meta) = vec_file.metadata() {
+                let size_kb = meta.len() / 1024;
+                println!("  · Existing semantic vector embeddings: {} ({} KB) [Found]", vec_file.display(), size_kb);
+                found_any = true;
+            }
+        }
+
+        let skills_path = std::path::Path::new("./skills");
+        if skills_path.exists() {
+            if let Ok(entries) = std::fs::read_dir(skills_path) {
+                let count = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                    .count();
+                if count > 0 {
+                    println!("  · Existing custom skills: {} folder(s) found in ./skills", count);
+                    found_any = true;
+                }
+            }
+        }
+
+        if !found_any {
+            println!("  · No existing durable work surfaces, vector databases, or skills found.");
+            println!("    (These will be initialized fresh in: {})", data_dir.display());
+        }
+        println!("------------------------------------------------------------------------");
+        println!();
 
         // 1. Agent Persona Selection
         let personas = &[
@@ -399,10 +379,31 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         }
         _ => &custom_soul_prompt,
     };
-    if let Err(e) = std::fs::write(&soul_path, soul_content) {
-        eprintln!("  ⚠ Failed to write SOUL.md: {}", e);
-    } else if !opts.non_interactive {
-        println!("  ✓ Wrote SOUL.md (Persona: {})", persona);
+    let mut write_soul = true;
+    if soul_path.exists() {
+        if opts.non_interactive {
+            write_soul = opts.force;
+        } else {
+            println!();
+            match prompt_yes_no(
+                &format!("An existing custom system persona (SOUL.md) was found at {}. Overwrite it? [y/N]", soul_path.display()),
+                false,
+            ) {
+                Some(true) => {}
+                _ => {
+                    write_soul = false;
+                    println!("  · Preserving existing custom SOUL.md");
+                }
+            }
+        }
+    }
+
+    if write_soul {
+        if let Err(e) = std::fs::write(&soul_path, soul_content) {
+            eprintln!("  ⚠ Failed to write SOUL.md: {}", e);
+        } else if !opts.non_interactive {
+            println!("  ✓ Wrote SOUL.md (Persona: {})", persona);
+        }
     }
 
     let user_path = config_dir.join("USER.md");
@@ -475,18 +476,7 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         }
     }
 
-    let registry = hydragent_model::ModelRegistry::builtin_default();
-    let provider_name = registry
-        .provider_id_for_label(provider.label)
-        .unwrap_or_else(|| match provider.label {
-            l if l.starts_with("OpenAI") => "openai",
-            l if l.starts_with("OpenRouter") => "openrouter",
-            l if l.starts_with("Together") => "custom",
-            l if l.starts_with("Groq") => "custom",
-            l if l.starts_with("Ollama") => "ollama",
-            l if l.starts_with("LM Studio") => "lmstudio",
-            _ => "custom",
-        });
+    let provider_name = &provider.id;
 
     // Prepare the keys we want to update/insert
     let mut updates = std::collections::BTreeMap::<String, String>::new();
@@ -494,6 +484,11 @@ pub async fn run(opts: OnboardOptions) -> i32 {
     updates.insert("BRAIN_BASE".to_string(), base.clone());
     updates.insert("BRAIN_MODEL".to_string(), model.clone());
     updates.insert("BRAIN_KEY".to_string(), api_key.clone());
+    
+    // Multi-provider compatibility configs
+    updates.insert(format!("BRAIN_{}_KEY", provider_name.to_uppercase()), api_key.clone());
+    updates.insert(format!("BRAIN_{}_BASE", provider_name.to_uppercase()), base.clone());
+
     updates.insert("ENFORCE_SANDBOX".to_string(), enforce_sandbox.to_string());
     updates.insert("MAX_SEMANTIC_MEMORIES".to_string(), max_semantic_memories.to_string());
     updates.insert("ENABLE_DREAMING".to_string(), enable_dreaming.to_string());
@@ -511,10 +506,18 @@ pub async fn run(opts: OnboardOptions) -> i32 {
     let mut updated_keys = std::collections::BTreeSet::<String>::new();
     for line in lines.iter_mut() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        let is_comment = trimmed.starts_with('#');
+        let effective_line = if is_comment {
+            trimmed.trim_start_matches('#').trim()
+        } else {
+            trimmed
+        };
+
+        if effective_line.is_empty() {
             continue;
         }
-        if let Some((k, _)) = trimmed.split_once('=') {
+
+        if let Some((k, _)) = effective_line.split_once('=') {
             let key_name = k.trim().to_string();
             if let Some(new_val) = updates.get(&key_name) {
                 *line = format!("{}={}", key_name, quote_value(new_val));
@@ -587,9 +590,8 @@ pub async fn run(opts: OnboardOptions) -> i32 {
     println!("    hydragent security status  Inspect the Phase 6 security surface");
     println!("    hydragent vault init   Optional: encrypt your API keys in a vault");
     println!();
-    println!("  Tip: append a model fallback list to .env as");
-    println!("       BRAIN_FALLBACKS=model-a,model-b");
-    println!("       and the router will try them in order if the primary errors out.");
+    println!("  Tip: Edit your model configurations and add custom providers in:");
+    println!("       {}", final_registry_path.display());
     println!("------------------------------------------------------------------------");
 
     0
@@ -608,25 +610,15 @@ pub struct OnboardOptions {
 
 // ── helpers ────────────────────────────────────────────────────────────
 
-fn find_preset(name: &str) -> Option<&'static Provider> {
+fn find_provider(registry: &hydragent_model::ProviderRegistry, name: &str) -> Option<hydragent_model::ProviderDefinition> {
     let n = name.trim().to_lowercase();
-    // If the "name" is actually a full URL, treat it as Custom.
-    if n.starts_with("http://") || n.starts_with("https://") {
-        return PRESETS.iter().find(|p| p.label.starts_with("Custom"));
+    if let Some(p) = registry.provider(&n) {
+        return Some(p.clone());
     }
-    let key = match n.as_str() {
-        "openai" | "oai" => "OpenAI",
-        "openrouter" | "or" => "OpenRouter",
-        "together" | "together-ai" | "together.ai" => "Together",
-        "groq" => "Groq",
-        "ollama" | "local-ollama" => "Ollama",
-        "lmstudio" | "lm-studio" | "lm_studio" => "LMStudio",
-        "custom" => "Custom",
-        _ => return None,
-    };
-    PRESETS.iter().find(|p| p.label.starts_with(key))
+    registry.providers().iter().find(|p| {
+        p.id.to_lowercase() == n || p.display_name.to_lowercase().contains(&n)
+    }).map(|p| (*p).clone())
 }
-
 
 fn quote_value(v: &str) -> String {
     if v.contains(' ') || v.contains('#') || v.contains('"') {
@@ -637,11 +629,113 @@ fn quote_value(v: &str) -> String {
     }
 }
 
-fn pick_provider() -> Option<Provider> {
+fn pick_provider(
+    registry: &mut hydragent_model::ProviderRegistry,
+    registry_path: &std::path::Path,
+) -> Option<hydragent_model::ProviderDefinition> {
     println!("  Choose a provider (↑/↓ to move, Enter to select, q to quit):");
-    let labels: Vec<&str> = PRESETS.iter().map(|p| p.label).collect();
-    let idx = select(&labels, None)?;
-    Some(PRESETS[idx].clone())
+    let providers = registry.providers();
+    let mut labels: Vec<String> = providers.iter().map(|p| format!("{} ({})", p.display_name, p.id)).collect();
+
+    let custom_idx = labels.len();
+    labels.push("Add a new custom provider...".to_string());
+
+    let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+
+    let idx = select(&label_refs, Some(("c", custom_idx)))?;
+    if idx == custom_idx {
+        add_custom_provider(registry_path)
+    } else {
+        Some(providers[idx].clone())
+    }
+}
+
+fn add_custom_provider(
+    registry_path: &std::path::Path,
+) -> Option<hydragent_model::ProviderDefinition> {
+    println!();
+    println!("  ── Add a new custom provider ──");
+    let id = prompt("  Provider ID (e.g. together, fireworks, custom-endpoint):")?;
+    let id_clean = id.trim().to_lowercase();
+    if id_clean.is_empty() {
+        return None;
+    }
+
+    let display_name = prompt("  Display name (e.g. Together AI):")?;
+    let display_name_clean = display_name.trim().to_string();
+
+    let base_url = prompt("  Base URL (e.g. https://api.together.xyz/v1):")?;
+    let base_url_clean = base_url.trim().trim_end_matches('/').to_string();
+
+    let needs_key = prompt_yes_no("  Does this provider require an API key?", true).unwrap_or(true);
+
+    let provider = hydragent_model::ProviderDefinition {
+        id: id_clean.clone(),
+        display_name: display_name_clean,
+        kind: if id_clean == "ollama" {
+            hydragent_model::ProviderKind::Ollama
+        } else {
+            hydragent_model::ProviderKind::CustomOpenAi
+        },
+        default_base_url: base_url_clean,
+        auth_mode: if needs_key {
+            hydragent_model::AuthMode::ApiKey
+        } else {
+            hydragent_model::AuthMode::None
+        },
+        supports_custom_models: true,
+        supports_reasoning: true,
+        supports_tools: true,
+        supports_vision: true,
+        default_headers: std::collections::HashMap::new(),
+        timeout_secs: 180,
+        max_retries: 3,
+        default_params: std::collections::HashMap::new(),
+    };
+
+    if let Err(e) = save_provider_to_yaml(registry_path, &provider) {
+        eprintln!("  ⚠ Failed to save new provider to {}: {}", registry_path.display(), e);
+    } else {
+        println!("  ✓ Saved new provider '{}' to {}", id_clean, registry_path.display());
+    }
+
+    Some(provider)
+}
+
+fn save_provider_to_yaml(
+    path: &std::path::Path,
+    provider: &hydragent_model::ProviderDefinition,
+) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut file_data = if path.exists() {
+        let text = std::fs::read_to_string(path)?;
+        serde_yaml::from_str::<RegistryFile>(&text).unwrap_or_else(|_| RegistryFile {
+            version: 1,
+            defaults: std::collections::HashMap::new(),
+            providers: Vec::new(),
+            models: Vec::new(),
+        })
+    } else {
+        RegistryFile {
+            version: 1,
+            defaults: std::collections::HashMap::new(),
+            providers: Vec::new(),
+            models: Vec::new(),
+        }
+    };
+
+    if let Some(existing) = file_data.providers.iter_mut().find(|p| p.id == provider.id) {
+        *existing = provider.clone();
+    } else {
+        file_data.providers.push(provider.clone());
+    }
+
+    let new_yaml = serde_yaml::to_string(&file_data)?;
+    std::fs::write(path, new_yaml)?;
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
@@ -654,23 +748,22 @@ struct OllamaModelItem {
     name: String,
 }
 
-async fn pick_model(provider: &Provider) -> String {
-    use std::io::Write;
+async fn pick_model(
+    registry_path: &std::path::Path,
+    provider: &hydragent_model::ProviderDefinition,
+    registry: &hydragent_model::ProviderRegistry,
+) -> String {
     println!();
     println!(
         "  Pick a primary model for {} (↑/↓ to move, Enter to select):",
-        provider
-            .label
-            .split_whitespace()
-            .next()
-            .unwrap_or("provider")
+        provider.display_name
     );
-    
+
     let mut downloaded_models = Vec::new();
-    if provider.label.starts_with("Ollama") {
+    if provider.kind == hydragent_model::ProviderKind::Ollama {
         print!("  🔍 Querying local Ollama for downloaded models... ");
         let _ = std::io::stdout().flush();
-        let base_url = provider.base;
+        let base_url = &provider.default_base_url;
         match async {
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(2))
@@ -683,41 +776,109 @@ async fn pick_model(provider: &Provider) -> String {
         }.await {
             Ok(models) => {
                 if models.is_empty() {
-                    println!("none found (using recommended list)");
+                    println!("none found");
                 } else {
                     println!("found {} model(s)", models.len());
                     downloaded_models = models;
                 }
             }
             Err(_) => {
-                println!("failed to connect (is Ollama running? using recommended list)");
+                println!("failed to connect");
             }
         }
     }
 
-    let mut labels: Vec<String> = if !downloaded_models.is_empty() {
-        downloaded_models.clone()
+    let reg_models = registry.models(Some(&provider.id));
+    let mut labels = Vec::new();
+    if !downloaded_models.is_empty() {
+        labels = downloaded_models;
     } else {
-        provider.recommended.iter().map(|s| s.to_string()).collect()
-    };
+        for m in reg_models {
+            labels.push(m.api_model_id.clone());
+        }
+    }
 
     let custom_idx = labels.len();
-    labels.push("custom — type your own".to_string());
-    
+    labels.push("custom — type your own and add to registry".to_string());
+
     let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
 
     let idx = match select(&label_refs, Some(("c", custom_idx))) {
         Some(i) => i,
-        None => return String::new(), // user aborted; caller treats "" as "abort"
+        None => return String::new(),
     };
     if idx == custom_idx {
-        match prompt("  Model name:") {
-            Some(s) => s.trim().to_string(),
+        match prompt("  Model API ID (e.g. deepseek/deepseek-r1):") {
+            Some(s) => {
+                let model_api_id = s.trim().to_string();
+                if model_api_id.is_empty() {
+                    return String::new();
+                }
+
+                let model_id = model_api_id.replace('/', "-");
+                let model_def = hydragent_model::ModelDefinition {
+                    id: model_id,
+                    provider_id: provider.id.clone(),
+                    name: model_api_id.clone(),
+                    aliases: Vec::new(),
+                    api_model_id: model_api_id.clone(),
+                    tool_calling: true,
+                    vision: false,
+                    reasoning: model_api_id.contains("r1") || model_api_id.contains("reasoning") || model_api_id.contains("o1"),
+                    streaming: true,
+                    max_input_tokens: Some(128000),
+                    max_output_tokens: Some(8192),
+                    request_headers: std::collections::HashMap::new(),
+                    default_params: std::collections::HashMap::new(),
+                    cost_per_1k: None,
+                    cost_tier: None,
+                };
+
+                if let Err(e) = save_model_to_yaml(registry_path, &model_def) {
+                    eprintln!("  ⚠ Failed to save new model to {}: {}", registry_path.display(), e);
+                } else {
+                    println!("  ✓ Saved new model '{}' to {}", model_api_id, registry_path.display());
+                }
+
+                model_api_id
+            }
             None => String::new(),
         }
     } else {
         labels[idx].clone()
     }
+}
+
+fn save_model_to_yaml(
+    path: &std::path::Path,
+    model: &hydragent_model::ModelDefinition,
+) -> anyhow::Result<()> {
+    let mut file_data = if path.exists() {
+        let text = std::fs::read_to_string(path)?;
+        serde_yaml::from_str::<RegistryFile>(&text).unwrap_or_else(|_| RegistryFile {
+            version: 1,
+            defaults: std::collections::HashMap::new(),
+            providers: Vec::new(),
+            models: Vec::new(),
+        })
+    } else {
+        RegistryFile {
+            version: 1,
+            defaults: std::collections::HashMap::new(),
+            providers: Vec::new(),
+            models: Vec::new(),
+        }
+    };
+
+    if let Some(existing) = file_data.models.iter_mut().find(|m| m.provider_id == model.provider_id && m.id == model.id) {
+        *existing = model.clone();
+    } else {
+        file_data.models.push(model.clone());
+    }
+
+    let new_yaml = serde_yaml::to_string(&file_data)?;
+    std::fs::write(path, new_yaml)?;
+    Ok(())
 }
 
 // ── interactive arrow-key picker ──────────────────────────────────────

@@ -202,8 +202,15 @@ pub async fn run_dream_cycle(
 ) -> anyhow::Result<DreamStats> {
     let mut stats = DreamStats::default();
     let pool = store.pool();
+    
+    let dreaming_mode = std::env::var("DREAM_BUDGET_MODE")
+        .or_else(|_| std::env::var("DREAMING_MODE"))
+        .unwrap_or_else(|_| "balanced".to_string())
+        .to_lowercase();
+
     debug!(
         provider = %model_router.provider_label(),
+        mode = %dreaming_mode,
         "Dream cycle: using live brain"
     );
 
@@ -233,6 +240,7 @@ pub async fn run_dream_cycle(
             &model_router,
             &mut user_md_compacted,
             &mut soul_md_compacted,
+            &dreaming_mode,
         ).await {
             warn!(error = %e, "Dream cycle: startup compaction check failed (non-fatal)");
         }
@@ -273,6 +281,7 @@ pub async fn run_dream_cycle(
             model_router.clone(),
             pool.clone(),
             skill_library.clone(),
+            &dreaming_mode,
         )
         .await
         {
@@ -408,7 +417,7 @@ pub async fn run_dream_cycle(
                 info!("Curator run starting under the hood of dreaming...");
                 let start_time = chrono::Utc::now();
                 let llm_client = ModelRouterLlmClient(model_router.clone());
-                let run_with_llm = curator.policy.consolidation_enabled;
+                let run_with_llm = curator.policy.consolidation_enabled && dreaming_mode != "turbo";
                 
                 match curator.run(if run_with_llm { Some(&llm_client) } else { None }).await {
                     Ok(decs) => {
@@ -447,6 +456,7 @@ async fn process_page(
     model_router: Arc<ModelRouter>,
     pool: SqlitePool,
     skill_library: Option<Arc<SkillLibrary>>,
+    dreaming_mode: &str,
 ) -> anyhow::Result<DreamStats> {
     use sqlx::Row;
     let mut stats = DreamStats::default();
@@ -497,12 +507,16 @@ async fn process_page(
     }
 
     // Extract with retry: up to 3 attempts with stricter prompts on failure.
-    let extraction = match extract_with_retry(&model_router, &log_text, &page_id, &mut stats).await {
-        Some(ex) => ex,
-        None => {
-            warn!(page_id = %page_id, "Dream cycle: extraction failed after all retries — deferring consolidation for a future retry");
-            stats.pages_failed += 1;
-            return Ok(stats);
+    let extraction = if dreaming_mode == "turbo" {
+        extract_turbo(&log_text, &page_id)
+    } else {
+        match extract_with_retry(&model_router, &log_text, &page_id, &mut stats, dreaming_mode).await {
+            Some(ex) => ex,
+            None => {
+                warn!(page_id = %page_id, "Dream cycle: extraction failed after all retries — deferring consolidation for a future retry");
+                stats.pages_failed += 1;
+                return Ok(stats);
+            }
         }
     };
 
@@ -586,10 +600,10 @@ async fn process_page(
             }
             // ── Step 5b: LLM compaction if over the budget ───────────────
             if user_bmd.needs_compaction().unwrap_or(false) {
-                match compact_md_with_llm(&user_bmd, &model_router, USER_MD_CHAR_LIMIT).await {
+                match compact_md_with_llm(&user_bmd, &model_router, USER_MD_CHAR_LIMIT, dreaming_mode).await {
                     Ok(()) => {
                         stats.compactions_user_md += 1;
-                        info!(page_id = %page_id, "Dream cycle: USER.md compacted via LLM re-synthesis");
+                        info!(page_id = %page_id, "Dream cycle: USER.md compacted");
                     }
                     Err(e) => warn!(page_id = %page_id, error = %e, "Dream cycle: USER.md compaction failed (non-fatal)"),
                 }
@@ -611,10 +625,10 @@ async fn process_page(
             }
             // ── Step 5d: LLM compaction if over the budget ───────────────
             if soul_bmd.needs_compaction().unwrap_or(false) {
-                match compact_md_with_llm(&soul_bmd, &model_router, SOUL_MD_CHAR_LIMIT).await {
+                match compact_md_with_llm(&soul_bmd, &model_router, SOUL_MD_CHAR_LIMIT, dreaming_mode).await {
                     Ok(()) => {
                         stats.compactions_soul_md += 1;
-                        info!(page_id = %page_id, "Dream cycle: SOUL.md compacted via LLM re-synthesis");
+                        info!(page_id = %page_id, "Dream cycle: SOUL.md compacted");
                     }
                     Err(e) => warn!(page_id = %page_id, error = %e, "Dream cycle: SOUL.md compaction failed (non-fatal)"),
                 }
@@ -711,23 +725,25 @@ async fn process_page(
     // successfully consolidated this page's messages, hand the same
     // trajectory to the SkillExtractor. Failures are logged at WARN
     // and never propagated: a single bad page must not break the
-    // dream cycle.
-    if let Some(lib) = skill_library {
-        let stats_ind = crate::skill_induction::induce_skill_from_page_with_library_and_router(
-            lib,
-            &pool,
-            &page_id,
-            Some(model_router),
-        )
-        .await;
-        if stats_ind.skills_inserted > 0 {
-            info!(
-                page_id = %page_id,
-                inserted = stats_ind.skills_inserted,
-                duplicates = stats_ind.duplicates_skipped,
-                rejected = stats_ind.rejected,
-                "📚 Dream cycle: skill induction"
-            );
+    // dream cycle. Skip in Turbo mode to avoid model calls.
+    if dreaming_mode != "turbo" {
+        if let Some(lib) = skill_library {
+            let stats_ind = crate::skill_induction::induce_skill_from_page_with_library_and_router(
+                lib,
+                &pool,
+                &page_id,
+                Some(model_router),
+            )
+            .await;
+            if stats_ind.skills_inserted > 0 {
+                info!(
+                    page_id = %page_id,
+                    inserted = stats_ind.skills_inserted,
+                    duplicates = stats_ind.duplicates_skipped,
+                    rejected = stats_ind.rejected,
+                    "📚 Dream cycle: skill induction"
+                );
+            }
         }
     }
     Ok(stats)
@@ -904,6 +920,7 @@ async fn extract_with_retry(
     log_text: &str,
     page_id: &str,
     stats: &mut DreamStats,
+    dreaming_mode: &str,
 ) -> Option<ExtractionResponse> {
     let (system_prompt, user_prompt) = build_extraction_prompt(log_text);
 
@@ -927,7 +944,13 @@ async fn extract_with_retry(
         let (tx, mut rx) = mpsc::channel(100);
         let drain = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
 
-        match model_router.chat_stream(messages, tx, None).await {
+        let override_model = if dreaming_mode == "scholar" {
+            Some("planning")
+        } else {
+            None
+        };
+
+        match model_router.chat_stream(messages, tx, override_model).await {
             Ok((raw_json, _)) => {
                 let _ = drain.await;
                 if let Some(extraction) = parse_json_extraction(&raw_json) {
@@ -979,6 +1002,7 @@ async fn startup_compaction_check(
     model_router: &ModelRouter,
     user_md_compacted: &mut bool,
     soul_md_compacted: &mut bool,
+    dreaming_mode: &str,
 ) -> anyhow::Result<()> {
     let user_path = crate::paths::config_dir().join("USER.md");
     if should_check_compaction(&user_path) {
@@ -988,9 +1012,9 @@ async fn startup_compaction_check(
             warn!(
                 current_chars = current_len,
                 limit = USER_MD_CHAR_LIMIT,
-                "Dream cycle startup: USER.md exceeds budget — running LLM compaction"
+                "Dream cycle startup: USER.md exceeds budget — running compaction"
             );
-            compact_md_with_llm(&user_bmd, model_router, USER_MD_CHAR_LIMIT).await?;
+            compact_md_with_llm(&user_bmd, model_router, USER_MD_CHAR_LIMIT, dreaming_mode).await?;
             *user_md_compacted = true;
         }
     }
@@ -1003,9 +1027,9 @@ async fn startup_compaction_check(
             warn!(
                 current_chars = current_len,
                 limit = SOUL_MD_CHAR_LIMIT,
-                "Dream cycle startup: SOUL.md exceeds budget — running LLM compaction"
+                "Dream cycle startup: SOUL.md exceeds budget — running compaction"
             );
-            compact_md_with_llm(&soul_bmd, model_router, SOUL_MD_CHAR_LIMIT).await?;
+            compact_md_with_llm(&soul_bmd, model_router, SOUL_MD_CHAR_LIMIT, dreaming_mode).await?;
             *soul_md_compacted = true;
         }
     }
@@ -1032,12 +1056,20 @@ async fn compact_md_with_llm(
     bmd: &BoundedMd,
     model_router: &ModelRouter,
     limit: usize,
+    dreaming_mode: &str,
 ) -> anyhow::Result<()> {
     let content = bmd.read()?;
     let current_len = content.chars().count();
 
     if current_len <= limit {
         // Nothing to do — may have been compacted by a concurrent task.
+        return Ok(());
+    }
+
+    if dreaming_mode == "turbo" {
+        info!("Dreaming mode is Turbo: performing local rule-based compaction instead of LLM re-synthesis");
+        let local_compacted = compact_md_local(&content, limit);
+        bmd.write(&local_compacted)?;
         return Ok(());
     }
 
@@ -1055,8 +1087,14 @@ async fn compact_md_with_llm(
     let (tx, mut rx) = mpsc::channel(100);
     let drain = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
 
+    let override_model = if dreaming_mode == "scholar" {
+        Some("planning")
+    } else {
+        None
+    };
+
     let (compacted_text, model_used) = match model_router
-        .chat_stream(vec![system_message], tx, None)
+        .chat_stream(vec![system_message], tx, override_model)
         .await
     {
         Ok(res) => res,
@@ -1102,4 +1140,58 @@ async fn compact_md_with_llm(
     );
     Ok(())
 }
+
+fn extract_turbo(log_text: &str, page_id: &str) -> ExtractionResponse {
+    let mut extracted_facts = Vec::new();
+    let mut style_habits = Vec::new();
+    let mut behavior_rules = Vec::new();
+    
+    for line in log_text.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("fact:") || lower.starts_with("note:") {
+            let part = trimmed.split_once(':').map(|(_, val)| val.trim()).unwrap_or(trimmed);
+            extracted_facts.push(ExtractedFact {
+                fact: part.to_string(),
+                category: "general".to_string(),
+                importance_1_to_10: 5,
+            });
+        } else if lower.starts_with("prefer:") || lower.starts_with("habit:") || lower.starts_with("style:") {
+            let part = trimmed.split_once(':').map(|(_, val)| val.trim()).unwrap_or(trimmed);
+            style_habits.push(part.to_string());
+        } else if lower.starts_with("rule:") || lower.starts_with("behavior:") || lower.starts_with("guideline:") {
+            let part = trimmed.split_once(':').map(|(_, val)| val.trim()).unwrap_or(trimmed);
+            behavior_rules.push(part.to_string());
+        }
+    }
+
+    let summary = if log_text.len() > 300 {
+        format!("Local Turbo summary of chat {}: {}...", page_id, &log_text[..300].replace('\n', " "))
+    } else {
+        format!("Local Turbo summary of chat {}: {}", page_id, log_text.replace('\n', " "))
+    };
+
+    ExtractionResponse {
+        title: Some(format!("Chat {}", page_id)),
+        summary: Some(summary),
+        suggested_books: Some(vec!["General".to_string()]),
+        suggested_shelves: Some(vec!["General".to_string()]),
+        extracted_facts: Some(extracted_facts),
+        style_habits: Some(style_habits),
+        behavior_rules: Some(behavior_rules),
+    }
+}
+
+fn compact_md_local(content: &str, limit: usize) -> String {
+    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    while lines.join("\n").len() > limit && lines.len() > 10 {
+        if let Some(idx) = lines.iter().position(|l| l.trim().starts_with("- ")) {
+            lines.remove(idx);
+        } else {
+            lines.pop();
+        }
+    }
+    lines.join("\n")
+}
+
 

@@ -157,7 +157,7 @@ pub fn render_tip_box(tip: &TipBox, width: usize) -> String {
     let rule_after_title = inner_width.saturating_sub(title_visual + 1);
     let _ = writeln!(
         out,
-        "┌─ {} {}",
+        "┌─ {} {}┐",
         tip.title.if_supports_color(Stdout, |t| t.style(title_style)),
         "─".repeat(rule_after_title).if_supports_color(Stdout, |r| r.style(dim_style)),
     );
@@ -274,7 +274,10 @@ pub fn render_kimi_header(brand: &BrandInfo, tip: &TipBox) -> String {
     // a fixed 18 columns; the tip box is `inner_width + 2`
     // (for the `│` borders). We size the gap between the two
     // columns to one space for breathing room.
-    let tip_str = render_tip_box(tip, 48);
+    let term_width = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+    // Tip box shouldn't be wider than available space minus logo width (37) and padding
+    let max_tip_width = term_width.saturating_sub(LOGO_WIDTH + 4).max(30).min(65);
+    let tip_str = render_tip_box(tip, max_tip_width);
     let tip_lines: Vec<&str> = tip_str.lines().collect();
 
     // Build the "sidecar" text that sits next to the logo. We define both
@@ -367,11 +370,11 @@ pub fn print_kimi_header(brand: &BrandInfo, tip: &TipBox) {
 pub fn default_tip_box() -> TipBox {
     let tips = vec![
         TipBox::with_after(
-            "Kimchi's special:".to_string(),
+            "Hydra's tip:".to_string(),
             vec![
                 "Use /paste to drop in a long prompt that spans".to_string(),
                 "several lines. Finish with a line containing only".to_string(),
-                "```  (or /paste on its own).".to_string(),
+                "```  (or type /paste again to end).".to_string(),
             ],
             vec![
                 "Tip: /model [name] switches the active brain for this".to_string(),
@@ -380,7 +383,7 @@ pub fn default_tip_box() -> TipBox {
             ],
         ),
         TipBox::with_after(
-            "Kimchi's special:".to_string(),
+            "Did you know:".to_string(),
             vec![
                 "Try using /resume to open the interactive Library browser.".to_string(),
                 "Use the arrow keys to browse Shelves, Books, and Page".to_string(),
@@ -392,15 +395,27 @@ pub fn default_tip_box() -> TipBox {
             ],
         ),
         TipBox::with_after(
-            "Kimchi's special:".to_string(),
+            "Power user:".to_string(),
             vec![
                 "Run /compact to compress long conversations using the LLM.".to_string(),
                 "It summarizes history and clears active memory to keep".to_string(),
                 "context usage low and responses fast.".to_string(),
             ],
             vec![
-                "Tip: Auto-compaction will automatically trigger if your".to_string(),
-                "context fullness reaches 80%.".to_string(),
+                "Tip: You can manually run /compact anytime to shrink".to_string(),
+                "the context size and summarize the conversation so far.".to_string(),
+            ],
+        ),
+        TipBox::with_after(
+            "Memory System:".to_string(),
+            vec![
+                "Hydragent consolidates your conversations into memory".to_string(),
+                "automatically. Use /dream to check the status of the".to_string(),
+                "background memory consolidation cycle.".to_string(),
+            ],
+            vec![
+                "Tip: /dream enable turns on auto-consolidation. Run".to_string(),
+                "`hydragent dream` from a shell for details.".to_string(),
             ],
         ),
     ];

@@ -85,7 +85,7 @@ impl Report {
                 Severity::Fail => ("✗ ", "\x1b[31m"),  // red
             };
             let reset = "\x1b[0m";
-            println!("  {}{}{}  {:<24}  {}", colour, icon, reset, c.name, c.detail);
+            println!("  {}{}{}  {:<28}  {}", colour, icon, reset, c.name, c.detail);
             if let Some(h) = &c.hint {
                 println!("       {}└─ fix: {}{}", "\x1b[90m", h, reset);
             }
@@ -95,8 +95,8 @@ impl Report {
         let warn = self.warn_count();
         let fail = self.fail_count();
         let summary = if fail > 0 {
-            format!("\x1b[31m{} failed\x1b[0m, \x1b[33m{} warnings\x1b[0m, \x1b[32m{} ok\x1b[0m",
-                fail, warn, ok)
+            format!("\x1b[32m{} ok\x1b[0m, \x1b[33m{} warnings\x1b[0m, \x1b[31m{} failed\x1b[0m",
+                ok, warn, fail)
         } else if warn > 0 {
             format!("\x1b[32m{} ok\x1b[0m, \x1b[33m{} warnings\x1b[0m", ok, warn)
         } else {
@@ -200,7 +200,11 @@ pub fn run(app_config: &crate::config::AppConfig) -> Report {
                 "set BRAIN_KEY in `.env` (or use OPENROUTER_API_KEYS for back-compat)",
             ));
         }
-    } else if brain_key.contains("your-key-here") || brain_key.contains("9b9c8f09436e") {
+    } else if brain_key.contains("your-key-here")
+        || brain_key.contains("<your-api-key>")
+        || brain_key.contains("INSERT_KEY_HERE")
+        || brain_key.contains("sk-XXXX")
+    {
         checks.push(Check::fail(
             "BRAIN_KEY",
             "looks like the placeholder from .env.example",
@@ -295,7 +299,10 @@ pub fn run(app_config: &crate::config::AppConfig) -> Report {
     }
 
     // ── [6] sandbox WASM tools ────────────────────────────────────────
-    let sandbox_dir = PathBuf::from("./sandbox/tools");
+    let sandbox_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("sandbox/tools")))
+        .unwrap_or_else(|| PathBuf::from("./sandbox/tools"));
     let echo_wasm = sandbox_dir.join("echo.wasm");
     let file_read_wasm = sandbox_dir.join("file_read.wasm");
     if echo_wasm.exists() {
@@ -382,18 +389,20 @@ pub fn run(app_config: &crate::config::AppConfig) -> Report {
     // ── [10] bus port free? ───────────────────────────────────────────
     let port = app_config.bus_port;
     // Try a TCP connect — non-blocking hint.
-    match std::net::TcpStream::connect_timeout(
-        &format!("127.0.0.1:{}", port).parse().unwrap(),
-        std::time::Duration::from_millis(200),
-    ) {
-        Ok(_) => {
+    let addr_str = format!("127.0.0.1:{}", port);
+    let connect_result = addr_str
+        .parse::<std::net::SocketAddr>()
+        .ok()
+        .and_then(|addr| std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).ok());
+    match connect_result {
+        Some(_) => {
             checks.push(Check::warn(
                 "bus_port",
                 format!("port {} is already in use (another hydragent is running)", port),
                 "stop the other instance, or set BUS_PORT=… in `.env`",
             ));
         }
-        Err(_) => {
+        None => {
             checks.push(Check::ok(
                 "bus_port",
                 format!("{} is free", port),
@@ -406,7 +415,7 @@ pub fn run(app_config: &crate::config::AppConfig) -> Report {
 
 /// Redact a URL to show its origin + first path segment only.
 /// E.g. `https://api.openai.com/v1` → `https://api.openai.com/...`
-fn redact_url(url: &str) -> String {
+pub fn redact_url(url: &str) -> String {
     if let Some(idx) = url.find("://") {
         let after = &url[idx + 3..];
         if let Some(slash) = after.find('/') {

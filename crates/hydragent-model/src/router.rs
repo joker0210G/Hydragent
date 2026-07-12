@@ -193,7 +193,19 @@ impl ModelRouter {
         }
 
         // Primary + fallback path.
-        let primary = self.primary_model();
+        let mut primary = self.primary_model();
+        let is_scholar = std::env::var("DREAM_BUDGET_MODE")
+            .ok()
+            .or_else(|| std::env::var("DREAMING_MODE").ok())
+            .map(|s| s.to_lowercase()) == Some("scholar".to_string());
+            
+        if is_scholar {
+            if let Some(registry) = &self.registry {
+                if let Some(resolved) = registry.resolve("", Some("planning")) {
+                    primary = format!("{}/{}", resolved.provider_id, resolved.model_id);
+                }
+            }
+        }
         info!("Attempting primary model: {}", primary);
 
         let (primary_provider_id, primary_api_model_id) = if let Some(registry) = &self.registry {

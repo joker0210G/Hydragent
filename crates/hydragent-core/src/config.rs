@@ -20,7 +20,7 @@ pub mod provider_names {
 // below redacts those fields with `mask_key_for_debug` so that no future
 // `format!("{:?}", cfg)` call site can accidentally leak a secret to the
 // log file. (See regression test `appconfig_debug_redacts_keys`.)
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Default)]
 pub struct AppConfig {
     // ── The "brain" (single live provider) ────────────────────────────
     /// Base URL of the OpenAI-compatible `/v1/chat/completions` endpoint.
@@ -75,6 +75,7 @@ pub struct AppConfig {
     // ── Dreaming (memory consolidation) ──────────────────────────────
     pub enable_dreaming: bool,
     pub dreaming_interval_sec: u64,
+    pub dreaming_mode: DreamingMode,
 
     // ── Curator (skill curation) ─────────────────────────────────────
     pub enable_curator: bool,
@@ -136,6 +137,7 @@ impl std::fmt::Debug for AppConfig {
             )
             .field("enable_dreaming", &self.enable_dreaming)
             .field("dreaming_interval_sec", &self.dreaming_interval_sec)
+            .field("dreaming_mode", &self.dreaming_mode)
             .field("enable_curator", &self.enable_curator)
             .field("curator_interval_sec", &self.curator_interval_sec)
             .field("max_semantic_memories", &self.max_semantic_memories)
@@ -189,6 +191,7 @@ impl AppConfig {
             // Dreaming
             .set_default("enable_dreaming", true)?
             .set_default("dreaming_interval_sec", 60_u64)?
+            .set_default("dreaming_mode", "balanced")?
 
             // Curator
             .set_default("enable_curator", true)?
@@ -203,6 +206,13 @@ impl AppConfig {
 
         let mut config: AppConfig = builder.try_deserialize()?;
 
+        // Support DREAM_BUDGET_MODE env variable fallback/override
+        if let Ok(mode_str) = std::env::var("DREAM_BUDGET_MODE") {
+            if let Ok(mode) = serde_json::from_value::<DreamingMode>(serde_json::json!(mode_str.to_lowercase())) {
+                config.dreaming_mode = mode;
+            }
+        }
+ 
         // Resolve relative `data_dir` settings so every downstream
         // `format!("{}/sessions.db", cfg.data_dir)` produces a stable
         // absolute path regardless of cwd. We anchor at the resolved
@@ -349,6 +359,7 @@ mod tests {
     //! deterministic.
 
     use super::AppConfig;
+    use super::DreamingMode;
     use super::mask_key_for_debug;
 
     fn cfg(
@@ -375,6 +386,7 @@ mod tests {
             openrouter_api_keys: openrouter_api_keys.to_string(),
             enable_dreaming: false,
             dreaming_interval_sec: 60,
+            dreaming_mode: DreamingMode::Balanced,
             max_semantic_memories: 1_000_000,
             enable_curator: true,
             curator_interval_sec: 86400,
@@ -616,5 +628,20 @@ mod tests {
         );
         assert_eq!(AppConfig::mask_key(""), "<empty>");
         assert_eq!(AppConfig::mask_key("short"), "<set> (5 chars)");
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DreamingMode {
+    Balanced,
+    Turbo,
+    Scholar,
+    Custom,
+}
+
+impl Default for DreamingMode {
+    fn default() -> Self {
+        Self::Balanced
     }
 }
