@@ -76,10 +76,18 @@ if exist "%HYDRAGENT_HOME%\.env" (
 ) else (
     set "HYDRAGENT_DEFAULT_CMD=onboard"
     echo.
-    echo [Hydragent] No .env found at %HYDRAGENT_HOME%\.env.
-    echo [Hydragent] Launching the first-run onboarding wizard...
-    echo [Hydragent] Stages: A=lockbox  B=brain  C=desk+skills  D=safety posture
-    echo.
+    powershell -NoProfile -Command ^
+        "Write-Host ''; " ^
+        "Write-Host '  [1;38;5;99m' -NoNewline; Write-Host 'HYDRAGENT' -NoNewline; Write-Host '[0m  Self-improving local-first AI agent' -ForegroundColor Gray; " ^
+        "Write-Host ''; " ^
+        "Write-Host '  [38;5;221m[WARNING][0m  No .env found. Launching first-run setup wizard...' ; " ^
+        "Write-Host ''; " ^
+        "Write-Host '  Stages: ' -NoNewline; " ^
+        "Write-Host '[A] Lockbox ' -NoNewline -ForegroundColor Cyan; " ^
+        "Write-Host '[B] Brain ' -NoNewline -ForegroundColor Magenta; " ^
+        "Write-Host '[C] Desk + Skills ' -NoNewline -ForegroundColor Green; " ^
+        "Write-Host '[D] Safety Posture' -ForegroundColor Yellow; " ^
+        "Write-Host ''"
 )
 if exist "%HYDRAGENT_HOME%\.env" call :load_env "%HYDRAGENT_HOME%\.env"
 "%HYDRAGENT_BIN_EXE%" %HYDRAGENT_DEFAULT_CMD%

@@ -2724,8 +2724,9 @@ async fn main() {
         timeout_secs,
     );
 
-    let model_router = Arc::new(hydragent_model::router::ModelRouter::new(
+    let model_router = Arc::new(hydragent_model::router::ModelRouter::new_with_registry(
         brain_client,
+        Arc::new(registry),
         wire_model.to_string(),
         brain_fallbacks,
     ));

@@ -19,6 +19,10 @@ pub struct OllamaProviderConfig {
     pub default_num_ctx: u32,
     pub keep_alive: Option<String>,
     pub num_thread: Option<u32>,
+    pub temperature: Option<f32>,
+    pub repeat_penalty: Option<f32>,
+    pub top_p: Option<f32>,
+    pub top_k: Option<u32>,
 }
 
 impl OllamaProviderConfig {
@@ -51,6 +55,22 @@ impl OllamaProviderConfig {
             .ok()
             .and_then(|s| s.parse::<u32>().ok());
 
+        let temperature = std::env::var("OLLAMA_TEMPERATURE")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok());
+
+        let repeat_penalty = std::env::var("OLLAMA_REPEAT_PENALTY")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok());
+
+        let top_p = std::env::var("OLLAMA_TOP_P")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok());
+
+        let top_k = std::env::var("OLLAMA_TOP_K")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok());
+
         Self {
             base_url,
             default_model,
@@ -58,6 +78,10 @@ impl OllamaProviderConfig {
             default_num_ctx,
             keep_alive,
             num_thread,
+            temperature,
+            repeat_penalty,
+            top_p,
+            top_k,
         }
     }
 }
@@ -77,6 +101,14 @@ struct OllamaChatOptions {
     num_thread: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_predict: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeat_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_k: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -99,6 +131,9 @@ struct OllamaChatResponseChunk {
     message: Option<OllamaMessageChunk>,
     #[serde(default)]
     done: bool,
+    prompt_eval_count: Option<u32>,
+    eval_count: Option<u32>,
+    total_duration: Option<u64>,
 }
 
 /// Fields default to empty string so we can use .is_empty() safely.
@@ -232,6 +267,10 @@ impl OllamaClient {
                 num_ctx: Some(num_ctx),
                 num_thread: self.config.num_thread,
                 num_predict: request.max_tokens.map(|t| t as i32),
+                temperature: self.config.temperature,
+                repeat_penalty: self.config.repeat_penalty,
+                top_p: self.config.top_p,
+                top_k: self.config.top_k,
             },
             keep_alive: self.config.keep_alive.clone(),
             think,
@@ -260,18 +299,18 @@ impl OllamaClient {
         let mut stream = resp.bytes_stream();
         let mut in_thinking = false;
 
-        let mut line_buffer = String::new();
+        let mut byte_buffer: Vec<u8> = Vec::new();
         info!("Ollama streaming started for model: {}", model);
         use tokio_stream::StreamExt;
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.context("Ollama chunk error")?;
-            let text = std::str::from_utf8(&bytes)?;
-            line_buffer.push_str(text);
+            byte_buffer.extend_from_slice(&bytes);
 
-            while let Some(newline_idx) = line_buffer.find('\n') {
-                let line = line_buffer[..newline_idx].to_string();
-                line_buffer.drain(..=newline_idx);
+            while let Some(newline_idx) = byte_buffer.iter().position(|&b| b == b'\n') {
+                let line_bytes = byte_buffer[..newline_idx].to_vec();
+                byte_buffer.drain(..=newline_idx);
 
+                let line = String::from_utf8(line_bytes)?;
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
@@ -303,6 +342,16 @@ impl OllamaClient {
                             if in_thinking {
                                 let _ = tx.send("</think>".to_string()).await;
                             }
+                            let prompt_tokens = chunk_data.prompt_eval_count.unwrap_or(0);
+                            let completion_tokens = chunk_data.eval_count.unwrap_or(0);
+                            let duration_ms = chunk_data.total_duration.map(|ns| ns / 1_000_000).unwrap_or(0);
+                            info!(
+                                model = %model,
+                                prompt_tokens = %prompt_tokens,
+                                completion_tokens = %completion_tokens,
+                                duration_ms = %duration_ms,
+                                "Ollama generation completed"
+                            );
                             break;
                         }
                     }
@@ -312,6 +361,24 @@ impl OllamaClient {
                 }
             }
         }
+
+        // Process any trailing line without newline
+        if !byte_buffer.is_empty() {
+            if let Ok(line) = String::from_utf8(byte_buffer) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    if let Ok(chunk_data) = serde_json::from_str::<OllamaChatResponseChunk>(&line) {
+                        if let Some(msg) = chunk_data.message {
+                            if !msg.content.is_empty() {
+                                full_content.push_str(&msg.content);
+                                let _ = tx.send(msg.content).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(full_content)
     }
 }
@@ -334,3 +401,101 @@ impl ModelProvider for OllamaClient {
         self.stream_completion(request, token_tx).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_model_supports_thinking() {
+        assert!(OllamaClient::model_supports_thinking("deepseek-r1:8b"));
+        assert!(OllamaClient::model_supports_thinking("deepseek-r1:32b"));
+        assert!(OllamaClient::model_supports_thinking("qwq:latest"));
+        assert!(OllamaClient::model_supports_thinking("qwen3-coder"));
+        assert!(OllamaClient::model_supports_thinking("marco-o1"));
+        assert!(!OllamaClient::model_supports_thinking("llama3.1:8b"));
+        assert!(!OllamaClient::model_supports_thinking("mistral:latest"));
+    }
+
+    #[test]
+    fn test_ollama_provider_config_env_suite() {
+        // Clear env vars to test defaults
+        std::env::remove_var("OLLAMA_API_BASE");
+        std::env::remove_var("BRAIN_BASE");
+        std::env::remove_var("OLLAMA_MODEL");
+        std::env::remove_var("BRAIN_MODEL");
+        std::env::remove_var("OLLAMA_API_TIMEOUT_SEC");
+        std::env::remove_var("OLLAMA_NUM_CTX");
+        std::env::remove_var("OLLAMA_KEEP_ALIVE");
+        std::env::remove_var("OLLAMA_NUM_THREAD");
+        std::env::remove_var("OLLAMA_TEMPERATURE");
+        std::env::remove_var("OLLAMA_REPEAT_PENALTY");
+        std::env::remove_var("OLLAMA_TOP_P");
+        std::env::remove_var("OLLAMA_TOP_K");
+
+        let cfg = OllamaProviderConfig::from_env();
+        assert_eq!(cfg.base_url, "http://localhost:11434");
+        assert_eq!(cfg.default_model, "llama3.1:8b");
+        assert_eq!(cfg.timeout, Duration::from_secs(300));
+        assert_eq!(cfg.default_num_ctx, 8192);
+        assert!(cfg.keep_alive.is_none());
+        assert!(cfg.num_thread.is_none());
+        assert!(cfg.temperature.is_none());
+        assert!(cfg.repeat_penalty.is_none());
+        assert!(cfg.top_p.is_none());
+        assert!(cfg.top_k.is_none());
+
+        // Test overrides
+        std::env::set_var("OLLAMA_API_BASE", "http://ollama-host:11434/");
+        std::env::set_var("OLLAMA_MODEL", "custom-model:latest");
+        std::env::set_var("OLLAMA_API_TIMEOUT_SEC", "120");
+        std::env::set_var("OLLAMA_NUM_CTX", "16384");
+        std::env::set_var("OLLAMA_KEEP_ALIVE", "15m");
+        std::env::set_var("OLLAMA_NUM_THREAD", "4");
+        std::env::set_var("OLLAMA_TEMPERATURE", "0.7");
+        std::env::set_var("OLLAMA_REPEAT_PENALTY", "1.1");
+        std::env::set_var("OLLAMA_TOP_P", "0.9");
+        std::env::set_var("OLLAMA_TOP_K", "40");
+
+        let cfg = OllamaProviderConfig::from_env();
+        // trailing slash should be trimmed by config constructor
+        assert_eq!(cfg.base_url, "http://ollama-host:11434");
+        assert_eq!(cfg.default_model, "custom-model:latest");
+        assert_eq!(cfg.timeout, Duration::from_secs(120));
+        assert_eq!(cfg.default_num_ctx, 16384);
+        assert_eq!(cfg.keep_alive, Some("15m".to_string()));
+        assert_eq!(cfg.num_thread, Some(4));
+        assert_eq!(cfg.temperature, Some(0.7));
+        assert_eq!(cfg.repeat_penalty, Some(1.1));
+        assert_eq!(cfg.top_p, Some(0.9));
+        assert_eq!(cfg.top_k, Some(40));
+
+        // Clean up env vars after test
+        std::env::remove_var("OLLAMA_API_BASE");
+        std::env::remove_var("OLLAMA_MODEL");
+        std::env::remove_var("OLLAMA_API_TIMEOUT_SEC");
+        std::env::remove_var("OLLAMA_NUM_CTX");
+        std::env::remove_var("OLLAMA_KEEP_ALIVE");
+        std::env::remove_var("OLLAMA_NUM_THREAD");
+        std::env::remove_var("OLLAMA_TEMPERATURE");
+        std::env::remove_var("OLLAMA_REPEAT_PENALTY");
+        std::env::remove_var("OLLAMA_TOP_P");
+        std::env::remove_var("OLLAMA_TOP_K");
+    }
+
+    #[test]
+    fn test_parse_response_chunks() {
+        let chunk_json = r#"{"message":{"role":"assistant","content":"hello"},"done":false}"#;
+        let chunk: OllamaChatResponseChunk = serde_json::from_str(chunk_json).unwrap();
+        assert!(!chunk.done);
+        assert_eq!(chunk.message.unwrap().content, "hello");
+
+        let done_json = r#"{"done":true,"prompt_eval_count":20,"eval_count":10,"total_duration":10000000}"#;
+        let chunk: OllamaChatResponseChunk = serde_json::from_str(done_json).unwrap();
+        assert!(chunk.done);
+        assert_eq!(chunk.prompt_eval_count, Some(20));
+        assert_eq!(chunk.eval_count, Some(10));
+        assert_eq!(chunk.total_duration, Some(10000000));
+    }
+}
+

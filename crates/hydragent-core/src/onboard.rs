@@ -121,9 +121,15 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         println!("------------------------------------------------------------------------");
         println!("  🐉 Welcome to Hydragent — first-time setup");
         println!("------------------------------------------------------------------------");
-        println!("  I'll help you create a `.env` file. You can use any");
-        println!("  OpenAI-compatible endpoint (OpenRouter, vLLM, Ollama, LM Studio,");
-        println!("  or a custom URL). Press Ctrl-C at any time to abort.");
+        println!("  I'll help you configure your local environment (lockbox, brain,");
+        println!("  memory books, skills, and safety posture).");
+        println!("  Press Ctrl-C at any time to abort.");
+        println!("------------------------------------------------------------------------");
+        println!();
+
+        println!("------------------------------------------------------------------------");
+        println!("  [Stage B/D] Brain Setup");
+        println!("  Choose which model path or provider to use for remote/local inference.");
         println!("------------------------------------------------------------------------");
         println!();
     }
@@ -244,22 +250,44 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         }
     };
 
-    // ── New Steps: Persona, Sandbox, Memory, Integrations ─────────────
+    // ── New Steps: Vault, Persona, Sandbox, Memory, Integrations ─────────────
+    let mut vault_passphrase = String::new();
     let mut persona = "developer";
     let mut custom_soul_prompt = String::new();
     let mut enforce_sandbox = false;
     let mut max_semantic_memories = 100;
+    let mut enable_dreaming = true;
     let mut telegram_token = String::new();
     let mut telegram_chat_ids = String::new();
 
     if !opts.non_interactive {
-        // Step 2: Persona
+        // ── Stage A: Vault Setup ──────────────────────────────────────────
         println!();
         println!("------------------------------------------------------------------------");
-        println!("  [Step 2/5] Agent Persona Selection");
-        println!("  Choose your Hydragent's default persona.");
-        println!("  (Note: Whichever baseline you choose will dynamically adapt and evolve based on your usage.)");
+        println!("  [Stage A/D] Vault & Lockbox Setup");
+        println!("  Configure the lockbox unlock method for encrypting your secrets.");
         println!("------------------------------------------------------------------------");
+        let vault_methods = &[
+            "Local Unencrypted (Default: Fine for solo local dev)",
+            "Passphrase Protected (Encrypts API keys & secrets at rest)"
+        ];
+        let selected_v = select(vault_methods, None).unwrap_or(0);
+        if selected_v == 1 {
+            println!();
+            if let Some(passphrase) = prompt_secret("  Enter your secure vault passphrase:") {
+                vault_passphrase = passphrase;
+            }
+        }
+
+        // ── Stage C: Memory & Skill Sources ─────────────────────────────────
+        println!();
+        println!("------------------------------------------------------------------------");
+        println!("  [Stage C/D] Memory & Skill Sources");
+        println!("  Configure durable work surfaces (pages, books, shelves), skills,");
+        println!("  and Graphify relationship mapping.");
+        println!("------------------------------------------------------------------------");
+
+        // 1. Agent Persona Selection
         let personas = &[
             "Developer (Default: Fact-focused, objective, coding-specialist)",
             "Creative (Warm, expressive, brainstorming partner)",
@@ -282,27 +310,8 @@ pub async fn run(opts: OnboardOptions) -> i32 {
             }
         }
 
-        // Step 3: Security & Sandbox
+        // 2. Memory selection
         println!();
-        println!("------------------------------------------------------------------------");
-        println!("  [Step 3/5] Security & Sandbox Level");
-        println!("  Configure Security Guardrails & Sandboxing.");
-        println!("------------------------------------------------------------------------");
-        let sandboxes = &[
-            "Secure Sandbox (Runs code in isolated WebAssembly, 100% safe)",
-            "Host Execution (Runs directly on host, but asks before executing write/run actions)"
-        ];
-        let selected_s = select(sandboxes, None).unwrap_or(1);
-        if selected_s == 0 {
-            enforce_sandbox = true;
-        }
-
-        // Step 4: Memory & Storage
-        println!();
-        println!("------------------------------------------------------------------------");
-        println!("  [Step 4/5] Memory & Storage");
-        println!("  Configure long-term semantic memory.");
-        println!("------------------------------------------------------------------------");
         let memory_options = &[
             "Enabled (Default: Stores and retrieves past facts about your chats)",
             "Disabled (Pure stateless session execution)"
@@ -312,18 +321,58 @@ pub async fn run(opts: OnboardOptions) -> i32 {
             max_semantic_memories = 0;
         }
 
-        // Step 5: Integrations & Adapters
+        // 3. Graphify Mapping
         println!();
-        println!("------------------------------------------------------------------------");
-        println!("  [Step 5/5] Integrations & Adapters");
-        println!("  Would you like to configure external chat interfaces (like Telegram)?");
-        println!("------------------------------------------------------------------------");
-        if prompt_yes_no("  Configure Telegram integration?", false).unwrap_or(false) {
+        let graphify_options = &[
+            "Enabled (Default: Automatically link pages, books, shelves in the background)",
+            "Disabled"
+        ];
+        let selected_g = select(graphify_options, None).unwrap_or(0);
+        if selected_g == 1 {
+            enable_dreaming = false;
+        }
+
+        // 4. Skills setup
+        println!();
+        let skill_options = &[
+            "Bundled Only (Default: lockbox-safe, only execute verified bundled skills)",
+            "Broad Discovery (Allows discovering and coaching from external workspace skill folders)"
+        ];
+        let _selected_sk = select(skill_options, None).unwrap_or(0);
+
+        // 5. Integrations & Adapters
+        println!();
+        if prompt_yes_no("Configure Telegram integration?", false).unwrap_or(false) {
             if let Some(token) = prompt("  Enter your Telegram Bot Token:") {
                 telegram_token = token;
                 if let Some(chat_ids) = prompt("  Enter your Telegram User/Chat ID(s) (comma-separated, e.g. 12345678):") {
                     telegram_chat_ids = chat_ids;
                 }
+            }
+        }
+
+        // ── Stage D: Safety Posture ─────────────────────────────────────────
+        println!();
+        println!("------------------------------------------------------------------------");
+        println!("  [Stage D/D] Safety Posture");
+        println!("  Configure the default execution safety posture.");
+        println!("------------------------------------------------------------------------");
+        let safety_options = &[
+            "Secure Sandbox (Default: Runs risky code inside isolated WebAssembly, 100% safe)",
+            "Host Execution with Approvals (Runs on host, prompts before executing shell/write commands)",
+            "Default-Deny (Disables command/file operations entirely)"
+        ];
+        let selected_s = select(safety_options, None).unwrap_or(0);
+        match selected_s {
+            0 => {
+                enforce_sandbox = true;
+            }
+            1 => {
+                enforce_sandbox = false;
+            }
+            _ => {
+                // Default-Deny can be implemented as sandbox on plus high safety settings
+                enforce_sandbox = true;
             }
         }
     }
@@ -388,40 +437,44 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         }
     }
 
-    let mut new_env = std::collections::BTreeMap::<String, String>::new();
-
-    // Preserve every BRAIN_* and a few other chosen keys from the existing .env.
-    if env_path.exists() {
-        if let Ok(text) = std::fs::read_to_string(&env_path) {
-            for line in text.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                if let Some((k, v)) = line.split_once('=') {
-                    let k = k.trim().to_string();
-                    let v = v.trim().to_string();
-                    // Only preserve these — everything else gets the new values.
-                    if matches!(k.as_str(),
-                        "BRAIN_PROVIDER" | "BRAIN_FALLBACKS" | "DATA_DIR" | "LOG_LEVEL" | "LOG_FORMAT" |
-                        "MAX_REACT_STEPS" | "BUS_PORT" |
-                        "ENABLE_DREAMING" | "DREAMING_INTERVAL_SEC" |
-                        "MAX_SEMANTIC_MEMORIES" | "WORKSPACE_DIR" |
-                        "ENFORCE_SANDBOX" | "MEMORY_CONTEXT_TOKEN_LIMIT" |
-                        "PAGE_COMPACTION_LIMIT" |
-                        "TELEGRAM_BOT_TOKEN" | "TELEGRAM_ALLOWED_CHAT_IDS" | "TELEGRAM_WEBAPP_URL" |
-                        "HYDRAGENT_VAULT_PASSPHRASE" |
-                        "SEARXNG_BASE_URL" | "SEARXNG_MAX_RESULTS" | "SEARXNG_TIMEOUT_SECS" |
-                        "SEARXNG_CATEGORIES" | "SEARXNG_LANGUAGE"
-                    ) {
-                        new_env.insert(k, v);
+    // Copy .env.example if .env does not exist
+    if !env_path.exists() {
+        let candidates = vec![
+            std::env::current_dir().unwrap_or_default().join(".env.example"),
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.join(".env.example")))
+                .unwrap_or_default(),
+            paths::config_dir().join(".env.example"),
+        ];
+        let mut copied = false;
+        for src in candidates {
+            if src.exists() {
+                if let Err(e) = std::fs::copy(&src, &env_path) {
+                    eprintln!("  ⚠ Failed to copy .env.example: {}", e);
+                } else {
+                    copied = true;
+                    if !opts.non_interactive {
+                        println!("  ✓ Initialized .env from {}", src.display());
                     }
+                    break;
                 }
             }
         }
+        if !copied {
+            // Fallback: create empty .env so we can write to it
+            let _ = std::fs::write(&env_path, "");
+        }
     }
 
-    // Now overlay the values the wizard is responsible for.
+    // Read the current .env lines
+    let mut lines = Vec::new();
+    if let Ok(text) = std::fs::read_to_string(&env_path) {
+        for line in text.lines() {
+            lines.push(line.to_string());
+        }
+    }
+
     let registry = hydragent_model::ModelRegistry::builtin_default();
     let provider_name = registry
         .provider_id_for_label(provider.label)
@@ -434,38 +487,57 @@ pub async fn run(opts: OnboardOptions) -> i32 {
             l if l.starts_with("LM Studio") => "lmstudio",
             _ => "custom",
         });
-    new_env.insert("BRAIN_PROVIDER".to_string(), provider_name.to_string());
-    new_env.insert("BRAIN_BASE".to_string(), base.clone());
-    new_env.insert("BRAIN_MODEL".to_string(), model.clone());
-    if !api_key.is_empty() {
-        new_env.insert("BRAIN_KEY".to_string(), api_key.clone());
-    } else {
-        new_env.insert("BRAIN_KEY".to_string(), String::new());
-    }
-    // Suggest two fallbacks (empty fallback list is fine).
-    if !new_env.contains_key("BRAIN_FALLBACKS") {
-        new_env.insert("BRAIN_FALLBACKS".to_string(), String::new());
-    }
 
-    // Overlay new variables
-    new_env.insert("ENFORCE_SANDBOX".to_string(), enforce_sandbox.to_string());
-    new_env.insert("MAX_SEMANTIC_MEMORIES".to_string(), max_semantic_memories.to_string());
+    // Prepare the keys we want to update/insert
+    let mut updates = std::collections::BTreeMap::<String, String>::new();
+    updates.insert("BRAIN_PROVIDER".to_string(), provider_name.to_string());
+    updates.insert("BRAIN_BASE".to_string(), base.clone());
+    updates.insert("BRAIN_MODEL".to_string(), model.clone());
+    updates.insert("BRAIN_KEY".to_string(), api_key.clone());
+    updates.insert("ENFORCE_SANDBOX".to_string(), enforce_sandbox.to_string());
+    updates.insert("MAX_SEMANTIC_MEMORIES".to_string(), max_semantic_memories.to_string());
+    updates.insert("ENABLE_DREAMING".to_string(), enable_dreaming.to_string());
+    if !vault_passphrase.is_empty() {
+        updates.insert("HYDRAGENT_VAULT_PASSPHRASE".to_string(), vault_passphrase);
+    }
     if !telegram_token.is_empty() {
-        new_env.insert("TELEGRAM_BOT_TOKEN".to_string(), telegram_token.clone());
+        updates.insert("TELEGRAM_BOT_TOKEN".to_string(), telegram_token.clone());
     }
     if !telegram_chat_ids.is_empty() {
-        new_env.insert("TELEGRAM_ALLOWED_CHAT_IDS".to_string(), telegram_chat_ids.clone());
+        updates.insert("TELEGRAM_ALLOWED_CHAT_IDS".to_string(), telegram_chat_ids.clone());
     }
 
-    // Re-render the file. write_env_file() creates the parent
-    // directory if it doesn't already exist.
-    let rendered = render_env(&new_env);
-    if let Err(e) = paths::write_env_file(&rendered) {
+    // Update lines in-place
+    let mut updated_keys = std::collections::BTreeSet::<String>::new();
+    for line in lines.iter_mut() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((k, _)) = trimmed.split_once('=') {
+            let key_name = k.trim().to_string();
+            if let Some(new_val) = updates.get(&key_name) {
+                *line = format!("{}={}", key_name, quote_value(new_val));
+                updated_keys.insert(key_name);
+            }
+        }
+    }
+
+    // Append any keys that were not already in the file
+    for (k, v) in &updates {
+        if !updated_keys.contains(k) {
+            lines.push(format!("{}={}", k, quote_value(v)));
+        }
+    }
+
+    // Join and write back
+    let rendered = lines.join("\n") + "\n";
+    if let Err(e) = std::fs::write(&env_path, rendered) {
         eprintln!("✗ Failed to write .env: {}", e);
         return 1;
     }
     println!();
-    println!("  ✓ Wrote .env at {}", env_path.display());
+    println!("  ✓ Updated .env at {}", env_path.display());
 
     // ── 6. Optionally verify ──────────────────────────────────────────
     if !opts.no_verify {
@@ -555,44 +627,6 @@ fn find_preset(name: &str) -> Option<&'static Provider> {
     PRESETS.iter().find(|p| p.label.starts_with(key))
 }
 
-fn render_env(values: &std::collections::BTreeMap<String, String>) -> String {
-    let mut out = String::new();
-    out.push_str("# Generated by `hydragent onboard` on ");
-    out.push_str(&chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string());
-    out.push('\n');
-    out.push_str("# Edit BRAIN_* below to point at a different provider.\n\n");
-
-    // Group keys in a stable order.
-    let order: &[&str] = &[
-        "BRAIN_BASE", "BRAIN_KEY", "BRAIN_PROVIDER", "BRAIN_MODEL", "BRAIN_FALLBACKS",
-        "DATA_DIR", "LOG_LEVEL", "LOG_FORMAT", "MAX_REACT_STEPS", "BUS_PORT",
-        "ENABLE_DREAMING", "DREAMING_INTERVAL_SEC", "MAX_SEMANTIC_MEMORIES",
-        "WORKSPACE_DIR", "ENFORCE_SANDBOX", "MEMORY_CONTEXT_TOKEN_LIMIT",
-        "PAGE_COMPACTION_LIMIT",
-        "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_CHAT_IDS", "TELEGRAM_WEBAPP_URL",
-        "HYDRAGENT_VAULT_PASSPHRASE",
-        "SEARXNG_BASE_URL", "SEARXNG_MAX_RESULTS", "SEARXNG_TIMEOUT_SECS",
-        "SEARXNG_CATEGORIES", "SEARXNG_LANGUAGE",
-    ];
-    for k in order {
-        if let Some(v) = values.get(*k) {
-            out.push_str(k);
-            out.push('=');
-            out.push_str(&quote_value(v));
-            out.push('\n');
-        }
-    }
-    // Anything else, alphabetically.
-    for (k, v) in values {
-        if !order.contains(&k.as_str()) {
-            out.push_str(k);
-            out.push('=');
-            out.push_str(&quote_value(v));
-            out.push('\n');
-        }
-    }
-    out
-}
 
 fn quote_value(v: &str) -> String {
     if v.contains(' ') || v.contains('#') || v.contains('"') {

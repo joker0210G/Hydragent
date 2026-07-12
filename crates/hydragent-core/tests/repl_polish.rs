@@ -46,11 +46,18 @@ fn chat_with_bytes(input: &[u8], timeout: Duration) -> std::process::Output {
     let home = tempdir_home("repl_polish");
     let home_path = std::path::PathBuf::from(&home);
     let _ = std::fs::create_dir_all(&home_path);
-    let _ = std::fs::write(home_path.join(".env"), "BRAIN_BASE=http://localhost:11434/v1\n");
+    let _ = std::fs::write(
+        home_path.join(".env"),
+        "BRAIN_BASE=http://localhost:11434/v1\n\
+         BRAIN_KEY=mock-key\n\
+         BRAIN_MODEL=mock-model\n\
+         HYDRAGENT_SKIP_WARMUP=1\n"
+    );
 
     let mut child = Command::new(bin())
         .arg("chat")
         .env("HYDRAGENT_HOME", &home)
+        .env("HYDRAGENT_SKIP_WARMUP", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

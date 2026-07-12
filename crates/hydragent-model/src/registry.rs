@@ -448,14 +448,19 @@ impl ProviderRegistry {
     ) -> Arc<dyn ModelProvider> {
         let normalized = Self::normalize_provider_id(provider_id);
         match normalized {
-            "ollama" => Arc::new(OllamaClient::new(OllamaProviderConfig {
-                base_url: base_url.trim_end_matches('/').to_string(),
-                default_model: model.to_string(),
-                timeout: Duration::from_secs(timeout_secs),
-                default_num_ctx: 8192,
-                keep_alive: None,
-                num_thread: None,
-            })),
+            "ollama" => {
+                let mut cfg = OllamaProviderConfig::from_env();
+                if !base_url.is_empty() {
+                    cfg.base_url = base_url.trim_end_matches('/').to_string();
+                }
+                if !model.is_empty() {
+                    cfg.default_model = model.to_string();
+                }
+                if timeout_secs > 0 {
+                    cfg.timeout = Duration::from_secs(timeout_secs);
+                }
+                Arc::new(OllamaClient::new(cfg))
+            }
             "openrouter" => {
                 let keys = api_key
                     .split(',')

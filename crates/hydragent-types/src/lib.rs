@@ -319,14 +319,18 @@ pub struct PendingClarification {
 pub enum SubAgentRole {
     /// Plans, decomposes, orchestrates
     Plan,
-    /// Writes code, runs build/tests
+    /// Writes code, runs build/tests (Builder)
     Build,
     /// Researches, searches, reads
     Explore,
-    /// Fast, cheap reconnaissance
+    /// Fast, cheap reconnaissance (Scout)
     Scout,
     /// Reviews outputs, finds issues
     Review,
+    /// Compiles, tests, and checks the result against the task contract (Verifier)
+    Verifier,
+    /// Compresses durable results into pages, books, shelves, and graph links (Scribe)
+    Scribe,
     /// Generic catch-all
     General,
 }
@@ -340,6 +344,8 @@ impl SubAgentRole {
             SubAgentRole::Explore  => &["web_search", "memory_search", "memory_store", "file_read"],
             SubAgentRole::Scout    => &["web_search"],
             SubAgentRole::Review   => &["file_read", "memory_search"],
+            SubAgentRole::Verifier => &["file_read", "execute_command", "memory_search"],
+            SubAgentRole::Scribe   => &["memory_store", "memory_search"],
             SubAgentRole::General  => &["echo"],
         }
     }
@@ -352,6 +358,8 @@ impl SubAgentRole {
             SubAgentRole::Explore  => 3_000,
             SubAgentRole::Scout    => 1_500,
             SubAgentRole::Review   => 2_500,
+            SubAgentRole::Verifier => 3_000,
+            SubAgentRole::Scribe   => 2_000,
             SubAgentRole::General  => 1_500,
         }
     }
@@ -364,6 +372,8 @@ impl SubAgentRole {
             SubAgentRole::Explore  => 45_000,
             SubAgentRole::Scout    => 20_000,
             SubAgentRole::Review   => 30_000,
+            SubAgentRole::Verifier => 45_000,
+            SubAgentRole::Scribe   => 30_000,
             SubAgentRole::General  => 20_000,
         }
     }

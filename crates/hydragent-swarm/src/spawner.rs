@@ -232,9 +232,6 @@ impl SubAgentSpawner {
     }
 }
 
-/// Map a [`SubAgentRole`] to a `TaskType` snake_case tag the council
-/// can route on.  This is intentionally a lossy projection — the
-/// council's `general` tag catches anything not explicitly listed.
 fn role_task_tag(role: SubAgentRole) -> &'static str {
     match role {
         SubAgentRole::Build => "code_generation",
@@ -242,6 +239,8 @@ fn role_task_tag(role: SubAgentRole) -> &'static str {
         SubAgentRole::Plan => "planning",
         SubAgentRole::Review => "review",
         SubAgentRole::Scout => "summarization",
+        SubAgentRole::Verifier => "review",
+        SubAgentRole::Scribe => "summarization",
         SubAgentRole::General => "general",
     }
 }

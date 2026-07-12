@@ -208,7 +208,8 @@ pub async fn run(mut state: ReplState) -> i32 {
     let mut stdout = std::io::stdout();
 
     // ── Ollama Context Pre-Warming ────────────────────────────────────
-    if state.model_router.provider_label() == "ollama" {
+    let skip_warmup = std::env::var("HYDRAGENT_SKIP_WARMUP").unwrap_or_default() == "1";
+    if state.model_router.provider_label() == "ollama" && !skip_warmup {
         let model_name = state.brand.model.clone();
         let registry = state.registry.clone();
         let page_id = state.page_id.clone();
@@ -219,7 +220,7 @@ pub async fn run(mut state: ReplState) -> i32 {
         let warmup_spinner = start_spinner(format!("  {ANSI_CYAN}hydra{ANSI_RESET} warming up local brain cache (makes first response instant)"));
 
         // Construct the static system prompt exactly as in react_loop.rs
-        let system_prompt = format!(
+        let mut system_prompt = format!(
             "You are Hydra, an advanced agentic AI assistant. You solve problems step-by-step using a ReAct loop.\n\
             You must respond with a single JSON object. DO NOT wrap it in markdown block unless required, and DO NOT output anything else.\n\n\
             Your JSON response must follow one of these two schemas:\n\n\
@@ -255,6 +256,27 @@ pub async fn run(mut state: ReplState) -> i32 {
             user_id
         );
 
+        // Prepend user profile and soul guidelines exactly as in react_loop.rs
+        let user_profile = std::fs::read_to_string(crate::paths::config_dir().join("USER.md")).ok();
+        let soul_guidelines = std::fs::read_to_string(crate::paths::config_dir().join("SOUL.md")).ok();
+
+        if let Some(soul) = soul_guidelines {
+            if !soul.trim().is_empty() {
+                system_prompt = format!(
+                    "# Agent Soul & Guidelines\n{}\n\n{}",
+                    soul, system_prompt
+                );
+            }
+        }
+        if let Some(user) = user_profile {
+            if !user.trim().is_empty() {
+                system_prompt = format!(
+                    "# User Profile & Style Preferences\n{}\n\n{}",
+                    user, system_prompt
+                );
+            }
+        }
+
         let messages = vec![
             hydragent_model::openrouter::ChatMessage {
                 role: "system".to_string(),
@@ -287,11 +309,18 @@ pub async fn run(mut state: ReplState) -> i32 {
         // Drain the tokens concurrently in the main thread
         while rx.recv().await.is_some() {}
 
-        // Wait for the background task to complete
-        let _ = handle.await;
+        // Wait for the background task to complete and check if it succeeded
+        let warmup_success = match handle.await {
+            Ok(Ok(_)) => true,
+            _ => false,
+        };
 
         warmup_spinner.stop();
-        println!("\r\x1b[2K  ✨ Brain cache ready! (First response will be instant)\n");
+        if warmup_success {
+            println!("\r\x1b[2K  ✨ Brain cache ready! (First response will be instant)\n");
+        } else {
+            println!("\r\x1b[2K  ⚠️  Brain cache warm-up skipped or failed (is Ollama offline?)\n");
+        }
     }
 
     let mut paste_mode = false;
@@ -2561,7 +2590,8 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
     let mut line = String::new();
     let mut stdout = std::io::stdout();
 
-    if let Err(_e) = enable_raw_mode() {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || enable_raw_mode().is_err() {
         // Fallback if raw mode is not supported (e.g. non-TTY)
         let mut fallback = String::new();
         let n = std::io::stdin().read_line(&mut fallback)?;
