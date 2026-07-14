@@ -248,6 +248,12 @@ impl AppConfig {
     }
 
     pub fn effective_brain_base(&self) -> String {
+        if let Ok(base) = std::env::var("BRAIN_BASE") {
+            if !base.trim().is_empty() {
+                return base.trim().to_string();
+            }
+        }
+
         let path = self.effective_model_providers_path();
         let yaml_path = std::path::PathBuf::from(&path);
         let reg = if yaml_path.exists() {
@@ -276,6 +282,12 @@ impl AppConfig {
     }
 
     pub fn effective_brain_key(&self) -> String {
+        if let Ok(key) = std::env::var("BRAIN_KEY") {
+            if !key.is_empty() {
+                return key;
+            }
+        }
+
         let active = self.effective_active_provider();
         let env_key = format!("BRAIN_{}_KEY", active.to_uppercase().replace('-', "_"));
         if let Ok(key) = std::env::var(&env_key) {

@@ -571,23 +571,35 @@ impl ProviderRegistry {
         for (role, model_ref) in defaults {
             if !model_ref.contains('/') {
                 if !is_seq {
-                    return Err(RegistryError::InvalidModelRef(format!(
-                        "role default for '{}' must be provider/model, got '{}'",
-                        role, model_ref
-                    )));
+                    tracing::warn!(
+                        "Invalid model reference '{}' specified as default for role '{}' (expected provider/model format).",
+                        model_ref, role
+                    );
                 }
                 continue;
             }
             let key = aliases.get(&model_ref).map(|s| s.as_str()).unwrap_or(model_ref.as_str());
+            
+            let mut is_valid = false;
             if models.contains_key(key) {
+                is_valid = true;
+            } else if let Some((prov_id, _)) = model_ref.split_once('/') {
+                if let Some(prov) = providers.get(prov_id) {
+                    if prov.supports_custom_models {
+                        is_valid = true;
+                    }
+                }
+            }
+
+            if is_valid {
                 valid_defaults.insert(role, model_ref);
             } else if !is_seq {
-                return Err(RegistryError::UnknownModel(format!(
-                    "role default for '{}' -> '{}'",
-                    role, model_ref
-                )));
+                tracing::warn!(
+                    "Unknown model '{}' specified as default for role '{}'. Attempting to use it anyway.",
+                    model_ref, role
+                );
+                valid_defaults.insert(role, model_ref);
             }
-            // else: Seq format — silently drop unresolvable inherited defaults
         }
 
         Ok(Self {
@@ -1115,7 +1127,7 @@ providers:
     }
 
     #[test]
-    fn load_from_yaml_rejects_unknown_role_default() {
+    fn load_from_yaml_allows_unknown_role_default_with_warning() {
         let yaml = r#"
 version: 1
 defaults:
@@ -1132,7 +1144,7 @@ providers:
         api_model_id: openai/gpt-4o-mini
 "#;
         let result = ProviderRegistry::load_from_yaml_str(yaml);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]

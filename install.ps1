@@ -855,10 +855,15 @@ function Install-SelfCopy {
 function Install-PathEntry {
     $current = [Environment]::GetEnvironmentVariable('Path', 'User')
     $entries = if ($current) { $current -split ';' } else { @() }
-    if ($entries -contains $BinDir) {
-        Write-Info "PATH already contains $BinDir"
-        return
+    
+    $BinDirClean = $BinDir.Trim().TrimEnd('\')
+    foreach ($entry in $entries) {
+        if ($entry.Trim().TrimEnd('\') -ieq $BinDirClean) {
+            Write-Info "PATH already contains $BinDir"
+            return
+        }
     }
+    
     $new = if ($current) { "$BinDir;$current" } else { $BinDir }
     [Environment]::SetEnvironmentVariable('Path', $new, 'User')
     $env:Path = "$BinDir;$env:Path"

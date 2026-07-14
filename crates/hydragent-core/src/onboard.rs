@@ -44,8 +44,9 @@ struct RegistryFile {
     models: Vec<hydragent_model::ModelDefinition>,
 }
 
-/// Top-level entry. Returns the process exit code.
 pub async fn run(opts: OnboardOptions) -> i32 {
+    let mut vault_passphrase = String::new();
+
     // ── 1. Welcome ────────────────────────────────────────────────────
     if !opts.non_interactive {
         println!();
@@ -56,6 +57,24 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         println!("  memory books, skills, and safety posture).");
         println!("  Press Ctrl-C at any time to abort.");
         println!("------------------------------------------------------------------------");
+        println!();
+
+        // ── Stage A: Vault & Lockbox Setup ─────────────────────────────────
+        println!("------------------------------------------------------------------------");
+        println!("  [Stage A/D] Vault & Lockbox Setup");
+        println!("  Configure the lockbox unlock method for encrypting your secrets.");
+        println!("------------------------------------------------------------------------");
+        let vault_methods = &[
+            "Local Unencrypted (Default: Fine for solo local dev)",
+            "Passphrase Protected (Encrypts API keys & secrets at rest)"
+        ];
+        let selected_v = select(vault_methods, None).unwrap_or(0);
+        if selected_v == 1 {
+            println!();
+            if let Some(passphrase) = prompt_secret("  Enter your secure vault passphrase:") {
+                vault_passphrase = passphrase;
+            }
+        }
         println!();
 
         println!("------------------------------------------------------------------------");
@@ -188,8 +207,7 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         m
     };
 
-    // ── New Steps: Vault, Persona, Sandbox, Memory, Integrations ─────────────
-    let mut vault_passphrase = String::new();
+    // ── New Steps: Persona, Sandbox, Memory, Integrations ──────────────────
     let mut persona = "developer";
     let mut custom_soul_prompt = String::new();
     let mut enforce_sandbox = false;
@@ -199,23 +217,6 @@ pub async fn run(opts: OnboardOptions) -> i32 {
     let mut telegram_chat_ids = String::new();
 
     if !opts.non_interactive {
-        // ── Stage A: Vault Setup ──────────────────────────────────────────
-        println!();
-        println!("------------------------------------------------------------------------");
-        println!("  [Stage A/D] Vault & Lockbox Setup");
-        println!("  Configure the lockbox unlock method for encrypting your secrets.");
-        println!("------------------------------------------------------------------------");
-        let vault_methods = &[
-            "Local Unencrypted (Default: Fine for solo local dev)",
-            "Passphrase Protected (Encrypts API keys & secrets at rest)"
-        ];
-        let selected_v = select(vault_methods, None).unwrap_or(0);
-        if selected_v == 1 {
-            println!();
-            if let Some(passphrase) = prompt_secret("  Enter your secure vault passphrase:") {
-                vault_passphrase = passphrase;
-            }
-        }
 
         // ── Stage C: Memory & Skill Sources ─────────────────────────────────
         println!();
@@ -1036,6 +1037,7 @@ fn select(labels: &[&str], custom: Option<(&str, usize)>) -> Option<usize> {
         );
         return numeric_fallback(labels, custom);
     }
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Hide);
 
     // We need a guard so any panic or early return restores the
     // terminal to a sane state (raw mode disabled, cursor visible).
