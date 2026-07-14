@@ -53,6 +53,8 @@ pub struct CustomProviderConfig {
     pub timeout: Duration,
     /// Number of retry attempts on transient failure (429 / 5xx / network)
     pub max_retries: u8,
+    /// Model-specific custom URL overrides
+    pub model_urls: std::collections::HashMap<String, String>,
 }
 
 /// Redact a secret string for log output. Same policy as
@@ -87,6 +89,7 @@ impl std::fmt::Debug for CustomProviderConfig {
             .field("provider_label", &self.provider_label)
             .field("timeout", &self.timeout)
             .field("max_retries", &self.max_retries)
+            .field("model_urls", &self.model_urls)
             .finish()
     }
 }
@@ -128,6 +131,7 @@ impl CustomProviderConfig {
             provider_label,
             timeout: Duration::from_secs(timeout_secs),
             max_retries,
+            model_urls: std::collections::HashMap::new(),
         })
     }
 }
@@ -243,7 +247,19 @@ impl CustomOpenAIClient {
         let mut tainted_body = hydragent_vault::TaintedString::new(json_body.clone());
         json_body.zeroize();
 
-        let url = format!("{}/chat/completions", self.config.base_url);
+        let custom_url = self.config.model_urls.get(model)
+            .or_else(|| self.config.model_urls.get(&request.model))
+            .cloned();
+
+        let base_url = custom_url.as_ref().unwrap_or(&self.config.base_url);
+        let url = if base_url.contains("/chat/completions")
+            || base_url.contains("/v1/messages")
+            || base_url.contains("/responses") {
+            base_url.clone()
+        } else {
+            format!("{}/chat/completions", base_url.trim_end_matches('/'))
+        };
+
         let resp = self
             .client
             .post(&url)
@@ -362,7 +378,15 @@ impl ModelProvider for CustomOpenAIClient {
                 Err(e) => {
                     attempt += 1;
                     self.rotate_key();
-                    if attempt > self.config.max_retries {
+                    let err_msg = e.to_string();
+                    let is_rate_limited = err_msg.contains("429") || err_msg.contains("rate limit");
+                    let max_retries = if is_rate_limited {
+                        std::cmp::max(4, self.config.max_retries)
+                    } else {
+                        self.config.max_retries
+                    };
+
+                    if attempt > max_retries {
                         warn!(
                             attempt,
                             provider = %self.config.provider_label,
@@ -371,7 +395,11 @@ impl ModelProvider for CustomOpenAIClient {
                         );
                         return Err(e);
                     }
-                    let delay = Duration::from_millis(150u64 * (1u64 << attempt));
+                    let delay = if is_rate_limited {
+                        Duration::from_millis(1500u64 * (1u64 << (attempt - 1)))
+                    } else {
+                        Duration::from_millis(150u64 * (1u64 << attempt))
+                    };
                     warn!(
                         attempt,
                         provider = %self.config.provider_label,
@@ -400,6 +428,7 @@ mod tests {
             provider_label: "test".to_string(),
             timeout: Duration::from_secs(10),
             max_retries: 1,
+            model_urls: std::collections::HashMap::new(),
         };
         let c = CustomOpenAIClient::new(cfg);
         assert_eq!(c.resolve_model(""), "llama-3");
@@ -415,6 +444,7 @@ mod tests {
             provider_label: "together".to_string(),
             timeout: Duration::from_secs(10),
             max_retries: 1,
+            model_urls: std::collections::HashMap::new(),
         };
         let c = CustomOpenAIClient::new(cfg);
         assert_eq!(c.provider_name(), "together");
@@ -427,6 +457,7 @@ mod tests {
             provider_label: "x".to_string(),
             timeout: Duration::from_secs(1),
             max_retries: 0,
+            model_urls: std::collections::HashMap::new(),
         });
         assert!(!bad.is_available());
     }
@@ -462,6 +493,7 @@ mod tests {
             provider_label: "brain".to_string(),
             timeout: Duration::from_secs(10),
             max_retries: 1,
+            model_urls: std::collections::HashMap::new(),
         };
         let client = CustomOpenAIClient::new(cfg);
         assert_eq!(
@@ -487,6 +519,7 @@ mod tests {
             provider_label: "together".to_string(),
             timeout: Duration::from_secs(60),
             max_retries: 3,
+            model_urls: std::collections::HashMap::new(),
         }
     }
 

@@ -870,7 +870,7 @@ pub struct DreamRunHandler {
 #[async_trait]
 impl MethodHandler for DreamRunHandler {
     async fn handle(&self, request: JsonRpcRequest, _response_tx: mpsc::Sender<String>) -> JsonRpcResponse {
-        match crate::dream::run_dream_cycle(self.store.clone(), self.model_router.clone(), None, false, 0).await {
+        match crate::dream::run_dream_cycle(self.store.clone(), self.model_router.clone(), None, false, 0, false).await {
             Ok(stats) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: Some(serde_json::json!({
@@ -1574,7 +1574,7 @@ impl MethodHandler for VaultSetHandler {
             };
         }
 
-        let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+        let vault_path = crate::paths::data_dir().join("vault/.hydravault");
         let vault = hydragent_vault::Vault::new(vault_path);
         let mut secrets = match vault.load(&passphrase) {
             Ok(s) => s,
@@ -1652,7 +1652,7 @@ impl MethodHandler for VaultListHandler {
             };
         }
 
-        let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+        let vault_path = crate::paths::data_dir().join("vault/.hydravault");
         let vault = hydragent_vault::Vault::new(vault_path);
         let secrets = match vault.load(&passphrase) {
             Ok(s) => s,
@@ -1718,7 +1718,7 @@ impl MethodHandler for VaultDeleteHandler {
             };
         }
 
-        let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+        let vault_path = crate::paths::data_dir().join("vault/.hydravault");
         let vault = hydragent_vault::Vault::new(vault_path);
         let mut secrets = match vault.load(&passphrase) {
             Ok(s) => s,

@@ -192,16 +192,23 @@ impl hydragent_skills::extractor::LlmClient for ModelRouterLlmClient {
     }
 }
 
-/// fields stay accurate.
 pub async fn run_dream_cycle(
     store: Arc<SessionStore>,
     model_router: Arc<ModelRouter>,
     skill_library: Option<Arc<SkillLibrary>>,
     enable_curator: bool,
     curator_interval_sec: u64,
+    is_background: bool,
 ) -> anyhow::Result<DreamStats> {
     let mut stats = DreamStats::default();
     let pool = store.pool();
+
+    // Automatically skip background dreaming if the model is free/rate-limited
+    // and is not a local Ollama instance (which is free & unlimited).
+    if is_background && model_router.is_free_model() && model_router.provider_label() != "ollama" {
+        info!("Dream cycle: active model is free/rate-limited on a remote provider. Skipping background dream cycle to preserve API limits. Use `/dream run` to trigger manually.");
+        return Ok(stats);
+    }
     
     let dreaming_mode = std::env::var("DREAM_BUDGET_MODE")
         .or_else(|_| std::env::var("DREAMING_MODE"))

@@ -1,4 +1,4 @@
-id: 8fc76d44-d013-4e94-823f-8550d9d9a4f1
+id: d272c91a-e68d-49e4-a68c-85d0937b94b7
 name: debug-rust-error
 version: 1
 description: Diagnose Rust compiler errors and suggest fixes
@@ -16,7 +16,7 @@ required_tools:
 - echo
 success_examples: []
 author: builtin
-created_at: 1783530701017
-last_updated: 1783530701017
+created_at: 1784023058032
+last_updated: 1784023058032
 success_rate: 0.0
 execution_count: 0

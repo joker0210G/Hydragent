@@ -328,8 +328,8 @@ async fn engine_with_replanner_recovers_via_reroute() {
 
     // Drop D so we only test a single-node failure (simpler).
     spec.nodes.retain(|n| n.id != "D");
-    spec.edges.retain(|e| e.from != "A" && e.to != "D");
-    // Now: A is a single root.
+    spec.edges.retain(|e| e.to != "D");
+    // Now: A is a single root, with B and C depending on it.
     let outcome = engine.run_with_outcome(spec, None).await.expect("run");
     let report = outcome.report();
     let a = report.node_results.get("A").expect("A outcome");

@@ -176,7 +176,7 @@ pub struct ChatMessage {
 
 pub struct OpenRouterClient {
     api_keys: Vec<String>,
-    key_valid: RwLock<Vec<bool>>,
+    invalid_keys: RwLock<std::collections::HashSet<String>>,
     active_key_index: AtomicUsize,
     client: Client,
     base_url: String,
@@ -190,39 +190,41 @@ fn normalize_base_url(raw: &str) -> String {
     without_suffix.to_string()
 }
 
+fn resolve_vault_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("HYDRAGENT_DATA_DIR") {
+        if !p.trim().is_empty() {
+            return std::path::PathBuf::from(p.trim()).join("vault/.hydravault");
+        }
+    }
+    
+    let home = if let Ok(p) = std::env::var("HYDRAGENT_HOME") {
+        std::path::PathBuf::from(p.trim())
+    } else {
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var("USERPROFILE")
+                .ok()
+                .or_else(|| {
+                    let drive = std::env::var("HOMEDRIVE").ok()?;
+                    let path = std::env::var("HOMEPATH").ok()?;
+                    Some(format!("{drive}{path}"))
+                })
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".hydragent")
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::env::var("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        }
+    };
+    home.join("data/vault/.hydravault")
+}
+
 impl OpenRouterClient {
     pub fn new(api_keys: Vec<String>) -> Self {
-        let mut expanded_keys = Vec::new();
-        let mut vault_secrets = None;
-
-        if let Ok(passphrase) = std::env::var("HYDRAGENT_VAULT_PASSPHRASE") {
-            let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
-            let vault = hydragent_vault::Vault::new(vault_path);
-            if vault.exists() {
-                if let Ok(secrets) = vault.load(&passphrase) {
-                    vault_secrets = Some(secrets);
-                }
-            }
-        }
-
-        for key in api_keys {
-            if key.contains("{{") && key.contains("}}") {
-                if let Some(ref secrets) = vault_secrets {
-                    let injected = hydragent_vault::inject_str(&key, secrets);
-                    for sub_key in injected.split(',') {
-                        let trimmed = sub_key.trim().to_string();
-                        if !trimmed.is_empty() {
-                            expanded_keys.push(trimmed);
-                        }
-                    }
-                } else {
-                    expanded_keys.push(key);
-                }
-            } else {
-                expanded_keys.push(key);
-            }
-        }
-
         let timeout_secs = std::env::var("OPENROUTER_TIMEOUT_SEC")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -234,10 +236,9 @@ impl OpenRouterClient {
             .map(|s| normalize_base_url(&s))
             .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
 
-        let keys_len = expanded_keys.len();
         Self {
-            api_keys: expanded_keys,
-            key_valid: RwLock::new(vec![true; keys_len]),
+            api_keys,
+            invalid_keys: RwLock::new(std::collections::HashSet::new()),
             active_key_index: AtomicUsize::new(0),
             client: Client::builder()
                 .timeout(Duration::from_secs(timeout_secs))
@@ -253,15 +254,13 @@ impl OpenRouterClient {
     // -----------------------------------------------------------------------
 
     fn get_active_key(&self) -> Option<String> {
-        let valid_keys = self.key_valid.read().ok()?;
         if self.api_keys.is_empty() {
             return None;
         }
-        let start_index = self.active_key_index.load(Ordering::Relaxed);
 
         let mut vault_secrets = None;
         if let Ok(passphrase) = std::env::var("HYDRAGENT_VAULT_PASSPHRASE") {
-            let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+            let vault_path = resolve_vault_path();
             let vault = hydragent_vault::Vault::new(vault_path);
             if vault.exists() {
                 if let Ok(secrets) = vault.load(&passphrase) {
@@ -270,41 +269,95 @@ impl OpenRouterClient {
             }
         }
 
-        for i in 0..self.api_keys.len() {
-            let idx = (start_index + i) % self.api_keys.len();
-            if idx < valid_keys.len() && valid_keys[idx] {
-                let key = &self.api_keys[idx];
-                if key.contains("{{") && key.contains("}}") {
-                    if let Some(ref secrets) = vault_secrets {
-                        let injected = hydragent_vault::inject_str(key, secrets);
-                        if let Some(sub_key) = injected.split(',').map(|s| s.trim()).find(|s| !s.is_empty()) {
-                            return Some(sub_key.to_string());
+        let mut all_keys = Vec::new();
+        for key in &self.api_keys {
+            if key.contains("{{") && key.contains("}}") {
+                if let Some(ref secrets) = vault_secrets {
+                    let injected = hydragent_vault::inject_str(key, secrets);
+                    for sub_key in injected.split(',') {
+                        let trimmed = sub_key.trim().to_string();
+                        if !trimmed.is_empty() {
+                            all_keys.push(trimmed);
                         }
                     }
                 } else {
-                    return Some(key.clone());
+                    all_keys.push(key.clone());
                 }
+            } else {
+                all_keys.push(key.clone());
             }
         }
-        None
+
+        let valid_keys: Vec<String> = {
+            if let Ok(invalid) = self.invalid_keys.read() {
+                all_keys.into_iter().filter(|k| !invalid.contains(k)).collect()
+            } else {
+                all_keys
+            }
+        };
+
+        if valid_keys.is_empty() {
+            return None;
+        }
+
+        let start_index = self.active_key_index.load(Ordering::Relaxed);
+        let idx = start_index % valid_keys.len();
+        Some(valid_keys[idx].clone())
     }
 
     fn mark_key_invalid(&self, key: &str) {
-        if let Some(idx) = self.api_keys.iter().position(|k| k == key) {
-            if let Ok(mut valid) = self.key_valid.write() {
-                if idx < valid.len() && valid[idx] {
-                    valid[idx] = false;
-                    warn!("Removing permanently invalid API key at index {} (returned 401 Unauthorized)", idx);
-                }
+        if let Ok(mut invalid) = self.invalid_keys.write() {
+            if invalid.insert(key.to_string()) {
+                let mask_len = std::cmp::min(12, key.len());
+                warn!("Marking OpenRouter API key as invalid: {}... (returned 401 Unauthorized)", &key[..mask_len]);
             }
         }
     }
 
     fn rotate_key(&self) {
-        if self.api_keys.len() > 1 {
-            let old_idx = self.active_key_index.fetch_add(1, Ordering::Relaxed);
-            let new_idx = (old_idx + 1) % self.api_keys.len();
-            warn!("Rotating OpenRouter API key from index {} to {}", old_idx % self.api_keys.len(), new_idx);
+        let old_idx = self.active_key_index.fetch_add(1, Ordering::Relaxed);
+        warn!("Rotating OpenRouter API key from index {}", old_idx);
+    }
+
+    fn total_valid_keys(&self) -> usize {
+        if self.api_keys.is_empty() {
+            return 0;
+        }
+
+        let mut vault_secrets = None;
+        if let Ok(passphrase) = std::env::var("HYDRAGENT_VAULT_PASSPHRASE") {
+            let vault_path = resolve_vault_path();
+            let vault = hydragent_vault::Vault::new(vault_path);
+            if vault.exists() {
+                if let Ok(secrets) = vault.load(&passphrase) {
+                    vault_secrets = Some(secrets);
+                }
+            }
+        }
+
+        let mut all_keys = Vec::new();
+        for key in &self.api_keys {
+            if key.contains("{{") && key.contains("}}") {
+                if let Some(ref secrets) = vault_secrets {
+                    let injected = hydragent_vault::inject_str(key, secrets);
+                    for sub_key in injected.split(',') {
+                        let trimmed = sub_key.trim().to_string();
+                        if !trimmed.is_empty() {
+                            all_keys.push(trimmed);
+                        }
+                    }
+                } else {
+                    all_keys.push(key.clone());
+                }
+            } else {
+                all_keys.push(key.clone());
+            }
+        }
+
+        if let Ok(invalid) = self.invalid_keys.read() {
+            all_keys.into_iter().filter(|k| !invalid.contains(k)).count()
+        } else {
+            all_keys.len()
         }
     }
 
@@ -425,7 +478,7 @@ impl OpenRouterClient {
         let mut injected_scopes = Vec::new();
 
         if let Ok(passphrase) = std::env::var("HYDRAGENT_VAULT_PASSPHRASE") {
-            let vault_path = std::path::PathBuf::from("./data/vault/.hydravault");
+            let vault_path = resolve_vault_path();
             let vault = hydragent_vault::Vault::new(vault_path);
             if vault.exists() {
                 if let Ok(secrets) = vault.load(&passphrase) {
@@ -603,26 +656,27 @@ impl OpenRouterClient {
         _max_retries: u8,
     ) -> Result<String> {
         let mut attempt = 0;
-        let total_valid_keys = {
-            if let Ok(valid) = self.key_valid.read() {
-                valid.iter().filter(|&&v| v).count()
-            } else {
-                1
-            }
-        };
-        let max_attempts = std::cmp::max(2, total_valid_keys);
 
         loop {
             match self.chat_stream_internal(request, tx.clone()).await {
                 Ok(content) => return Ok(content),
                 Err(e) => {
                     attempt += 1;
+                    let err_msg = e.to_string();
+                    let is_rate_limited = err_msg.contains("429") || err_msg.contains("rate limit");
+                    let total_valid_keys = self.total_valid_keys();
+
+                    let max_attempts = if is_rate_limited {
+                        std::cmp::max(4, std::cmp::max(2, total_valid_keys))
+                    } else {
+                        std::cmp::max(2, total_valid_keys)
+                    };
+
                     if attempt >= max_attempts {
                         error!("Max attempts ({}) exceeded on this model for OpenRouter. Swapping model. Error: {}", max_attempts, e);
                         return Err(e);
                     }
 
-                    let err_msg = e.to_string();
                     if err_msg.contains("401") || err_msg.contains("403") || err_msg.contains("Unauthorized") || err_msg.contains("Forbidden") {
                         if let Some(active_key) = self.get_active_key() {
                             self.mark_key_invalid(&active_key);
@@ -631,8 +685,13 @@ impl OpenRouterClient {
 
                     self.rotate_key();
 
-                    if total_valid_keys <= 1 || attempt >= total_valid_keys {
-                        let delay = Duration::from_millis(100u64 << attempt);
+                    let current_valid_keys = self.total_valid_keys();
+                    if current_valid_keys <= 1 || attempt >= current_valid_keys {
+                        let delay = if is_rate_limited {
+                            Duration::from_millis(1500u64 << (attempt - 1))
+                        } else {
+                            Duration::from_millis(100u64 << attempt)
+                        };
                         warn!(attempt, delay_ms = delay.as_millis(), error = %e, "Retrying same key(s) with backoff...");
                         sleep(delay).await;
                     } else {

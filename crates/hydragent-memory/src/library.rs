@@ -890,8 +890,8 @@ mod tests {
         // most-common tag could label the python shelf "async".
         for p in [
             make_page("p1", "rust async", &["rust", "async"]),
-            make_page("p2", "rust borrow checker", &["rust"]),
-            make_page("p3", "rust lifetimes", &["rust", "lifetimes"]),
+            make_page("p2", "rust borrow checker", &["rust", "async"]),
+            make_page("p3", "rust lifetimes", &["rust", "async", "lifetimes"]),
             make_page("p4", "python ml pipeline", &["python", "ml"]),
         ] {
             lib.upsert_node(&p.0.id, p.0.kind, &p.0.label, &p.1, None).await.unwrap();

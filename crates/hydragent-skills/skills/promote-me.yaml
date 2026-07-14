@@ -10,7 +10,7 @@ prompt_template: do {{x}}
 required_tools: []
 success_examples: []
 author: test
-created_at: 1783530700670
-last_updated: 1783530700723
+created_at: 1784023057961
+last_updated: 1784023057988
 success_rate: 1.0
 execution_count: 6

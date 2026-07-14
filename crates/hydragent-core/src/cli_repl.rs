@@ -55,6 +55,7 @@ use hydragent_security::VerificationResult;
 
 use crate::react_loop::run_react_loop;
 use crate::config::AppConfig;
+use serde_yaml;
 
 // Module-level ANSI escape helpers. We hoist them out of
 // individual functions so the streaming loop, the slash-command
@@ -157,7 +158,7 @@ pub struct ReplState {
 use std::path::PathBuf;
 
 use crate::status_bar::{render_status_bar, Mode as StatusMode, StatusState};
-use crate::tui_header::{default_tip_box, print_kimi_header, BrandInfo};
+use crate::tui_header::{default_tip_box, print_hydra_header, BrandInfo};
 
 /// Build a `StatusState` from a `ReplState`. The status bar
 /// is the *single* source of truth for mode + model + tool
@@ -189,7 +190,7 @@ fn status_state_from(state: &ReplState) -> StatusState {
 /// is a thin shim that wires the two together.
 pub fn print_banner(brand: &BrandInfo) {
     let tip = default_tip_box();
-    print_kimi_header(brand, &tip);
+    print_hydra_header(brand, &tip);
 }
 
 /// Run the REPL. Returns the process exit code.
@@ -204,6 +205,48 @@ pub async fn run(mut state: ReplState) -> i32 {
     // the whole REPL together, the way the Kimi/Hyper family
     // does it.
     print!("{}", render_status_bar(&status_state_from(&state)));
+
+    // Print memory files loading status
+    let user_path = crate::paths::config_dir().join("USER.md");
+    let soul_path = crate::paths::config_dir().join("SOUL.md");
+    println!();
+    if user_path.exists() {
+        println!("  {ANSI_DIM}· Loaded user profile : {}{ANSI_RESET}", user_path.display());
+    } else {
+        println!("  {ANSI_DIM}· No user profile found (run `hydragent onboard` to create one){ANSI_RESET}");
+    }
+    if soul_path.exists() {
+        println!("  {ANSI_DIM}· Loaded agent soul   : {}{ANSI_RESET}", soul_path.display());
+    } else {
+        println!("  {ANSI_DIM}· No agent soul found (run `hydragent onboard` to create one){ANSI_RESET}");
+    }
+    println!();
+
+    // Validate active provider API key at startup
+    let active_provider = state.app_config.effective_active_provider();
+    let registry = state.model_router.registry();
+    let requires_key = registry.as_ref()
+        .and_then(|r| r.provider(&active_provider))
+        .map(|p| p.auth_mode == hydragent_model::AuthMode::ApiKey)
+        .unwrap_or(false);
+
+    let env_key = format!("BRAIN_{}_KEY", active_provider.to_uppercase().replace('-', "_"));
+    let api_key = std::env::var(&env_key)
+        .ok()
+        .unwrap_or_else(|| std::env::var("BRAIN_KEY").unwrap_or_default());
+
+    if requires_key && api_key.is_empty() {
+        println!("  \x1b[33m⚠ Active provider '{}' requires an API key, but none is set.\x1b[0m", active_provider);
+        println!("    To configure it, use: \x1b[36m/provider set {} key <your-api-key>\x1b[0m", active_provider);
+        println!();
+    }
+
+    if state.model_router.is_free_model() && state.model_router.provider_label() != "ollama" {
+        println!("  \x1b[33m· Auto-consolidation (dream cycle) is paused because '{}' is a free model.\x1b[0m", state.brand.model);
+        println!("    Memory extraction will not run automatically to preserve your API rate limits.");
+        println!("    Use \x1b[36m/dream run\x1b[0m to manually consolidate memories at any time.");
+        println!();
+    }
 
     let mut stdout = std::io::stdout();
 
@@ -737,24 +780,767 @@ async fn handle_slash_command(
             }
         }
         "model" => {
-            if rest.is_empty() {
-                println!("  primary   = {}", state.app_config.effective_brain_model());
-                let fallbacks = state.app_config.effective_brain_fallbacks();
-                println!("  fallbacks = {}", if fallbacks.is_empty() { "<none>".to_string() } else { fallbacks.join(", ") });
-            } else {
-                // In-session brain switch: updates the router so the
-                // next ReAct turn picks the new model (no .env edit).
-                // We mirror the change into `app_config.brain_model` so
-                // `/model` (no arg), `/debug`, and `/status` reflect the
-                // new value, and into `brand.model` so any future
-                // re-render of the status bar / banner also reflects it.
-                state.model_router.set_primary_model(rest.to_string());
-                state.app_config.brain_model = rest.to_string();
-                state.brand.model = rest.to_string();
-                println!("  ✓ Switched primary model to {}", rest);
-                println!("  (session only — restart hydragent to revert to .env default, or use `/model <name>` again)");
+            let args: Vec<&str> = rest.split_whitespace().collect();
+            if args.is_empty() {
+                let active_model = state.app_config.effective_active_model();
+                let active_provider = state.app_config.effective_active_provider();
+                let registry = state.model_router.registry();
+                
+                println!("------------------------------------------------------------------------");
+                println!("  🧠 Model Status");
+                println!("------------------------------------------------------------------------");
+                println!("  Active Model   : {}", active_model);
+                println!("  Active Provider: {}", active_provider);
+                
+                let resolved = registry.as_ref().and_then(|r| {
+                    r.resolve(&format!("{}/{}", active_provider, active_model), None)
+                        .or_else(|| r.resolve(&active_model, None))
+                });
+                
+                if let Some(ref res) = resolved {
+                    println!("  API Model ID   : {}", res.api_model_id);
+                    if let Some(ref r) = registry {
+                        if let Some(m) = r.model_definition(&res.provider_id, &res.model_id) {
+                            println!("  Context Window : {} tokens", m.max_input_tokens.map_or("N/A".to_string(), |v| v.to_string()));
+                            println!("  Output Limit   : {} tokens", m.max_output_tokens.map_or("N/A".to_string(), |v| v.to_string()));
+                            println!("  Cost per 1k    : ${}", m.cost_per_1k.map_or("N/A".to_string(), |v| v.to_string()));
+                            println!("  Cost Tier      : {:?}", m.cost_tier);
+                        }
+                    }
+                }
+                
+                if let Some(ref r) = registry {
+                    println!("\n  Available Models:");
+                    let mut providers_list: Vec<String> = r.models(None).iter().map(|m| m.provider_id.clone()).collect();
+                    providers_list.sort();
+                    providers_list.dedup();
+                    
+                    if providers_list.is_empty() {
+                        println!("    No registered models found.");
+                    } else {
+                        for prov in providers_list {
+                            let is_active = prov == active_provider;
+                            let active_suffix = if is_active { " (active)" } else { "" };
+                            println!("    [{}{}]", prov, active_suffix);
+                            
+                            let prov_models = r.models(Some(&prov));
+                            for m in prov_models {
+                                let tier = m.cost_tier.map(|t| format!("{:?}", t).to_lowercase()).unwrap_or_else(|| "-".to_string());
+                                println!("      - {:<32} (api={:<36} tier={})", m.id, m.api_model_id, tier);
+                            }
+                        }
+                    }
+                }
+                println!("\n  (Use `/model <name>` to switch, `/model save <name>` to persist)");
+                println!("  (Use `/model set <name> <field> <value>` to edit context/cost/tier)");
+                println!("  (Use `/model edit` to open the registry YAML file)");
+            } else if args[0] == "edit" {
+                let path = state.app_config.effective_model_providers_path();
+                println!("  Opening {} in default system editor...", path);
+                let path_buf = std::path::PathBuf::from(&path);
+                let status = if let Ok(editor) = std::env::var("EDITOR") {
+                    std::process::Command::new(editor).arg(&path_buf).status()
+                } else {
+                    #[cfg(target_os = "windows")]
+                    {
+                        std::process::Command::new("cmd").args(["/C", "start", "", &path]).status()
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        std::process::Command::new("xdg-open").arg(&path_buf).status()
+                    }
+                };
+                match status {
+                    Ok(s) if s.success() => println!("  ✓ Editor opened!"),
+                    _ => eprintln!("  ✗ Failed to open editor. Please edit the file manually at {}", path),
+                }
+            } else if args[0] == "set" {
+                if args.len() < 3 {
+                    eprintln!("  ✗ Usage: /model set <name> <field> [value]");
+                    eprintln!("    Fields: context, output, cost, tier (for models)");
+                    eprintln!("    Fields: key, apikey, url, baseurl (for providers)");
+                } else {
+                    let name = args[1];
+                    let field = args[2].to_lowercase();
+                    
+                    if field == "key" || field == "apikey" || field == "url" || field == "baseurl" {
+                        let value = if args.len() >= 4 {
+                            args[3..].join(" ")
+                        } else {
+                            if field == "key" || field == "apikey" {
+                                let _ = crossterm::terminal::disable_raw_mode();
+                                let secret = rpassword::prompt_password(format!("  Enter API key for provider '{}': ", name))
+                                    .ok()
+                                    .map(|s| s.trim().to_string());
+                                let _ = crossterm::terminal::enable_raw_mode();
+                                if let Some(s) = secret {
+                                    s
+                                } else {
+                                    eprintln!("  ✗ Setup aborted.");
+                                    return SlashExit::Continue;
+                                }
+                            } else {
+                                let _ = crossterm::terminal::disable_raw_mode();
+                                print!("  Enter value for {}: ", field);
+                                let _ = std::io::stdout().flush();
+                                let mut line = String::new();
+                                let _ = std::io::stdin().read_line(&mut line);
+                                let _ = crossterm::terminal::enable_raw_mode();
+                                let trimmed = line.trim().to_string();
+                                if trimmed.is_empty() {
+                                    eprintln!("  ✗ Setup aborted.");
+                                    return SlashExit::Continue;
+                                }
+                                trimmed
+                            }
+                        };
+
+                        match field.as_str() {
+                            "key" | "apikey" => {
+                                let vault_path = crate::paths::data_dir().join("vault/.hydravault");
+                                let vault = hydragent_vault::Vault::new(vault_path);
+                                let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+                                if !vault.exists() {
+                                    let _ = vault.init(&passphrase);
+                                }
+                                match vault.load(&passphrase) {
+                                    Ok(mut secrets) => {
+                                        let env_key = format!("BRAIN_{}_KEY", name.to_uppercase().replace('-', "_"));
+                                        secrets.insert(env_key.clone(), hydragent_vault::TaintedString::credential(value.clone()));
+                                        if state.app_config.effective_active_provider() == name {
+                                            secrets.insert("BRAIN_KEY".to_string(), hydragent_vault::TaintedString::credential(value.clone()));
+                                            std::env::set_var("BRAIN_KEY", &value);
+                                        }
+                                        match vault.save(&passphrase, &secrets) {
+                                            Ok(_) => {
+                                                std::env::set_var(&env_key, &value);
+                                                println!("  ✓ Provider '{}' API key updated and securely saved inside the cryptographic Vault.", name);
+                                                state.model_router.update_registry(state.model_router.registry().unwrap());
+                                            }
+                                            Err(e) => eprintln!("  ✗ Failed to save to Vault: {}", e),
+                                        }
+                                    }
+                                    Err(e) => eprintln!("  ✗ Failed to load Vault: {}", e),
+                                }
+                            }
+                            "url" | "baseurl" => {
+                                let vault_path = crate::paths::data_dir().join("vault/.hydravault");
+                                let vault = hydragent_vault::Vault::new(vault_path);
+                                let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+                                if !vault.exists() {
+                                    let _ = vault.init(&passphrase);
+                                }
+                                match vault.load(&passphrase) {
+                                    Ok(mut secrets) => {
+                                        let env_key = format!("BRAIN_{}_BASE", name.to_uppercase().replace('-', "_"));
+                                        secrets.insert(env_key.clone(), hydragent_vault::TaintedString::credential(value.clone()));
+                                        if state.app_config.effective_active_provider() == name {
+                                            secrets.insert("BRAIN_BASE".to_string(), hydragent_vault::TaintedString::credential(value.clone()));
+                                            std::env::set_var("BRAIN_BASE", &value);
+                                        }
+                                        match vault.save(&passphrase, &secrets) {
+                                            Ok(_) => {
+                                                std::env::set_var(&env_key, &value);
+                                                println!("  ✓ Provider '{}' Base URL updated and securely saved inside the cryptographic Vault.", name);
+                                                state.model_router.update_registry(state.model_router.registry().unwrap());
+                                            }
+                                            Err(e) => eprintln!("  ✗ Failed to save to Vault: {}", e),
+                                        }
+                                    }
+                                    Err(e) => eprintln!("  ✗ Failed to load Vault: {}", e),
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        if args.len() < 4 {
+                            eprintln!("  ✗ Usage: /model set <name> <field> <value>");
+                            eprintln!("    Fields: context, output, cost, tier");
+                            return SlashExit::Continue;
+                        }
+                        let model_name = name;
+                        let value = args[3..].join(" ");
+                    
+                    let path = state.app_config.effective_model_providers_path();
+                    let yaml_path = std::path::PathBuf::from(&path);
+                    
+                    let yaml_str = match std::fs::read_to_string(&yaml_path) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            eprintln!("  ✗ model_providers.yaml not found at {}", path);
+                            String::new()
+                        }
+                    };
+                    
+                    if !yaml_str.is_empty() {
+                        if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_str) {
+                            let mut mutated = false;
+                            
+                            // 1. Scan nested structure: providers[i].models[j]
+                            if let Some(providers) = val.get_mut("providers").and_then(|p| p.as_sequence_mut()) {
+                                for p in providers {
+                                    let p_id = p.get("id").and_then(|i| i.as_str()).unwrap_or_default().to_owned();
+                                    if let Some(models) = p.get_mut("models").and_then(|m| m.as_sequence_mut()) {
+                                        for m in models {
+                                            let m_id = m.get("id").and_then(|i| i.as_str()).unwrap_or_default();
+                                            if m_id == model_name || format!("{}/{}", p_id, m_id) == model_name {
+                                                let map = m.as_mapping_mut().unwrap();
+                                                match field.as_str() {
+                                                    "context" => {
+                                                        if let Ok(num) = value.parse::<i64>() {
+                                                            map.insert(serde_yaml::Value::String("max_input_tokens".to_string()), serde_yaml::Value::Number(num.into()));
+                                                            mutated = true;
+                                                        } else {
+                                                            eprintln!("  ✗ Invalid integer: {}", value);
+                                                        }
+                                                    }
+                                                    "output" => {
+                                                        if let Ok(num) = value.parse::<i64>() {
+                                                            map.insert(serde_yaml::Value::String("max_output_tokens".to_string()), serde_yaml::Value::Number(num.into()));
+                                                            mutated = true;
+                                                        } else {
+                                                            eprintln!("  ✗ Invalid integer: {}", value);
+                                                        }
+                                                    }
+                                                    "cost" => {
+                                                        if let Ok(num) = value.parse::<f64>() {
+                                                            map.insert(serde_yaml::Value::String("cost_per_1k".to_string()), serde_yaml::Value::Number(num.into()));
+                                                            mutated = true;
+                                                        } else {
+                                                            eprintln!("  ✗ Invalid number: {}", value);
+                                                        }
+                                                    }
+                                                    "tier" => {
+                                                        map.insert(serde_yaml::Value::String("cost_tier".to_string()), serde_yaml::Value::String(value.clone()));
+                                                        mutated = true;
+                                                    }
+                                                    _ => {
+                                                        eprintln!("  ✗ Unknown field: {}. Allowed: context, output, cost, tier", field);
+                                                    }
+                                                }
+                                                if mutated {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if mutated {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // 2. Scan old flat structure if not mutated yet
+                            if !mutated {
+                                if let Some(models) = val.get_mut("models").and_then(|m| m.as_sequence_mut()) {
+                                    for m in models {
+                                        let m_id = m.get("id").and_then(|i| i.as_str()).unwrap_or_default();
+                                        let p_id = m.get("provider_id").and_then(|p| p.as_str()).unwrap_or_default();
+                                        if m_id == model_name || format!("{}/{}", p_id, m_id) == model_name {
+                                            let map = m.as_mapping_mut().unwrap();
+                                            match field.as_str() {
+                                                "context" => {
+                                                    if let Ok(num) = value.parse::<i64>() {
+                                                        map.insert(serde_yaml::Value::String("max_input_tokens".to_string()), serde_yaml::Value::Number(num.into()));
+                                                        mutated = true;
+                                                    } else {
+                                                        eprintln!("  ✗ Invalid integer: {}", value);
+                                                    }
+                                                }
+                                                "output" => {
+                                                    if let Ok(num) = value.parse::<i64>() {
+                                                        map.insert(serde_yaml::Value::String("max_output_tokens".to_string()), serde_yaml::Value::Number(num.into()));
+                                                        mutated = true;
+                                                    } else {
+                                                        eprintln!("  ✗ Invalid integer: {}", value);
+                                                    }
+                                                }
+                                                "cost" => {
+                                                    if let Ok(num) = value.parse::<f64>() {
+                                                        map.insert(serde_yaml::Value::String("cost_per_1k".to_string()), serde_yaml::Value::Number(num.into()));
+                                                        mutated = true;
+                                                    } else {
+                                                        eprintln!("  ✗ Invalid number: {}", value);
+                                                    }
+                                                }
+                                                "tier" => {
+                                                    map.insert(serde_yaml::Value::String("cost_tier".to_string()), serde_yaml::Value::String(value.clone()));
+                                                    mutated = true;
+                                                }
+                                                _ => {
+                                                    eprintln!("  ✗ Unknown field: {}. Allowed: context, output, cost, tier", field);
+                                                }
+                                            }
+                                            if mutated {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if mutated {
+                                if let Ok(new_yaml) = serde_yaml::to_string(&val) {
+                                    if std::fs::write(&yaml_path, new_yaml).is_ok() {
+                                        println!("  ✓ Updated model '{}' field '{}' to '{}' in {}", model_name, field, value, path);
+                                        // reload
+                                        if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                                            state.model_router.update_registry(Arc::new(new_reg));
+                                        }
+                                    }
+                                }
+                            } else {
+                                eprintln!("  ✗ Model '{}' not found in config file", model_name);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+                let save_to_env = rest.starts_with("save ");
+                let model_ref = if save_to_env {
+                    rest["save".len()..].trim()
+                } else {
+                    rest
+                };
+
+                let registry = state.model_router.registry();
+                let active_provider = state.app_config.effective_active_provider();
+                
+                // Smart auto-switching / resolution logic
+                let resolved = if let Some(ref r) = registry {
+                    // 1. Try relative to active provider
+                    if let Some(res) = r.resolve(&format!("{}/{}", active_provider, model_ref), None) {
+                        Some(res)
+                    } else if let Some(res) = r.resolve(model_ref, None) {
+                        // 2. Try global lookup
+                        Some(res)
+                    } else {
+                        // 3. Search registry uniquely matching model ID or alias
+                        r.models(None).iter()
+                            .find(|m| m.id == model_ref || m.aliases.contains(&model_ref.to_string()))
+                            .map(|m| hydragent_model::ResolvedModel {
+                                provider_id: m.provider_id.clone(),
+                                model_id: m.id.clone(),
+                                api_model_id: m.api_model_id.clone(),
+                                role: "chat".to_string(),
+                            })
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(ref res) = resolved {
+                    let full_ref = format!("{}/{}", res.provider_id, res.model_id);
+                    
+                    // Switch provider client if it's different from the active provider
+                    if res.provider_id != active_provider {
+                        let client = state.model_router.get_or_build_provider(&res.provider_id);
+                        state.model_router.set_provider(client);
+                        state.app_config.active_provider = res.provider_id.clone();
+                        state.app_config.brain_provider = res.provider_id.clone();
+                        println!("  ✓ Auto-switched active provider to '{}' for model '{}'", res.provider_id, res.model_id);
+                    }
+                    
+                    state.model_router.set_primary_model(full_ref.clone());
+                    state.app_config.active_model = res.model_id.clone();
+                    state.app_config.brain_model = res.model_id.clone();
+                    state.brand.model = full_ref;
+                    
+                    println!("  ✓ Switched primary model to {}", res.model_id);
+
+                    if state.model_router.is_free_model() && state.model_router.provider_label() != "ollama" {
+                        println!("  \x1b[33m⚠ Warning: '{}' is a free model. Auto-consolidation (dream cycle) is paused.\x1b[0m", res.model_id);
+                        println!("    Memory extraction will not run automatically to preserve your API rate limits.");
+                        println!("    Use \x1b[36m/dream run\x1b[0m to manually consolidate memories at any time.");
+                    }
+
+                    if save_to_env {
+                        let path = state.app_config.effective_model_providers_path();
+                        let yaml_path = std::path::PathBuf::from(&path);
+                        let chat_ref = format!("{}/{}", res.provider_id, res.model_id);
+                        let mut saved = false;
+                        if yaml_path.exists() {
+                            if let Ok(content) = std::fs::read_to_string(&yaml_path) {
+                                if let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                                    if let Some(mapping) = doc.as_mapping_mut() {
+                                        let defaults_key = serde_yaml::Value::String("defaults".to_string());
+                                        if !mapping.contains_key(&defaults_key) {
+                                            mapping.insert(defaults_key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+                                        }
+                                        if let Some(defaults) = mapping.get_mut(&defaults_key).and_then(|v| v.as_mapping_mut()) {
+                                            defaults.insert(
+                                                serde_yaml::Value::String("chat".to_string()),
+                                                serde_yaml::Value::String(chat_ref.clone()),
+                                            );
+                                        }
+                                    }
+                                    if let Ok(serialized) = serde_yaml::to_string(&doc) {
+                                        if std::fs::write(&yaml_path, serialized).is_ok() {
+                                            println!("  ✓ Saved model reference ({}) to model_providers.yaml permanently!", chat_ref);
+                                            saved = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !saved {
+                            eprintln!("  ✗ Failed to save defaults to model_providers.yaml permanently.");
+                        }
+                    } else {
+                        println!("  (session only — use `/model save {}` to save permanently)", model_ref);
+                    }
+
+                    // Warn if API key is missing
+                    let env_key = format!("BRAIN_{}_KEY", res.provider_id.to_uppercase().replace('-', "_"));
+                    if res.provider_id != "ollama" && std::env::var(&env_key).is_err() && std::env::var("BRAIN_KEY").is_err() {
+                        println!("  ⚠️  Warning: No API key found for provider '{}' (tried {} and BRAIN_KEY).", res.provider_id, env_key);
+                        println!("     You may need to edit your .env file or run `hydragent onboard` to configure it.");
+                    }
+                } else {
+                    // Fallback to custom/model_ref if registry failed to resolve
+                    let (provider_id, _model_name) = match model_ref.split_once('/') {
+                        Some((p, m)) => (p.to_string(), m.to_string()),
+                        None => ("custom".to_string(), model_ref.to_string()),
+                    };
+
+                    state.model_router.set_primary_model(model_ref.to_string());
+                    state.app_config.brain_model = model_ref.to_string();
+                    state.app_config.brain_provider = provider_id.clone();
+                    state.brand.model = model_ref.to_string();
+
+                    println!("  ✓ Switched primary model to {}", model_ref);
+
+                    if save_to_env {
+                        let path = state.app_config.effective_model_providers_path();
+                        let yaml_path = std::path::PathBuf::from(&path);
+                        let chat_ref = model_ref.to_string();
+                        let mut saved = false;
+                        if yaml_path.exists() {
+                            if let Ok(content) = std::fs::read_to_string(&yaml_path) {
+                                if let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                                    if let Some(mapping) = doc.as_mapping_mut() {
+                                        let defaults_key = serde_yaml::Value::String("defaults".to_string());
+                                        if !mapping.contains_key(&defaults_key) {
+                                            mapping.insert(defaults_key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+                                        }
+                                        if let Some(defaults) = mapping.get_mut(&defaults_key).and_then(|v| v.as_mapping_mut()) {
+                                            defaults.insert(
+                                                serde_yaml::Value::String("chat".to_string()),
+                                                serde_yaml::Value::String(chat_ref.clone()),
+                                            );
+                                        }
+                                    }
+                                    if let Ok(serialized) = serde_yaml::to_string(&doc) {
+                                        if std::fs::write(&yaml_path, serialized).is_ok() {
+                                            println!("  ✓ Saved model reference ({}) to model_providers.yaml permanently!", chat_ref);
+                                            saved = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !saved {
+                            eprintln!("  ✗ Failed to save defaults to model_providers.yaml permanently.");
+                        }
+                    } else {
+                        println!("  (session only — use `/model save {}` to save permanently)", model_ref);
+                    }
+                }
             }
         }
+        "provider" => {
+            let args: Vec<&str> = rest.split_whitespace().collect();
+            if args.is_empty() {
+                // Print status
+                let active_provider = state.app_config.effective_active_provider();
+                let registry = state.model_router.registry();
+                let provider_def = registry.as_ref().and_then(|r| r.provider(&active_provider));
+                
+                println!("------------------------------------------------------------------------");
+                println!("  🤖 Provider Status");
+                println!("------------------------------------------------------------------------");
+                println!("  Active Provider: {}", active_provider);
+                if let Some(def) = provider_def {
+                    println!("  Display Name   : {}", def.display_name);
+                    println!("  Default Base   : {}", def.default_base_url);
+                    println!("  Auth Mode      : {:?}", def.auth_mode);
+                }
+                
+                // Get masked API key
+                let env_key = format!("BRAIN_{}_KEY", active_provider.to_uppercase().replace('-', "_"));
+                let api_key = std::env::var(&env_key)
+                    .ok()
+                    .unwrap_or_else(|| std::env::var("BRAIN_KEY").unwrap_or_default());
+                println!("  API Key        : {}", mask(&api_key));
+                
+                // List all providers in the registry
+                if let Some(ref r) = registry {
+                    println!("\n  Available Providers in registry:");
+                    for p in r.providers() {
+                        println!("  - {:<14} {}", p.id, p.display_name);
+                    }
+                }
+                println!("\n  (Use `/provider <id>` to switch, `/provider save <id>` to persist)");
+                println!("  (Use `/provider set <id> <field> [value]` to configure key/url)");
+                println!("  (Use `/provider edit` to open the registry YAML file)");
+            } else if args[0] == "edit" {
+                let path = state.app_config.effective_model_providers_path();
+                println!("  Opening {} in default system editor...", path);
+                let path_buf = std::path::PathBuf::from(&path);
+                let status = if let Ok(editor) = std::env::var("EDITOR") {
+                    std::process::Command::new(editor).arg(&path_buf).status()
+                } else {
+                    #[cfg(target_os = "windows")]
+                    {
+                        std::process::Command::new("cmd").args(["/C", "start", "", &path]).status()
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        std::process::Command::new("xdg-open").arg(&path_buf).status()
+                    }
+                };
+                match status {
+                    Ok(s) if s.success() => println!("  ✓ Editor opened!"),
+                    _ => eprintln!("  ✗ Failed to open editor. Please edit the file manually at {}", path),
+                }
+            } else if args[0] == "set" {
+                if args.len() < 3 {
+                    eprintln!("  ✗ Usage: /provider set <id> <field> [value]");
+                    eprintln!("    Fields: key, apikey, url, baseurl, name");
+                } else {
+                    let id = args[1];
+                    let field = args[2].to_lowercase();
+                    let value = if args.len() >= 4 {
+                        args[3..].join(" ")
+                    } else {
+                        if field == "key" || field == "apikey" {
+                            let _ = crossterm::terminal::disable_raw_mode();
+                            let secret = rpassword::prompt_password(format!("  Enter API key for provider '{}': ", id))
+                                .ok()
+                                .map(|s| s.trim().to_string());
+                            let _ = crossterm::terminal::enable_raw_mode();
+                            if let Some(s) = secret {
+                                s
+                            } else {
+                                eprintln!("  ✗ Setup aborted.");
+                                return SlashExit::Continue;
+                            }
+                        } else {
+                            let _ = crossterm::terminal::disable_raw_mode();
+                            print!("  Enter value for {}: ", field);
+                            let _ = std::io::stdout().flush();
+                            let mut line = String::new();
+                            let _ = std::io::stdin().read_line(&mut line);
+                            let _ = crossterm::terminal::enable_raw_mode();
+                            let trimmed = line.trim().to_string();
+                            if trimmed.is_empty() {
+                                eprintln!("  ✗ Setup aborted.");
+                                return SlashExit::Continue;
+                            }
+                            trimmed
+                        }
+                    };
+                    
+                    match field.as_str() {
+                        "key" | "apikey" => {
+                            let vault_path = crate::paths::data_dir().join("vault/.hydravault");
+                            let vault = hydragent_vault::Vault::new(vault_path);
+                            let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+                            if !vault.exists() {
+                                let _ = vault.init(&passphrase);
+                            }
+                            match vault.load(&passphrase) {
+                                Ok(mut secrets) => {
+                                    let env_key = format!("BRAIN_{}_KEY", id.to_uppercase().replace('-', "_"));
+                                    secrets.insert(env_key.clone(), hydragent_vault::TaintedString::credential(value.clone()));
+                                    if state.app_config.effective_active_provider() == id {
+                                        secrets.insert("BRAIN_KEY".to_string(), hydragent_vault::TaintedString::credential(value.clone()));
+                                        std::env::set_var("BRAIN_KEY", &value);
+                                    }
+                                    match vault.save(&passphrase, &secrets) {
+                                        Ok(_) => {
+                                            std::env::set_var(&env_key, &value);
+                                            println!("  ✓ Provider '{}' API key updated and securely saved inside the cryptographic Vault.", id);
+                                            state.model_router.update_registry(state.model_router.registry().unwrap());
+                                        }
+                                        Err(e) => eprintln!("  ✗ Failed to save to Vault: {}", e),
+                                    }
+                                }
+                                Err(e) => eprintln!("  ✗ Failed to load Vault: {}", e),
+                            }
+                        }
+                        "url" | "baseurl" => {
+                            let vault_path = crate::paths::data_dir().join("vault/.hydravault");
+                            let vault = hydragent_vault::Vault::new(vault_path);
+                            let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+                            if !vault.exists() {
+                                let _ = vault.init(&passphrase);
+                            }
+                            match vault.load(&passphrase) {
+                                Ok(mut secrets) => {
+                                    let env_key = format!("BRAIN_{}_BASE", id.to_uppercase().replace('-', "_"));
+                                    secrets.insert(env_key.clone(), hydragent_vault::TaintedString::credential(value.clone()));
+                                    if state.app_config.effective_active_provider() == id {
+                                        secrets.insert("BRAIN_BASE".to_string(), hydragent_vault::TaintedString::credential(value.clone()));
+                                        std::env::set_var("BRAIN_BASE", &value);
+                                    }
+                                    match vault.save(&passphrase, &secrets) {
+                                        Ok(_) => {
+                                            std::env::set_var(&env_key, &value);
+                                            println!("  ✓ Provider '{}' Base URL updated and securely saved inside the cryptographic Vault.", id);
+                                            state.model_router.update_registry(state.model_router.registry().unwrap());
+                                        }
+                                        Err(e) => eprintln!("  ✗ Failed to save to Vault: {}", e),
+                                    }
+                                }
+                                Err(e) => eprintln!("  ✗ Failed to load Vault: {}", e),
+                            }
+                        }
+                        "name" => {
+                            // Update display name in model_providers.yaml
+                            let path = state.app_config.effective_model_providers_path();
+                            let yaml_path = std::path::PathBuf::from(&path);
+                            
+                            let yaml_str = match std::fs::read_to_string(&yaml_path) {
+                                Ok(s) => s,
+                                Err(_) => {
+                                    eprintln!("  ✗ model_providers.yaml not found at {}", path);
+                                    String::new()
+                                }
+                              };
+                              
+                              if !yaml_str.is_empty() {
+                                  if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_str) {
+                                      let mut mutated = false;
+                                      if let Some(providers) = val.get_mut("providers").and_then(|p| p.as_sequence_mut()) {
+                                          for p in providers {
+                                              if p.get("id").and_then(|i| i.as_str()) == Some(id) {
+                                                  p.as_mapping_mut().unwrap().insert(serde_yaml::Value::String("display_name".to_string()), serde_yaml::Value::String(value.clone()));
+                                                  mutated = true;
+                                                  break;
+                                              }
+                                          }
+                                      }
+                                      if mutated {
+                                          if let Ok(new_yaml) = serde_yaml::to_string(&val) {
+                                              if std::fs::write(&yaml_path, new_yaml).is_ok() {
+                                                  println!("  ✓ Updated provider '{}' display name to '{}' in {}", id, value, path);
+                                                  // reload
+                                                  if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                                                      state.model_router.update_registry(Arc::new(new_reg));
+                                                  }
+                                              }
+                                          }
+                                      } else {
+                                          eprintln!("  ✗ Provider '{}' not found in config file", id);
+                                      }
+                                  }
+                              }
+                          }
+                          _ => {
+                              eprintln!("  ✗ Unknown field: {}. Allowed: key, url, name", field);
+                          }
+                      }
+                  }
+              } else {
+                  // Switch active provider
+                  let save_to_env = rest.starts_with("save ");
+                  let provider_ref = if save_to_env {
+                      rest["save".len()..].trim()
+                  } else {
+                      rest
+                  };
+                  
+                  let registry = state.model_router.registry();
+                  let known_provider = registry.as_ref().map_or(false, |r| r.provider(provider_ref).is_some());
+                  
+                  if !known_provider && provider_ref != "custom" {
+                      eprintln!("  ✗ Unknown provider: '{}'. Run `/provider` to list available providers.", provider_ref);
+                  } else {
+                      // Switch active provider
+                      let client = state.model_router.get_or_build_provider(provider_ref);
+                      state.model_router.set_provider(client);
+                      state.app_config.active_provider = provider_ref.to_string();
+                      state.app_config.brain_provider = provider_ref.to_string();
+                      
+                      println!("  ✓ Switched active provider to {}", provider_ref);
+                      
+                      // Check if API key is required and set
+                      let env_key = format!("BRAIN_{}_KEY", provider_ref.to_uppercase().replace('-', "_"));
+                      let api_key = std::env::var(&env_key)
+                          .ok()
+                          .unwrap_or_else(|| std::env::var("BRAIN_KEY").unwrap_or_default());
+                      
+                      let requires_key = registry.as_ref()
+                          .and_then(|r| r.provider(provider_ref))
+                          .map(|p| p.auth_mode == hydragent_model::AuthMode::ApiKey)
+                          .unwrap_or(false);
+
+                      if requires_key && api_key.is_empty() {
+                          println!("  \x1b[33m⚠ Warning: Provider '{}' requires an API key, but none is set.\x1b[0m", provider_ref);
+                          println!("    Please set your key using: \x1b[36m/provider set {} key <your-api-key>\x1b[0m", provider_ref);
+                      }
+
+                      // Auto-select first model for this provider
+                      let auto_model = registry.as_ref().and_then(|r| {
+                          r.models(Some(provider_ref)).first().map(|m| m.id.clone())
+                      });
+                      
+                      let selected_model = if let Some(m_id) = auto_model {
+                          let full_ref = format!("{}/{}", provider_ref, m_id);
+                          state.model_router.set_primary_model(full_ref.clone());
+                          state.app_config.active_model = m_id.clone();
+                          state.app_config.brain_model = m_id.clone();
+                          state.brand.model = full_ref;
+                          println!("  ✓ Auto-selected model: {}", m_id);
+                          m_id
+                      } else {
+                          String::new()
+                      };
+                      
+                      if save_to_env {
+                           let path = state.app_config.effective_model_providers_path();
+                           let yaml_path = std::path::PathBuf::from(&path);
+                           let chat_ref = if selected_model.is_empty() {
+                               provider_ref.to_string()
+                           } else {
+                               format!("{}/{}", provider_ref, selected_model)
+                           };
+                           let mut saved = false;
+                           if yaml_path.exists() {
+                               if let Ok(content) = std::fs::read_to_string(&yaml_path) {
+                                   if let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                                       if let Some(mapping) = doc.as_mapping_mut() {
+                                           let defaults_key = serde_yaml::Value::String("defaults".to_string());
+                                           if !mapping.contains_key(&defaults_key) {
+                                               mapping.insert(defaults_key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+                                           }
+                                           if let Some(defaults) = mapping.get_mut(&defaults_key).and_then(|v| v.as_mapping_mut()) {
+                                               defaults.insert(
+                                                   serde_yaml::Value::String("chat".to_string()),
+                                                   serde_yaml::Value::String(chat_ref.clone()),
+                                               );
+                                           }
+                                       }
+                                       if let Ok(serialized) = serde_yaml::to_string(&doc) {
+                                           if std::fs::write(&yaml_path, serialized).is_ok() {
+                                               println!("  ✓ Saved active provider and default model to model_providers.yaml permanently!");
+                                               saved = true;
+                                           }
+                                       }
+                                   }
+                               }
+                           }
+                           if !saved {
+                               eprintln!("  ✗ Failed to save defaults to model_providers.yaml permanently.");
+                           }
+
+                      } else {
+                          println!("  (session only — use `/provider save {}` to save permanently)", provider_ref);
+                      }
+                  }
+              }
+          }
         "brain" => {
             let base = state.app_config.effective_brain_base();
             let key = state.app_config.effective_brain_key();
@@ -906,21 +1692,12 @@ async fn handle_slash_command(
             crate::debug_dump_env_and_config(&state.app_config);
         }
         "dream" => {
-            // /dream                 → show current status
+            // /dream                 → show current status (with file size and limit metrics)
+            // /dream status          → same as /dream
+            // /dream run             → manually trigger a consolidation cycle now
             // /dream enable          → set ENABLE_DREAMING=true in .env
             // /dream disable         → set ENABLE_DREAMING=false in .env
             // /dream interval <N>    → set DREAMING_INTERVAL_SEC=N in .env
-            //
-            // The .env patch follows the same strategy as
-            // `hydragent dream --enable` on the CLI: line-by-line rewrite
-            // that preserves every other setting. Changes take effect on
-            // the next restart of the bus server; the in-process worker's
-            // interval is already fixed at startup.
-            //
-            // Always read/write ~/.hydragent/.env via the paths module
-            // (never cwd/.env or <data_dir>/.env). The fallback chain
-            // is gone — there's exactly one .env and it lives at the
-            // top of the user's hydragent home.
             let env_path = crate::paths::env_file();
 
             let mut parts = rest.splitn(2, char::is_whitespace);
@@ -928,8 +1705,11 @@ async fn handle_slash_command(
             let arg = parts.next().unwrap_or("").trim();
 
             match sub {
-                "" => {
-                    // Status display
+                "" | "status" => {
+                    use hydragent_memory::bounded_md::{BoundedMd, USER_MD_CHAR_LIMIT, SOUL_MD_CHAR_LIMIT};
+                    let user_bmd = BoundedMd::new(crate::paths::config_dir().join("USER.md"), USER_MD_CHAR_LIMIT);
+                    let soul_bmd = BoundedMd::new(crate::paths::config_dir().join("SOUL.md"), SOUL_MD_CHAR_LIMIT);
+
                     println!("  🌙 Dream cycle status:");
                     println!(
                         "    enabled   : {}",
@@ -941,9 +1721,48 @@ async fn handle_slash_command(
                         state.app_config.dreaming_interval_sec as f64 / 60.0
                     );
                     println!("    .env      : {}", env_path.display());
+                    println!();
+                    println!("  Bounded Personality Memory Status:");
+                    if let (Ok(u_len), Ok(u_headroom), Ok(s_len), Ok(s_headroom)) = (user_bmd.len(), user_bmd.headroom_pct(), soul_bmd.len(), soul_bmd.headroom_pct()) {
+                        println!("    USER.md   : {} / {} chars ({:.1}% headroom remaining)", u_len, user_bmd.limit(), u_headroom);
+                        println!("    SOUL.md   : {} / {} chars ({:.1}% headroom remaining)", s_len, soul_bmd.limit(), s_headroom);
+                    } else {
+                        println!("    (Failed to read character sizes of USER.md/SOUL.md)");
+                    }
+                    println!();
                     println!(
-                        "  Use: /dream enable | /dream disable | /dream interval <secs>"
+                        "  Use: /dream run | /dream enable | /dream disable | /dream interval <secs>"
                     );
+                }
+                "run" | "now" | "force" => {
+                    println!("  🌙 Initiating memory consolidation (Dreaming)...");
+                    let stats_result = crate::dream::run_dream_cycle(
+                        state.store.clone(),
+                        state.model_router.clone(),
+                        state.skill_library.clone(),
+                        state.app_config.enable_curator,
+                        state.app_config.curator_interval_sec,
+                        false, // is_background
+                    ).await;
+
+                    match stats_result {
+                        Ok(stats) => {
+                            println!("  ✓ Dream cycle completed successfully!");
+                            println!("    - Messages consolidated  : {}", stats.messages_processed);
+                            println!("    - Facts stored in Library: {}", stats.facts_stored);
+                            println!("    - Style habits stored    : {}", stats.style_habits_stored);
+                            println!("    - Behavior rules stored  : {}", stats.behavior_rules_stored);
+                            if stats.compactions_user_md > 0 {
+                                println!("    - USER.md compacted      : {} times", stats.compactions_user_md);
+                            }
+                            if stats.compactions_soul_md > 0 {
+                                println!("    - SOUL.md compacted      : {} times", stats.compactions_soul_md);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("  ✗ Dream cycle failed: {}", e);
+                        }
+                    }
                 }
                 "enable" | "on" => {
                     match patch_env_key(&env_path, "ENABLE_DREAMING", "true") {
@@ -977,10 +1796,88 @@ async fn handle_slash_command(
                         }
                     }
                 }
+                "mode" => {
+                    if arg.is_empty() {
+                        let mode = std::env::var("DREAM_BUDGET_MODE")
+                            .or_else(|_| std::env::var("DREAMING_MODE"))
+                            .unwrap_or_else(|_| "balanced".to_string());
+                        println!("  Current dreaming mode: {}", mode);
+                        println!("  Usage: /dream mode [balanced | deep | fast]");
+                    } else {
+                        let mode = arg.to_lowercase();
+                        if mode == "balanced" || mode == "deep" || mode == "fast" {
+                            match patch_env_key(&env_path, "DREAM_BUDGET_MODE", &mode) {
+                                Ok(true)  => println!("  ✓ DREAM_BUDGET_MODE={} written to .env (restart bus to apply)", mode),
+                                Ok(false) => println!("  ✓ DREAM_BUDGET_MODE={} appended to .env (restart bus to apply)", mode),
+                                Err(e)    => eprintln!("  ✗ Could not update .env: {}", e),
+                            }
+                        } else {
+                            eprintln!("  ✗ Invalid mode: {}. Allowed: balanced, deep, fast", arg);
+                        }
+                    }
+                }
+                "graph" | "g" => {
+                    let graph_path = crate::paths::data_dir().join("graph.html");
+                    if graph_path.exists() {
+                        let path_str = graph_path.to_string_lossy().to_string();
+                        println!("  Opening interactive D3 memory graph in default web browser...");
+                        println!("  Path: file:///{}", path_str.replace('\\', "/"));
+                        
+                        let status = if cfg!(target_os = "windows") {
+                            std::process::Command::new("cmd")
+                                .args(["/C", "start", "", &path_str])
+                                .status()
+                        } else if cfg!(target_os = "macos") {
+                            std::process::Command::new("open")
+                                .arg(&path_str)
+                                .status()
+                        } else {
+                            std::process::Command::new("xdg-open")
+                                .arg(&path_str)
+                                .status()
+                        };
+                        
+                        match status {
+                            Ok(s) if s.success() => println!("  ✓ Web browser opened!"),
+                            _ => println!("  ⚠ Failed to open web browser. You can open it manually at the path above."),
+                        }
+                    } else {
+                        println!("  ✗ Graph file does not exist yet. Run \x1b[36m/dream run\x1b[0m first to generate the graph.");
+                    }
+                }
                 other => {
                     eprintln!("  ✗ Unknown dream sub-command: {}", other);
-                    eprintln!("    Usage: /dream | /dream enable | /dream disable | /dream interval <secs>");
+                    eprintln!("    Usage: /dream | /dream run | /dream enable | /dream disable | /dream interval <secs> | /dream mode <balanced|deep|fast> | /dream graph");
                 }
+            }
+        }
+        "graph" => {
+            let graph_path = crate::paths::data_dir().join("graph.html");
+            if graph_path.exists() {
+                let path_str = graph_path.to_string_lossy().to_string();
+                println!("  Opening interactive D3 memory graph in default web browser...");
+                println!("  Path: file:///{}", path_str.replace('\\', "/"));
+                
+                let status = if cfg!(target_os = "windows") {
+                    std::process::Command::new("cmd")
+                        .args(["/C", "start", "", &path_str])
+                        .status()
+                    } else if cfg!(target_os = "macos") {
+                        std::process::Command::new("open")
+                            .arg(&path_str)
+                            .status()
+                    } else {
+                        std::process::Command::new("xdg-open")
+                            .arg(&path_str)
+                            .status()
+                    };
+                
+                match status {
+                    Ok(s) if s.success() => println!("  ✓ Web browser opened!"),
+                    _ => println!("  ⚠ Failed to open web browser. You can open it manually at the path above."),
+                }
+            } else {
+                println!("  ✗ Graph file does not exist yet. Run \x1b[36m/dream run\x1b[0m first to generate the graph.");
             }
         }
         "tools" => {
@@ -1134,7 +2031,11 @@ async fn dispatch_user_message(
     // Dispatch.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
     let model_router = state.model_router.clone();
-    let registry = state.registry.clone();
+    let registry = if state.status_mode == StatusMode::Plan {
+        Arc::new(ToolRegistry::new())
+    } else {
+        state.registry.clone()
+    };
     let active_permissions = crate::orchestrator::ActivePermissions::default();
     let page_id = state.page_id.clone();
     let user_id = state.user_id.clone();
@@ -1440,6 +2341,12 @@ async fn dispatch_user_message(
                 println!("  {red}✗ Rate Limit Exceeded / Request Failed{reset}");
                 println!("  {yellow}The brain provider ('{}') is temporarily rate-limiting requests (HTTP 429).{reset}", state.app_config.effective_brain_provider());
                 println!("  {dim}Tip: You can switch to another model using `{reset}/model <name>{dim}` or try again in a few seconds.{reset}");
+            } else if msg.contains("401") || msg.contains("Unauthorized") || msg.contains("API key") || msg.contains("auth") {
+                let red = "\x1b[31m";
+                let yellow = "\x1b[33m";
+                println!("  {red}✗ Authentication Failed (HTTP 401 / Unauthorized){reset}");
+                println!("  {yellow}The brain provider ('{}') rejected the request due to an invalid or missing API key.{reset}", state.app_config.effective_active_provider());
+                println!("  {dim}Configure it using: `{reset}/provider set {} key <your-api-key>{dim}`.{reset}", state.app_config.effective_active_provider());
             } else {
                 println!("  ✗ {one_line}");
             }
@@ -1450,6 +2357,10 @@ async fn dispatch_user_message(
             eprintln!("  ✗ Task join error: {}", e);
         }
     }
+
+    // Reprint the status bar with updated token counts and context fullness
+    print!("{}", render_status_bar(&status_state_from(state)));
+
     Ok(())
 }
 
@@ -1650,18 +2561,24 @@ fn print_help() {
     println!("    /set <key> <on|off>  toggle stream_raw or show_reasoning at runtime");
     println!();
     println!("  Diagnostics:");
-    println!("    /model [name]        Show or switch primary model (no name = show)");
+    println!("    /model [name]        Show or switch primary model (relative to active provider)");
+    println!("    /model set <name> <field> <value>   Edit model parameters (context, output, cost, tier)");
+    println!("    /model edit          Open model_providers.yaml in system editor");
+    println!("    /provider [id]       Show or switch active provider");
+    println!("    /provider set <id> <field> <value>  Configure provider credentials/endpoint");
+    println!("    /provider edit       Open model_providers.yaml in system editor");
     println!("    /brain               Show base URL + masked key");
     println!("    /tools               List registered tools");
     println!("    /status              Render the Kimi-style status bar");
     println!("    /memory list|clear   Inspect / wipe stored memories");
-    println!("    /audit head          Show the Merkle audit chain head");
+    println!("    /audit [sub]         Inspect Merkle audit chain (head|count|verify)");
     println!("    /debug               Dump env + config (same as --debug)");
     println!("    /clear, /cls         Clear the screen");
     println!("    /paste               Enter multi-line paste mode; finish with ``` or /paste");
     println!();
     println!("  Dream cycle (memory consolidation):");
-    println!("    /dream               Show dream cycle status (enabled, interval)");
+    println!("    /dream               Show dream cycle status (enabled, interval, headroom)");
+    println!("    /dream run           Manually trigger memory consolidation cycle now");
     println!("    /dream enable        Turn the dream cycle on  (writes .env)");
     println!("    /dream disable       Turn the dream cycle off (writes .env)");
     println!("    /dream interval <N>  Set cycle interval to N seconds (writes .env)");
@@ -2635,32 +3552,216 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
         ("view", "Show the content of the current or specified page"),
         ("show", "Show the content of the current or specified page"),
         ("set", "List or toggle settings"),
-        ("model", "Show or switch primary model"),
+        ("model", "Show, switch, or set primary model"),
+        ("provider", "Show, switch, or set active provider"),
         ("brain", "Show base URL + masked key"),
+        ("tools", "List registered tools"),
         ("clear", "Clear the screen"),
         ("cls", "Clear the screen"),
         ("paste", "Enter multi-line paste mode"),
         ("memory", "Inspect / wipe stored memories"),
-        ("audit", "Show the Merkle audit chain head"),
+        ("audit", "Inspect the Merkle audit chain"),
         ("debug", "Dump env + config"),
         ("status", "Render status bar"),
         ("dream", "Show or configure dream cycle"),
+        ("graph", "Open interactive D3 memory graph in browser"),
         ("reasoning", "Toggle the last turn's scratchpad"),
+        ("r", "Toggle the last turn's scratchpad"),
     ];
 
     let mut selected_idx = 0usize;
     let mut lines_to_clear = 0usize;
+    let mut prev_lines = 1usize;
 
     loop {
         // Filter slash commands if the line starts with '/'
         let is_slash = line.starts_with('/');
-        let prefix = if is_slash && line.len() > 1 { &line[1..] } else { "" };
-        let matching_cmds: Vec<_> = if is_slash {
-            SLASH_COMMANDS
-                .iter()
-                .filter(|(cmd, _)| cmd.starts_with(prefix))
-                .copied()
-                .collect()
+        let matching_cmds: Vec<(String, String)> = if is_slash {
+            let line_trimmed = line[1..].trim_start();
+            if let Some(space_pos) = line_trimmed.find(char::is_whitespace) {
+                let cmd_part = &line_trimmed[..space_pos].to_lowercase();
+                let rest_part = line_trimmed[space_pos..].trim_start();
+                
+                match cmd_part.as_str() {
+                    "dream" => {
+                        let subs = &[
+                            ("run", "Trigger manual consolidation cycle"),
+                            ("status", "Show status with memory headroom metrics"),
+                            ("enable", "Enable dream cycle in .env"),
+                            ("disable", "Disable dream cycle in .env"),
+                            ("interval", "Set cycle interval in seconds"),
+                            ("mode", "Set dreaming mode (balanced/deep/fast)"),
+                            ("graph", "Open interactive D3 memory graph in browser"),
+                        ];
+                        subs.iter()
+                            .filter(|(sub, _)| sub.starts_with(rest_part))
+                            .map(|(sub, desc)| (format!("{} {}", cmd_part, sub), desc.to_string()))
+                            .collect()
+                    }
+                    "memory" => {
+                        let subs = &[
+                            ("list", "List stored semantic memories"),
+                            ("clear", "Clear all semantic memories"),
+                        ];
+                        subs.iter()
+                            .filter(|(sub, _)| sub.starts_with(rest_part))
+                            .map(|(sub, desc)| (format!("{} {}", cmd_part, sub), desc.to_string()))
+                            .collect()
+                    }
+                    "audit" => {
+                        let subs = &[
+                            ("head", "Show head audit hash"),
+                            ("count", "Show count of audit events"),
+                            ("verify", "Verify audit chain integrity"),
+                        ];
+                        subs.iter()
+                            .filter(|(sub, _)| sub.starts_with(rest_part))
+                            .map(|(sub, desc)| (format!("{} {}", cmd_part, sub), desc.to_string()))
+                            .collect()
+                    }
+                    "set" => {
+                        let subs = &[
+                            ("stream_raw", "Toggle raw JSON response streaming"),
+                            ("show_reasoning", "Toggle scratchpad/reasoning visibility"),
+                        ];
+                        subs.iter()
+                            .filter(|(sub, _)| sub.starts_with(rest_part))
+                            .map(|(sub, desc)| (format!("{} {}", cmd_part, sub), desc.to_string()))
+                            .collect()
+                    }
+                    "reasoning" | "r" => {
+                        let subs = &[
+                            ("show", "Force-expand reasoning text"),
+                            ("hide", "Force-collapse reasoning text"),
+                        ];
+                        subs.iter()
+                            .filter(|(sub, _)| sub.starts_with(rest_part))
+                            .map(|(sub, desc)| (format!("{} {}", cmd_part, sub), desc.to_string()))
+                            .collect()
+                    }
+                    "model" => {
+                        let is_save = rest_part.starts_with("save");
+                        let is_set = rest_part.starts_with("set");
+                        let model_prefix = if is_save {
+                            rest_part["save".len()..].trim_start()
+                        } else if is_set {
+                            rest_part["set".len()..].trim_start()
+                        } else {
+                            rest_part
+                        };
+                        
+                        let active_provider = state.app_config.effective_active_provider();
+                        let mut models: Vec<String> = if let Some(ref r) = state.model_router.registry() {
+                            let all_models = r.models(None);
+                            let mut list = Vec::new();
+                            if model_prefix.is_empty() {
+                                for m in &all_models {
+                                    if m.provider_id == active_provider {
+                                        list.push(m.id.clone());
+                                    }
+                                    list.push(format!("{}/{}", m.provider_id, m.id));
+                                }
+                            } else {
+                                for m in &all_models {
+                                    list.push(format!("{}/{}", m.provider_id, m.id));
+                                    list.push(m.id.clone());
+                                    for alias in &m.aliases {
+                                        list.push(alias.clone());
+                                        list.push(format!("{}/{}", m.provider_id, alias));
+                                    }
+                                }
+                            }
+                            list
+                        } else {
+                            Vec::new()
+                        };
+                        models.sort();
+                        models.dedup();
+                        
+                        let model_options: Vec<_> = models.into_iter()
+                            .filter(|m| m.starts_with(model_prefix))
+                            .map(|m| {
+                                if is_save {
+                                    (format!("model save {}", m), format!("Save and set primary model to {}", m))
+                                } else if is_set {
+                                    (format!("model set {} context", m), format!("Set max input tokens for model {}", m))
+                                } else {
+                                    (format!("model {}", m), format!("Switch primary model to {}", m))
+                                }
+                            })
+                            .collect();
+                        
+                        if rest_part.is_empty() && !is_save && !is_set {
+                            let mut results = vec![
+                                ("model save".to_string(), "Save and set primary model permanently in .env".to_string()),
+                                ("model set".to_string(), "Edit model configurations".to_string()),
+                                ("model edit".to_string(), "Open model_providers.yaml in system editor".to_string())
+                            ];
+                            results.extend(model_options);
+                            results
+                        } else {
+                            model_options
+                        }
+                    }
+                    "provider" => {
+                        let is_save = rest_part.starts_with("save");
+                        let is_set = rest_part.starts_with("set");
+                        let provider_prefix = if is_save {
+                            rest_part["save".len()..].trim_start()
+                        } else if is_set {
+                            rest_part["set".len()..].trim_start()
+                        } else {
+                            rest_part
+                        };
+                        
+                        let mut providers: Vec<String> = if let Some(ref r) = state.model_router.registry() {
+                            r.providers().iter().map(|p| p.id.clone()).collect()
+                        } else {
+                            vec![
+                                "openrouter".to_string(),
+                                "openai".to_string(),
+                                "ollama".to_string(),
+                                "lmstudio".to_string(),
+                                "custom".to_string(),
+                            ]
+                        };
+                        providers.sort();
+                        providers.dedup();
+                        
+                        let provider_options: Vec<_> = providers.into_iter()
+                            .filter(|p| p.starts_with(provider_prefix))
+                            .map(|p| {
+                                if is_save {
+                                    (format!("provider save {}", p), format!("Save and set active provider to {}", p))
+                                } else if is_set {
+                                    (format!("provider set {} key", p), format!("Set API key for provider {}", p))
+                                } else {
+                                    (format!("provider {}", p), format!("Switch active provider to {}", p))
+                                }
+                            })
+                            .collect();
+                        
+                        if rest_part.is_empty() && !is_save && !is_set {
+                            let mut results = vec![
+                                ("provider save".to_string(), "Save and set active provider permanently in .env".to_string()),
+                                ("provider set".to_string(), "Configure provider settings".to_string()),
+                                ("provider edit".to_string(), "Open model_providers.yaml in system editor".to_string())
+                            ];
+                            results.extend(provider_options);
+                            results
+                        } else {
+                            provider_options
+                        }
+                    }
+                    _ => Vec::new()
+                }
+            } else {
+                SLASH_COMMANDS
+                    .iter()
+                    .filter(|(cmd, _)| cmd.starts_with(line_trimmed))
+                    .map(|(cmd, desc)| (cmd.to_string(), desc.to_string()))
+                    .collect()
+            }
         } else {
             Vec::new()
         };
@@ -2680,10 +3781,16 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
         } else {
             format!("{ANSI_CYAN}❯{ANSI_RESET} ")
         };
-        let _ = write!(stdout, "\r\x1b[2K{}{}", prompt_str, line);
+        
+        if prev_lines > 1 {
+            let _ = write!(stdout, "\x1b[{}A", prev_lines - 1);
+        }
+        let _ = write!(stdout, "\r\x1b[J{}{}", prompt_str, line);
 
-        // Save the cursor position (at the end of the input line)
-        let _ = write!(stdout, "\x1b[s");
+        let term_width = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+        let prompt_len = 2; // "❯ " or "… "
+        let total_chars = prompt_len + line.chars().count();
+        prev_lines = (total_chars + term_width - 1) / term_width;
 
         // 3. Draw matching commands if active
         lines_to_clear = 0;
@@ -2711,12 +3818,12 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
             }
 
             for idx in start_idx..end_idx {
-                let (cmd, desc) = matching_cmds[idx];
+                let (cmd, desc) = &matching_cmds[idx];
                 let is_selected = idx == selected_idx;
                 let line_str = if is_selected {
-                    format!("\n  \x1b[30;46m/{:<10}\x1b[0m \x1b[36m— {}\x1b[0m", cmd, desc)
+                    format!("\n  \x1b[30;46m/{:<32}\x1b[0m \x1b[36m— {}\x1b[0m", cmd, desc)
                 } else {
-                    format!("\n  \x1b[36m/{:<10}\x1b[0m \x1b[2m— {}\x1b[0m", cmd, desc)
+                    format!("\n  \x1b[36m/{:<32}\x1b[0m \x1b[2m— {}\x1b[0m", cmd, desc)
                 };
                 let _ = write!(stdout, "{}", line_str);
                 lines_to_clear += 1;
@@ -2727,10 +3834,13 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                 let _ = write!(stdout, "\n  \x1b[2m▼ ({} more below)\x1b[0m", total - end_idx);
                 lines_to_clear += 1;
             }
+
+            // Move cursor back up to the input line relatives
+            if lines_to_clear > 0 {
+                let _ = write!(stdout, "\x1b[{}A", lines_to_clear);
+            }
         }
 
-        // Restore the cursor position
-        let _ = write!(stdout, "\x1b[u");
         let _ = stdout.flush();
 
         let ev = match read() {
@@ -2761,6 +3871,7 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                 if !line.is_empty() {
                     line.pop();
                     selected_idx = 0;
+                    history_idx = None; // Exit history mode on edit
                 }
                 continue;
             }
@@ -2769,8 +3880,9 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
             if code == KeyCode::Tab {
                 if is_slash && !matching_cmds.is_empty() {
                     if selected_idx < matching_cmds.len() {
-                        line = format!("/{} ", matching_cmds[selected_idx].0);
+                        line = format!("/{} ", &matching_cmds[selected_idx].0);
                         selected_idx = 0;
+                        history_idx = None; // Exit history mode on edit
                     }
                 }
                 continue;
@@ -2778,7 +3890,7 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
 
             // Up Arrow -> Previous history item OR navigate autocomplete up
             if code == KeyCode::Up {
-                if is_slash && !matching_cmds.is_empty() {
+                if is_slash && !matching_cmds.is_empty() && history_idx.is_none() {
                     if selected_idx > 0 {
                         selected_idx -= 1;
                     } else {
@@ -2800,7 +3912,7 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
 
             // Down Arrow -> Next history item OR navigate autocomplete down
             if code == KeyCode::Down {
-                if is_slash && !matching_cmds.is_empty() {
+                if is_slash && !matching_cmds.is_empty() && history_idx.is_none() {
                     if selected_idx + 1 < matching_cmds.len() {
                         selected_idx += 1;
                     } else {
@@ -2821,7 +3933,7 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
             // Enter -> Submit prompt and save to history
             if code == KeyCode::Enter {
                 if is_slash && !matching_cmds.is_empty() {
-                    let cmd_name = matching_cmds[selected_idx].0;
+                    let cmd_name = &matching_cmds[selected_idx].0;
                     let expected_prefix = format!("/{}", cmd_name);
                     if line != expected_prefix && !line.starts_with(&format!("/{} ", cmd_name)) {
                         // Autocomplete instead of submitting
@@ -2863,9 +3975,11 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                 if lines_to_clear > 0 {
                     let _ = write!(stdout, "\x1b[{}A", lines_to_clear);
                 }
-                print!("\r\x1b[A\x1b[2K");
+                let up_lines = prev_lines;
+                let _ = write!(stdout, "\r\x1b[{}A\x1b[2K", up_lines);
                 print!("{}", render_status_bar(&status_state_from(state)));
                 lines_to_clear = 0;
+                prev_lines = 1;
                 continue;
             }
 
@@ -2899,13 +4013,14 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
             if let KeyCode::Char(c) = code {
                 line.push(c);
                 selected_idx = 0;
+                history_idx = None; // Exit history mode on edit
             }
         }
     }
 }
 
 /// Interactive model picker popup inside the REPL using crossterm arrow-key selection
-fn select_model_interactive(_state: &ReplState) -> Option<String> {
+fn select_model_interactive(state: &ReplState) -> Option<String> {
     use crossterm::{
         cursor::MoveUp,
         event::{read, Event, KeyCode, KeyEvent, KeyEventKind},
@@ -2915,14 +4030,29 @@ fn select_model_interactive(_state: &ReplState) -> Option<String> {
     use std::io::Write;
 
     let mut stdout = std::io::stdout();
-    let models = vec![
-        "google/gemini-2.0-flash-exp:free".to_string(),
-        "openai/gpt-4o-mini".to_string(),
-        "anthropic/claude-3.5-sonnet".to_string(),
-        "meta-llama/llama-3.1-70b-instruct".to_string(),
-    ];
+    let mut models: Vec<String> = if let Some(ref registry) = state.model_router.registry() {
+        registry.models(None)
+            .iter()
+            .map(|m| format!("{}/{}", m.provider_id, m.id))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    models.sort();
+    models.dedup();
+
+    if models.is_empty() {
+        models = vec![
+            "google/gemini-2.0-flash-exp:free".to_string(),
+            "openai/gpt-4o-mini".to_string(),
+            "anthropic/claude-3.5-sonnet".to_string(),
+            "meta-llama/llama-3.1-70b-instruct".to_string(),
+        ];
+    }
 
     println!("\n  Choose a primary model (↑/↓ to move, Enter to select, q/Esc to abort):");
+    println!("  (Note: use `/model save <name>` from chat to persist the choice to .env)");
 
     let mut selected = 0;
     let n = models.len() as u16;

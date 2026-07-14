@@ -90,12 +90,17 @@ pub struct ProviderDefinition {
     pub max_retries: u32,
     #[serde(default)]
     pub default_params: HashMap<String, serde_yaml::Value>,
+    #[serde(default)]
+    pub models: Vec<ModelDefinition>,
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 /// A declarative model definition under a provider.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelDefinition {
     pub id: String,
+    #[serde(default)]
     pub provider_id: String,
     pub name: String,
     #[serde(default)]
@@ -117,6 +122,8 @@ pub struct ModelDefinition {
     pub default_params: HashMap<String, serde_yaml::Value>,
     pub cost_per_1k: Option<f64>,
     pub cost_tier: Option<CostTier>,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 impl ModelDefinition {
@@ -216,27 +223,113 @@ pub enum RegistryError {
     InvalidModelRef(String),
 }
 
-/// Internal YAML file shape.
 #[derive(Debug, Deserialize)]
-struct RegistryFile {
-    version: u32,
+#[serde(untagged)]
+#[allow(dead_code)]
+enum RegistryInput {
+    Map {
+        #[serde(default)]
+        version: Option<u32>,
+        #[serde(default)]
+        defaults: HashMap<String, String>,
+        #[serde(default)]
+        providers: Vec<RawProviderInput>,
+        #[serde(default)]
+        models: Vec<RawModelInput>,
+        #[serde(default)]
+        routing_profiles: Vec<crate::profiles::ModelProfile>,
+    },
+    Seq(Vec<RawProviderInput>),
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
+struct RawProviderInput {
+    id: Option<String>,
+    display_name: Option<String>,
+    kind: Option<ProviderKind>,
+    default_base_url: Option<String>,
+    auth_mode: Option<AuthMode>,
     #[serde(default)]
-    defaults: HashMap<String, String>,
-    providers: Vec<ProviderDefinition>,
+    supports_custom_models: Option<bool>,
     #[serde(default)]
-    models: Vec<ModelDefinition>,
+    supports_reasoning: Option<bool>,
+    #[serde(default)]
+    supports_tools: Option<bool>,
+    #[serde(default)]
+    supports_vision: Option<bool>,
+    #[serde(default)]
+    default_headers: Option<HashMap<String, String>>,
+    timeout_secs: Option<u64>,
+    max_retries: Option<u32>,
+    #[serde(default)]
+    default_params: Option<HashMap<String, serde_yaml::Value>>,
+
+    name: Option<String>,
+    vendor: Option<String>,
+    #[serde(alias = "url", alias = "baseUrl")]
+    url: Option<String>,
+    #[serde(alias = "apiKey", alias = "api_key")]
+    api_key: Option<String>,
+    #[serde(alias = "apiType")]
+    api_type: Option<String>,
+    #[serde(default)]
+    models: Option<Vec<RawModelInput>>,
+    #[serde(default)]
+    settings: Option<HashMap<String, serde_yaml::Value>>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct RawModelInput {
+    id: String,
+    provider_id: Option<String>,
+    name: Option<String>,
+    #[serde(default)]
+    aliases: Option<Vec<String>>,
+    api_model_id: Option<String>,
+    #[serde(default)]
+    tool_calling: Option<bool>,
+    #[serde(default)]
+    vision: Option<bool>,
+    #[serde(default)]
+    reasoning: Option<bool>,
+    #[serde(default)]
+    streaming: Option<bool>,
+    max_input_tokens: Option<u32>,
+    max_output_tokens: Option<u32>,
+    #[serde(default)]
+    request_headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    default_params: Option<HashMap<String, serde_yaml::Value>>,
+    cost_per_1k: Option<f64>,
+    cost_tier: Option<crate::profiles::CostTier>,
+
+    url: Option<String>,
+    #[serde(alias = "toolCalling")]
+    tool_calling_new: Option<bool>,
+    #[serde(alias = "maxInputTokens")]
+    max_input_tokens_new: Option<u32>,
+    #[serde(alias = "maxOutputTokens")]
+    max_output_tokens_new: Option<u32>,
+    #[serde(alias = "requestHeaders")]
+    request_headers_new: Option<HashMap<String, String>>,
 }
 
 /// A registry of providers and models.
 ///
 /// Providers and models are keyed by their declared ids. Models are also
 /// addressable by aliases and by role defaults.
+///
+/// The registry may also carry `routing_profiles` — the smart task-routing
+/// layer (formerly known as the Model Council) that picks the best model
+/// per task type (code, research, planning …).
 #[derive(Debug, Clone, Default)]
 pub struct ProviderRegistry {
     providers: HashMap<String, ProviderDefinition>,
     models: HashMap<String, ModelDefinition>,
     aliases: HashMap<String, String>,
     role_defaults: HashMap<String, String>,
+    routing_profiles: Vec<crate::profiles::ModelProfile>,
 }
 
 impl ProviderRegistry {
@@ -248,52 +341,261 @@ impl ProviderRegistry {
 
     /// Load a registry from a YAML string.
     pub fn load_from_yaml_str(text: &str) -> Result<Self, RegistryError> {
-        let file: RegistryFile = serde_yaml::from_str(text)?;
-        if file.version != 1 {
-            return Err(RegistryError::UnsupportedVersion(file.version));
-        }
+        let parsed: RegistryInput = serde_yaml::from_str(text)?;
 
         let mut providers = HashMap::new();
-        for p in file.providers {
-            providers.insert(p.id.clone(), p);
-        }
-
         let mut models = HashMap::new();
         let mut aliases = HashMap::new();
-        for m in file.models {
-            if !providers.contains_key(&m.provider_id) {
-                return Err(RegistryError::UnknownProvider(m.provider_id.clone()));
+
+        let (defaults, raw_providers, raw_models, routing_profiles, is_seq) = match parsed {
+            RegistryInput::Map { version: _, defaults, providers, models, routing_profiles } => {
+                (defaults, providers, models, routing_profiles, false)
             }
-            let full_id = format!("{}/{}", m.provider_id, m.id);
-            models.insert(full_id.clone(), m.clone());
-            aliases.insert(format!("{}/{}", m.provider_id, m.id), full_id.clone());
-            for alias in &m.aliases {
-                aliases.insert(format!("{}/{}", m.provider_id, alias), full_id.clone());
+            RegistryInput::Seq(providers) => {
+                let builtin = Self::builtin_default();
+                (builtin.role_defaults, providers, vec![], builtin.routing_profiles, true)
+            }
+        };
+
+        let slugify = |s: &str| -> String {
+            s.to_lowercase()
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                .collect::<String>()
+                .split('-')
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("-")
+        };
+
+        let normalize_vendor = |vendor: &str| -> ProviderKind {
+            match vendor.to_lowercase().as_str() {
+                "openrouter" => ProviderKind::OpenRouter,
+                "ollama" => ProviderKind::Ollama,
+                "customendpoint" | "custom_openai" | "openai" | "copilot" | "custom" => ProviderKind::CustomOpenAi,
+                _ => ProviderKind::CustomOpenAi,
+            }
+        };
+
+        let default_base_url_for_kind = |kind: &ProviderKind| -> &'static str {
+            match kind {
+                ProviderKind::OpenRouter => "https://openrouter.ai/api/v1",
+                ProviderKind::Ollama => "http://localhost:11434/v1",
+                ProviderKind::CustomOpenAi => "",
+                ProviderKind::CustomEndpoint => "",
+            }
+        };
+
+        // Convert RawProviderInput to ProviderDefinition
+        for raw_p in raw_providers {
+            let id = raw_p.id.clone()
+                .or_else(|| raw_p.name.as_ref().map(|n| slugify(n)))
+                .unwrap_or_else(|| "default".to_string());
+
+            let display_name = raw_p.display_name.clone()
+                .or_else(|| raw_p.name.clone())
+                .unwrap_or_else(|| id.clone());
+
+            let kind = raw_p.kind.clone()
+                .or_else(|| raw_p.vendor.as_ref().map(|v| normalize_vendor(v)))
+                .unwrap_or(ProviderKind::CustomOpenAi);
+
+            let default_base_url = raw_p.default_base_url.clone()
+                .or_else(|| raw_p.url.clone())
+                .unwrap_or_else(|| default_base_url_for_kind(&kind).to_string());
+
+            let auth_mode = raw_p.auth_mode.clone()
+                .unwrap_or_else(|| {
+                    if raw_p.api_key.is_some() {
+                        AuthMode::ApiKey
+                    } else {
+                        match kind {
+                            ProviderKind::Ollama => AuthMode::None,
+                            _ => AuthMode::ApiKey,
+                        }
+                    }
+                });
+
+            let supports_custom_models = raw_p.supports_custom_models.unwrap_or(true);
+            let supports_reasoning = raw_p.supports_reasoning.unwrap_or(true);
+            let supports_tools = raw_p.supports_tools.unwrap_or(true);
+            let supports_vision = raw_p.supports_vision.unwrap_or(true);
+            let default_headers = raw_p.default_headers.clone().unwrap_or_default();
+            let timeout_secs = raw_p.timeout_secs.unwrap_or(180);
+            let max_retries = raw_p.max_retries.unwrap_or(3);
+            let default_params = raw_p.default_params.clone().unwrap_or_default();
+
+            // Load models: if none specified, inherit builtin models for standard provider kinds!
+            let mut p_models = Vec::new();
+            if let Some(raw_models) = raw_p.models {
+                for rm in raw_models {
+                    let m_id = rm.id.clone();
+                    let m_name = rm.name.clone().unwrap_or_else(|| m_id.clone());
+                    let api_model_id = rm.api_model_id.clone().unwrap_or_else(|| m_id.clone());
+                    let tool_calling = rm.tool_calling_new.or(rm.tool_calling).unwrap_or(false);
+                    let vision = rm.vision.unwrap_or(false);
+                    let reasoning = rm.reasoning.unwrap_or(false);
+                    let streaming = rm.streaming.unwrap_or(true);
+                    let max_input_tokens = rm.max_input_tokens_new.or(rm.max_input_tokens);
+                    let max_output_tokens = rm.max_output_tokens_new.or(rm.max_output_tokens);
+                    let request_headers = rm.request_headers_new.or(rm.request_headers).unwrap_or_default();
+                    let default_params = rm.default_params.clone().unwrap_or_default();
+                    let cost_per_1k = rm.cost_per_1k;
+                    let cost_tier = rm.cost_tier;
+                    let aliases_list = rm.aliases.clone().unwrap_or_default();
+                    let url = rm.url.clone();
+
+                    let m_def = ModelDefinition {
+                        id: m_id,
+                        provider_id: id.clone(),
+                        name: m_name,
+                        aliases: aliases_list,
+                        api_model_id,
+                        tool_calling,
+                        vision,
+                        reasoning,
+                        streaming,
+                        max_input_tokens,
+                        max_output_tokens,
+                        request_headers,
+                        default_params,
+                        cost_per_1k,
+                        cost_tier,
+                        url,
+                    };
+                    p_models.push(m_def);
+                }
+            } else {
+                // Models list is omitted. Check if this is a standard vendor and inherit its builtin models!
+                let builtin = Self::builtin_default();
+                let builtin_provider_id = match kind {
+                    ProviderKind::OpenRouter => "openrouter",
+                    ProviderKind::Ollama => "ollama",
+                    ProviderKind::CustomOpenAi if id == "openai" => "openai",
+                    ProviderKind::CustomOpenAi if id == "lmstudio" => "lmstudio",
+                    _ => "",
+                };
+                if !builtin_provider_id.is_empty() {
+                    for bm in builtin.models(Some(builtin_provider_id)) {
+                        let mut m = bm.clone();
+                        m.provider_id = id.clone();
+                        p_models.push(m);
+                    }
+                }
+            }
+
+            for mut m in p_models.clone() {
+                m.provider_id = id.clone();
+                let full_id = format!("{}/{}", m.provider_id, m.id);
+                models.insert(full_id.clone(), m.clone());
+                aliases.insert(format!("{}/{}", m.provider_id, m.id), full_id.clone());
+                for alias in &m.aliases {
+                    aliases.insert(format!("{}/{}", m.provider_id, alias), full_id.clone());
+                }
+            }
+
+            let p_def = ProviderDefinition {
+                id: id.clone(),
+                display_name,
+                kind,
+                default_base_url,
+                auth_mode,
+                supports_custom_models,
+                supports_reasoning,
+                supports_tools,
+                supports_vision,
+                default_headers,
+                timeout_secs,
+                max_retries,
+                default_params,
+                models: p_models,
+                api_key: raw_p.api_key.clone(),
+            };
+
+            providers.insert(id, p_def);
+        }
+
+        // Process any root-level flat models (old format compatibility)
+        for rm in raw_models {
+            let m_id = rm.id.clone();
+            let p_id = rm.provider_id.clone().unwrap_or_else(|| "default".to_string());
+            if !providers.contains_key(&p_id) {
+                return Err(RegistryError::UnknownProvider(p_id));
+            }
+            let m_name = rm.name.clone().unwrap_or_else(|| m_id.clone());
+            let api_model_id = rm.api_model_id.clone().unwrap_or_else(|| m_id.clone());
+            let tool_calling = rm.tool_calling_new.or(rm.tool_calling).unwrap_or(false);
+            let vision = rm.vision.unwrap_or(false);
+            let reasoning = rm.reasoning.unwrap_or(false);
+            let streaming = rm.streaming.unwrap_or(true);
+            let max_input_tokens = rm.max_input_tokens_new.or(rm.max_input_tokens);
+            let max_output_tokens = rm.max_output_tokens_new.or(rm.max_output_tokens);
+            let request_headers = rm.request_headers_new.or(rm.request_headers).unwrap_or_default();
+            let default_params = rm.default_params.clone().unwrap_or_default();
+            let cost_per_1k = rm.cost_per_1k;
+            let cost_tier = rm.cost_tier;
+            let aliases_list = rm.aliases.clone().unwrap_or_default();
+            let url = rm.url.clone();
+
+            let m_def = ModelDefinition {
+                id: m_id,
+                provider_id: p_id.clone(),
+                name: m_name,
+                aliases: aliases_list,
+                api_model_id,
+                tool_calling,
+                vision,
+                reasoning,
+                streaming,
+                max_input_tokens,
+                max_output_tokens,
+                request_headers,
+                default_params,
+                cost_per_1k,
+                cost_tier,
+                url,
+            };
+
+            let full_id = format!("{}/{}", m_def.provider_id, m_def.id);
+            models.insert(full_id.clone(), m_def.clone());
+            aliases.insert(format!("{}/{}", m_def.provider_id, m_def.id), full_id.clone());
+            for alias in &m_def.aliases {
+                aliases.insert(format!("{}/{}", m_def.provider_id, alias), full_id.clone());
             }
         }
 
         // Validate role defaults point to known models.
-        for (role, model_ref) in &file.defaults {
+        // For Seq-based configs (simple format), silently drop inherited defaults
+        // that don't resolve — the user didn't define every provider, and that's fine.
+        let mut valid_defaults = HashMap::new();
+        for (role, model_ref) in defaults {
             if !model_ref.contains('/') {
-                return Err(RegistryError::InvalidModelRef(format!(
-                    "role default for '{}' must be provider/model, got '{}'",
-                    role, model_ref
-                )));
+                if !is_seq {
+                    return Err(RegistryError::InvalidModelRef(format!(
+                        "role default for '{}' must be provider/model, got '{}'",
+                        role, model_ref
+                    )));
+                }
+                continue;
             }
-            let key = aliases.get(model_ref).map(|s| s.as_str()).unwrap_or(model_ref);
-            if !models.contains_key(key) {
+            let key = aliases.get(&model_ref).map(|s| s.as_str()).unwrap_or(model_ref.as_str());
+            if models.contains_key(key) {
+                valid_defaults.insert(role, model_ref);
+            } else if !is_seq {
                 return Err(RegistryError::UnknownModel(format!(
                     "role default for '{}' -> '{}'",
                     role, model_ref
                 )));
             }
+            // else: Seq format — silently drop unresolvable inherited defaults
         }
 
         Ok(Self {
             providers,
             models,
             aliases,
-            role_defaults: file.defaults,
+            role_defaults: valid_defaults,
+            routing_profiles,
         })
     }
 
@@ -304,20 +606,34 @@ impl ProviderRegistry {
             .expect("builtin registry is valid YAML")
     }
 
-    /// Look up a provider by id (with normalization).
+    /// Look up a provider by id.
+    /// First tries the id exactly as-is (supports user-defined slugified names like "zenmux"),
+    /// then falls back to the normalized alias (supports standard aliases like "OR" → "openrouter").
     pub fn provider(&self, id: &str) -> Option<&ProviderDefinition> {
+        if let Some(p) = self.providers.get(id) {
+            return Some(p);
+        }
         let normalized = Self::normalize_provider_id(id);
         self.providers.get(normalized)
     }
 
-    /// Look up a model by its full id `provider_id/model_id` (with normalization).
+    /// Look up a model by its full id `provider_id/model_id`.
+    /// First tries the id exactly, then falls back to normalised provider alias.
     pub fn model(&self, id: &str) -> Option<&ModelDefinition> {
         let (provider_id, model_id) = id.split_once('/')?;
+        // Try raw provider id first (user-defined names).
+        let raw_key = format!("{}/{}", provider_id, model_id);
+        if let Some(m) = self.models.get(&raw_key).or_else(|| {
+            self.aliases.get(&raw_key).and_then(|fid| self.models.get(fid))
+        }) {
+            return Some(m);
+        }
+        // Fallback: try normalized provider alias.
         let normalized_provider = Self::normalize_provider_id(provider_id);
-        let key = format!("{}/{}", normalized_provider, model_id);
-        self.models.get(&key).or_else(|| {
+        let norm_key = format!("{}/{}", normalized_provider, model_id);
+        self.models.get(&norm_key).or_else(|| {
             self.aliases
-                .get(&key)
+                .get(&norm_key)
                 .and_then(|full_id| self.models.get(full_id))
         })
     }
@@ -328,6 +644,10 @@ impl ProviderRegistry {
     /// - empty: use the role default
     /// - `provider_id/model_id`: look up the model directly
     /// - `provider_id/alias`: resolve through an alias
+    pub fn role_default(&self, role: &str) -> Option<&str> {
+        self.role_defaults.get(role).map(|s| s.as_str())
+    }
+
     pub fn resolve(&self, model_ref: &str, role: Option<&str>) -> Option<ResolvedModel> {
         let role = role.unwrap_or("chat");
         let model_ref = model_ref.trim();
@@ -428,6 +748,13 @@ impl ProviderRegistry {
         models
     }
 
+    /// Returns the smart task-routing profiles embedded in this registry
+    /// (the "council" layer). Empty when the registry file has no
+    /// `routing_profiles:` section.
+    pub fn routing_profiles(&self) -> &[crate::profiles::ModelProfile] {
+        &self.routing_profiles
+    }
+
     /// True if a model definition satisfies a list of capability requirements.
     pub fn satisfies_requirements(
         &self,
@@ -469,14 +796,23 @@ impl ProviderRegistry {
                     .collect::<Vec<_>>();
                 Arc::new(OpenRouterClient::new(keys))
             }
-            _ => Arc::new(CustomOpenAIClient::new(CustomProviderConfig {
-                base_url: base_url.trim_end_matches('/').to_string(),
-                api_key: api_key.to_string(),
-                default_model: model.to_string(),
-                provider_label: normalized.to_string(),
-                timeout: Duration::from_secs(timeout_secs),
-                max_retries: 3,
-            })),
+            _ => {
+                let mut model_urls = HashMap::new();
+                for m in self.models(Some(provider_id)) {
+                    if let Some(ref custom_url) = m.url {
+                        model_urls.insert(m.api_model_id.clone(), custom_url.clone());
+                    }
+                }
+                Arc::new(CustomOpenAIClient::new(CustomProviderConfig {
+                    base_url: base_url.trim_end_matches('/').to_string(),
+                    api_key: api_key.to_string(),
+                    default_model: model.to_string(),
+                    provider_label: normalized.to_string(),
+                    timeout: Duration::from_secs(timeout_secs),
+                    max_retries: 3,
+                    model_urls,
+                }))
+            }
         }
     }
 
@@ -521,14 +857,14 @@ impl ProviderRegistry {
     }
 }
 
-const BUILTIN_REGISTRY_YAML: &str = r#"
+pub const BUILTIN_REGISTRY_YAML: &str = r#"
 version: 1
 defaults:
-  chat: openrouter/openai-gpt-4o-mini
-  planning: openrouter/deepseek-deepseek-r1
-  coding: openrouter/deepseek-deepseek-coder
-  research: openrouter/perplexity-sonar
-  utility: openrouter/openai-gpt-4o-mini
+  chat: openrouter/gpt-4o-mini
+  planning: openrouter/deepseek-r1
+  coding: openrouter/deepseek-coder
+  research: openrouter/sonar
+  utility: openrouter/gpt-4o-mini
   inline_chat: ollama/llama3.1
 providers:
   - id: openrouter
@@ -540,6 +876,58 @@ providers:
     supports_reasoning: true
     supports_tools: true
     supports_vision: true
+    models:
+      - id: gpt-4o-mini
+        name: GPT-4o Mini
+        aliases: [gpt-4o-mini]
+        api_model_id: openai/gpt-4o-mini
+        tool_calling: true
+        vision: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 16384
+        cost_per_1k: 0.00015
+        cost_tier: cheap
+      - id: gpt-4o
+        name: GPT-4o
+        aliases: [gpt-4o]
+        api_model_id: openai/gpt-4o
+        tool_calling: true
+        vision: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 16384
+        cost_per_1k: 0.005
+        cost_tier: premium
+      - id: deepseek-coder
+        name: DeepSeek Coder
+        aliases: [deepseek-coder]
+        api_model_id: deepseek/deepseek-coder
+        tool_calling: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 8192
+        cost_per_1k: 0.00014
+        cost_tier: cheap
+      - id: deepseek-r1
+        name: DeepSeek R1
+        aliases: [deepseek-r1]
+        api_model_id: deepseek/deepseek-r1
+        reasoning: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 8192
+        cost_per_1k: 0.002
+        cost_tier: standard
+      - id: sonar
+        name: Perplexity Sonar
+        aliases: [sonar]
+        api_model_id: perplexity/sonar
+        streaming: true
+        max_input_tokens: 127000
+        max_output_tokens: 4096
+        cost_per_1k: 0.001
+        cost_tier: standard
   - id: openai
     display_name: OpenAI
     kind: custom_openai
@@ -548,144 +936,85 @@ providers:
     supports_reasoning: true
     supports_tools: true
     supports_vision: true
+    models:
+      - id: gpt-4o-mini
+        name: GPT-4o Mini
+        aliases: [gpt-4o-mini]
+        api_model_id: gpt-4o-mini
+        tool_calling: true
+        vision: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 16384
+        cost_per_1k: 0.00015
+        cost_tier: cheap
+      - id: gpt-4o
+        name: GPT-4o
+        aliases: [gpt-4o]
+        api_model_id: gpt-4o
+        tool_calling: true
+        vision: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 16384
+        cost_per_1k: 0.005
+        cost_tier: premium
   - id: ollama
     display_name: Ollama
     kind: ollama
     default_base_url: http://localhost:11434/v1
     auth_mode: none
     supports_custom_models: true
+    models:
+      - id: llama3.1
+        name: Llama 3.1
+        aliases: []
+        api_model_id: llama3.1
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 8192
+        cost_per_1k: 0.0
+        cost_tier: free
+      - id: qwen2.5-coder
+        name: Qwen2.5 Coder
+        aliases: []
+        api_model_id: qwen2.5-coder
+        tool_calling: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 8192
+        cost_per_1k: 0.0
+        cost_tier: free
   - id: lmstudio
     display_name: LM Studio
     kind: custom_openai
     default_base_url: http://localhost:1234/v1
     auth_mode: none
+    models:
+      - id: local-model
+        name: Local Model
+        aliases: []
+        api_model_id: local-model
+        streaming: true
+        max_input_tokens: 32000
+        max_output_tokens: 4096
+        cost_per_1k: 0.0
+        cost_tier: free
   - id: custom
     display_name: Custom OpenAI-compatible endpoint
     kind: custom_openai
     default_base_url: ""
     auth_mode: api_key
-models:
-  - id: openai-gpt-4o-mini
-    provider_id: openrouter
-    name: GPT-4o Mini
-    aliases: [gpt-4o-mini]
-    api_model_id: openai/gpt-4o-mini
-    tool_calling: true
-    vision: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 16384
-    cost_per_1k: 0.00015
-    cost_tier: cheap
-  - id: openai-gpt-4o
-    provider_id: openrouter
-    name: GPT-4o
-    aliases: [gpt-4o]
-    api_model_id: openai/gpt-4o
-    tool_calling: true
-    vision: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 16384
-    cost_per_1k: 0.005
-    cost_tier: premium
-  - id: deepseek-deepseek-coder
-    provider_id: openrouter
-    name: DeepSeek Coder
-    aliases: [deepseek-coder]
-    api_model_id: deepseek/deepseek-coder
-    tool_calling: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 8192
-    cost_per_1k: 0.00014
-    cost_tier: cheap
-  - id: deepseek-deepseek-r1
-    provider_id: openrouter
-    name: DeepSeek R1
-    aliases: [deepseek-r1]
-    api_model_id: deepseek/deepseek-r1
-    reasoning: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 8192
-    cost_per_1k: 0.002
-    cost_tier: standard
-  - id: perplexity-sonar
-    provider_id: openrouter
-    name: Perplexity Sonar
-    aliases: [sonar]
-    api_model_id: perplexity/sonar
-    streaming: true
-    max_input_tokens: 127000
-    max_output_tokens: 4096
-    cost_per_1k: 0.001
-    cost_tier: standard
-  - id: openai-gpt-4o-mini-openai
-    provider_id: openai
-    name: GPT-4o Mini
-    aliases: [gpt-4o-mini]
-    api_model_id: gpt-4o-mini
-    tool_calling: true
-    vision: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 16384
-    cost_per_1k: 0.00015
-    cost_tier: cheap
-  - id: openai-gpt-4o-openai
-    provider_id: openai
-    name: GPT-4o
-    aliases: [gpt-4o]
-    api_model_id: gpt-4o
-    tool_calling: true
-    vision: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 16384
-    cost_per_1k: 0.005
-    cost_tier: premium
-  - id: llama3.1
-    provider_id: ollama
-    name: Llama 3.1
-    aliases: []
-    api_model_id: llama3.1
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 8192
-    cost_per_1k: 0.0
-    cost_tier: free
-  - id: qwen2.5-coder
-    provider_id: ollama
-    name: Qwen2.5 Coder
-    aliases: []
-    api_model_id: qwen2.5-coder
-    tool_calling: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 8192
-    cost_per_1k: 0.0
-    cost_tier: free
-  - id: local-model
-    provider_id: lmstudio
-    name: Local Model
-    aliases: []
-    api_model_id: local-model
-    streaming: true
-    max_input_tokens: 32000
-    max_output_tokens: 4096
-    cost_per_1k: 0.0
-    cost_tier: free
-  - id: custom-model
-    provider_id: custom
-    name: Custom Model
-    aliases: []
-    api_model_id: gpt-4o-mini
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 4096
-    cost_per_1k: 0.0
-    cost_tier: free
+    models:
+      - id: custom-model
+        name: Custom Model
+        aliases: []
+        api_model_id: gpt-4o-mini
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 4096
+        cost_per_1k: 0.0
+        cost_tier: free
 "#;
 
 #[cfg(test)]
@@ -707,7 +1036,6 @@ supports_reasoning: true
         assert_eq!(p.display_name, "OpenRouter");
         assert!(p.supports_reasoning);
     }
-
     #[test]
     fn model_definition_deserializes() {
         let yaml = r#"
@@ -715,12 +1043,6 @@ id: gpt-4o-mini
 provider_id: openrouter
 name: GPT-4o Mini
 api_model_id: openai/gpt-4o-mini
-tool_calling: true
-vision: true
-streaming: true
-max_input_tokens: 128000
-max_output_tokens: 16384
-cost_per_1k: 0.00015
 cost_tier: cheap
 "#;
         let m: ModelDefinition = serde_yaml::from_str(yaml).unwrap();
@@ -747,9 +1069,9 @@ cost_tier: cheap
     #[test]
     fn resolve_model_by_full_ref() {
         let registry = ProviderRegistry::builtin_default();
-        let model = registry.resolve("openrouter/openai-gpt-4o-mini", None).unwrap();
+        let model = registry.resolve("openrouter/gpt-4o-mini", None).unwrap();
         assert_eq!(model.provider_id, "openrouter");
-        assert_eq!(model.model_id, "openai-gpt-4o-mini");
+        assert_eq!(model.model_id, "gpt-4o-mini");
         assert_eq!(model.api_model_id, "openai/gpt-4o-mini");
         assert_eq!(model.role, "chat");
     }
@@ -765,7 +1087,7 @@ cost_tier: cheap
     fn resolve_alias() {
         let registry = ProviderRegistry::builtin_default();
         let model = registry.resolve("openrouter/gpt-4o-mini", None).unwrap();
-        assert_eq!(model.model_id, "openai-gpt-4o-mini");
+        assert_eq!(model.model_id, "gpt-4o-mini");
         assert_eq!(model.api_model_id, "openai/gpt-4o-mini");
     }
 
@@ -781,11 +1103,10 @@ providers:
     kind: openrouter
     default_base_url: https://openrouter.ai/api/v1
     auth_mode: api_key
-models:
-  - id: gpt-4o-mini
-    provider_id: openrouter
-    name: GPT-4o Mini
-    api_model_id: openai/gpt-4o-mini
+    models:
+      - id: gpt-4o-mini
+        name: GPT-4o Mini
+        api_model_id: openai/gpt-4o-mini
 "#;
         let registry = ProviderRegistry::load_from_yaml_str(yaml).unwrap();
         assert!(registry.provider("openrouter").is_some());
@@ -805,11 +1126,10 @@ providers:
     kind: openrouter
     default_base_url: https://openrouter.ai/api/v1
     auth_mode: api_key
-models:
-  - id: gpt-4o-mini
-    provider_id: openrouter
-    name: GPT-4o Mini
-    api_model_id: openai/gpt-4o-mini
+    models:
+      - id: gpt-4o-mini
+        name: GPT-4o Mini
+        api_model_id: openai/gpt-4o-mini
 "#;
         let result = ProviderRegistry::load_from_yaml_str(yaml);
         assert!(result.is_err());
@@ -843,9 +1163,82 @@ models:
         let registry = ProviderRegistry::load_from_yaml(&cfg_path).unwrap();
         assert!(registry.provider("openrouter").is_some());
         assert!(registry.provider("ollama").is_some());
-        assert!(registry.model("openrouter/openai-gpt-4o-mini").is_some());
+        assert!(registry.model("openrouter/gpt-4o-mini").is_some());
 
         let chat = registry.resolve("", Some("chat")).unwrap();
         assert_eq!(chat.api_model_id, "openai/gpt-4o-mini");
+    }
+
+    #[test]
+    fn test_vscode_camelcase_and_sequence_loading() {
+        let yaml = r#"
+- name: zenmux
+  vendor: customendpoint
+  apiKey: "secret-key-123"
+  models:
+    - id: moonshotai/kimi-k2.7-code-free
+      name: kimi-k2.7-code
+      url: https://zenmux.ai/api/v1
+      toolCalling: true
+      vision: true
+      maxInputTokens: 128000
+      maxOutputTokens: 16000
+- name: Ollama
+  vendor: ollama
+  url: http://localhost:11434
+"#;
+        let registry = ProviderRegistry::load_from_yaml_str(yaml).unwrap();
+        
+        // check zenmux provider
+        let p_zen = registry.provider("zenmux").unwrap();
+        assert_eq!(p_zen.display_name, "zenmux");
+        assert_eq!(p_zen.kind, ProviderKind::CustomOpenAi);
+        assert_eq!(p_zen.api_key.as_deref(), Some("secret-key-123"));
+        
+        // check custom model URL override
+        let m_kimi = registry.model("zenmux/moonshotai/kimi-k2.7-code-free").unwrap();
+        assert_eq!(m_kimi.name, "kimi-k2.7-code");
+        assert_eq!(m_kimi.url.as_deref(), Some("https://zenmux.ai/api/v1"));
+        assert!(m_kimi.tool_calling);
+        assert!(m_kimi.vision);
+        assert_eq!(m_kimi.max_input_tokens, Some(128000));
+        
+        // check Ollama provider & auto-inherited models!
+        let p_oll = registry.provider("ollama").unwrap();
+        assert_eq!(p_oll.display_name, "Ollama");
+        assert_eq!(p_oll.default_base_url, "http://localhost:11434");
+        
+        // Ollama models should have been auto-populated from builtin default!
+        let m_llama = registry.model("ollama/llama3.1").unwrap();
+        assert_eq!(m_llama.provider_id, "ollama");
+        assert_eq!(m_llama.api_model_id, "llama3.1");
+    }
+
+    #[test]
+    fn test_lookup_raw_and_normalized() {
+        let yaml = r#"
+- name: zenmux
+  vendor: customendpoint
+  models:
+    - id: moonshotai/kimi-k2.7-code-free
+      aliases:
+        - kimi-k2.7
+- name: OpenRouter
+  vendor: openrouter
+"#;
+        let registry = ProviderRegistry::load_from_yaml_str(yaml).unwrap();
+        
+        // 1. Try exact lookup of user-defined slugified provider name
+        assert!(registry.provider("zenmux").is_some());
+        
+        // 2. Try exact lookup of model
+        assert!(registry.model("zenmux/moonshotai/kimi-k2.7-code-free").is_some());
+        
+        // 3. Try lookup using alias
+        assert!(registry.model("zenmux/kimi-k2.7").is_some());
+        
+        // 4. Try normalized alias lookup (e.g. OR -> openrouter)
+        assert!(registry.provider("OR").is_some());
+        assert_eq!(registry.provider("OR").unwrap().id, "openrouter");
     }
 }

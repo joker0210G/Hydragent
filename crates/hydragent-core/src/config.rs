@@ -31,22 +31,19 @@ pub struct AppConfig {
     ///   - `http://localhost:11434/v1` (Ollama in OpenAI-compat mode)
     ///
     /// If unset, falls back to legacy `OPENROUTER_API_KEYS` (backward compat).
+    #[serde(skip)]
     pub brain_base: String,
 
-    /// API key / bearer token for the brain. May be empty for local
-    /// providers (Ollama, LM Studio) that don't require auth.
+    #[serde(skip)]
     pub brain_key: String,
 
-    /// Primary model to call on the brain. If unset, falls back to legacy
-    /// `PRIMARY_MODEL`.
+    #[serde(skip)]
     pub brain_model: String,
 
-    /// Explicit provider type (e.g. "openai", "openrouter", "ollama").
-    /// If empty, we auto-detect (e.g. Ollama if URL contains 11434).
+    #[serde(skip)]
     pub brain_provider: String,
 
-    /// Comma-separated fallback model list, all served by the same brain.
-    /// Tried in order if the primary model errors out.
+    #[serde(skip)]
     pub brain_fallbacks: String,
 
     // ── Registry-backed provider/model selection (new) ─────────────────
@@ -162,12 +159,7 @@ impl AppConfig {
         let _ = paths::ensure_dirs();
 
         let builder = ConfigBuilder::builder()
-            // Brain
-            .set_default("brain_base", "")?
-            .set_default("brain_key", "")?
-            .set_default("brain_model", "")?
-            .set_default("brain_provider", "")?
-            .set_default("brain_fallbacks", "")?
+            // Brain defaults removed from configuration files and env
 
             // Registry-backed provider/model selection
             .set_default("model_providers_path", "")?
@@ -213,6 +205,34 @@ impl AppConfig {
             }
         }
  
+        // Resolve active provider and model defaults from model_providers.yaml
+        let mut yaml_path = if !config.model_providers_path.trim().is_empty() {
+            std::path::PathBuf::from(&config.model_providers_path)
+        } else {
+            paths::config_dir().join("model_providers.yaml")
+        };
+        if !yaml_path.exists() {
+            let cwd_fallback = std::env::current_dir().unwrap_or_default().join("config/model_providers.yaml");
+            if cwd_fallback.exists() {
+                yaml_path = cwd_fallback;
+            }
+        }
+
+        if yaml_path.exists() {
+            if let Ok(reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                if let Some(chat_default) = reg.role_default("chat") {
+                    let (prov, mod_id) = chat_default.split_once('/').unwrap_or(("custom", chat_default));
+                    
+                    if config.active_provider.is_empty() {
+                        config.active_provider = prov.to_string();
+                    }
+                    if config.active_model.is_empty() {
+                        config.active_model = mod_id.to_string();
+                    }
+                }
+            }
+        }
+
         // Resolve relative `data_dir` settings so every downstream
         // `format!("{}/sessions.db", cfg.data_dir)` produces a stable
         // absolute path regardless of cwd. We anchor at the resolved
@@ -227,74 +247,76 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Effective base URL of the live brain. Applies the OpenRouter
-    /// back-compat default if `BRAIN_BASE` wasn't set but
-    /// `OPENROUTER_API_KEYS` was.
     pub fn effective_brain_base(&self) -> String {
-        if !self.brain_base.is_empty() {
-            self.brain_base.trim_end_matches('/').to_string()
-        } else if !self.openrouter_api_keys.is_empty() {
-            "https://openrouter.ai/api/v1".to_string()
+        let path = self.effective_model_providers_path();
+        let yaml_path = std::path::PathBuf::from(&path);
+        let reg = if yaml_path.exists() {
+            hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path).ok()
         } else {
-            String::new()
-        }
-    }
+            Some(hydragent_model::ProviderRegistry::builtin_default())
+        };
 
-    /// Effective provider type for the live brain. If not explicitly
-    /// configured, auto-detects from the URL.
-    pub fn effective_brain_provider(&self) -> String {
-        if !self.brain_provider.is_empty() {
-            return self.brain_provider.trim().to_lowercase();
-        }
-        let base = self.effective_brain_base();
-        if base.contains("11434") || base.contains("ollama") {
-            "ollama".to_string()
-        } else if base.contains("openrouter.ai") {
-            "openrouter".to_string()
-        } else {
-            "custom-openai".to_string()
-        }
-    }
-
-    /// Effective API key for the live brain. Falls back to
-    /// `OPENROUTER_API_KEYS` (first key in the comma-separated list) for
-    /// back-compat.
-    pub fn effective_brain_key(&self) -> String {
-        if !self.brain_key.is_empty() {
-            self.brain_key.clone()
-        } else {
-            // Take the first non-empty key from the legacy comma-separated list
-            self.openrouter_api_keys
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .find(|s| !s.is_empty())
-                .unwrap_or_default()
-        }
-    }
-
-    /// Redact a secret value for safe inclusion in logs.
-    /// Public re-export so call sites (e.g. `info!("…{:?}", …)` in
-    /// other modules) can use the same masking policy.
-    pub fn mask_key(s: &str) -> String {
-        mask_key_for_debug(s)
-    }
-
-    /// Effective primary model. Falls back to `PRIMARY_MODEL` env for
-    /// back-compat, then to a sane default.
-    pub fn effective_brain_model(&self) -> String {
-        if !self.brain_model.is_empty() {
-            return self.brain_model.clone();
-        }
-        if let Ok(p) = std::env::var("PRIMARY_MODEL") {
-            if !p.is_empty() {
-                return p;
+        if let Some(r) = reg {
+            let active = self.effective_active_provider();
+            if let Some(prov) = r.provider(&active) {
+                let env_base = format!("BRAIN_{}_BASE", active.to_uppercase().replace('-', "_"));
+                if let Ok(url) = std::env::var(&env_base) {
+                    if !url.trim().is_empty() {
+                        return url.trim().to_string();
+                    }
+                }
+                return prov.default_base_url.clone();
             }
         }
-        "anthropic/claude-sonnet-4".to_string()
+        String::new()
     }
 
-    /// Effective fallback list. Falls back to `FALLBACK_MODELS` env for
-    /// back-compat.
+    pub fn effective_brain_provider(&self) -> String {
+        self.effective_active_provider()
+    }
+
+    pub fn effective_brain_key(&self) -> String {
+        let active = self.effective_active_provider();
+        let env_key = format!("BRAIN_{}_KEY", active.to_uppercase().replace('-', "_"));
+        if let Ok(key) = std::env::var(&env_key) {
+            if !key.is_empty() {
+                return key;
+            }
+        }
+        
+        let path = self.effective_model_providers_path();
+        let yaml_path = std::path::PathBuf::from(&path);
+        let reg = if yaml_path.exists() {
+            hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path).ok()
+        } else {
+            Some(hydragent_model::ProviderRegistry::builtin_default())
+        };
+
+        if let Some(r) = reg {
+            if let Some(prov) = r.provider(&active) {
+                if let Some(ref raw_key) = prov.api_key {
+                    let trimmed = raw_key.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with("${input:") {
+                        if trimmed.starts_with("${env:") && trimmed.ends_with('}') {
+                            let var_name = &trimmed[6..trimmed.len() - 1];
+                            if let Ok(val) = std::env::var(var_name) {
+                                return val;
+                            }
+                        } else {
+                            return trimmed.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        
+        String::new()
+    }
+
+    pub fn effective_brain_model(&self) -> String {
+        self.effective_active_model()
+    }
+
     pub fn effective_brain_fallbacks(&self) -> Vec<String> {
         let raw = if !self.brain_fallbacks.is_empty() {
             self.brain_fallbacks.clone()
@@ -307,24 +329,24 @@ impl AppConfig {
             .collect()
     }
 
-    /// Effective active provider id from the registry. Falls back to the
-    /// legacy `effective_brain_provider()` when not explicitly set.
     pub fn effective_active_provider(&self) -> String {
         if !self.active_provider.is_empty() {
             self.active_provider.trim().to_lowercase()
         } else {
-            self.effective_brain_provider()
+            "openrouter".to_string()
         }
     }
 
-    /// Effective active model id (within the provider). Falls back to the
-    /// legacy `effective_brain_model()` when not explicitly set.
     pub fn effective_active_model(&self) -> String {
         if !self.active_model.is_empty() {
             self.active_model.trim().to_string()
         } else {
-            self.effective_brain_model()
+            "gpt-4o-mini".to_string()
         }
+    }
+
+    pub fn mask_key(s: &str) -> String {
+        mask_key_for_debug(s)
     }
 
     /// Effective registry file path.
@@ -393,62 +415,66 @@ mod tests {
         }
     }
 
-    #[test]
-    fn effective_brain_base_prefers_brain_base() {
-        let c = cfg("https://api.together.xyz/v1", "", "", "", "");
-        assert_eq!(c.effective_brain_base(), "https://api.together.xyz/v1");
+    fn cfg_active(active_provider: &str, active_model: &str) -> AppConfig {
+        cfg_active_with_fallbacks(active_provider, active_model, "")
+    }
+
+    fn cfg_active_with_fallbacks(active_provider: &str, active_model: &str, fallbacks: &str) -> AppConfig {
+        AppConfig {
+            brain_base: String::new(),
+            brain_key: String::new(),
+            brain_model: String::new(),
+            brain_provider: String::new(),
+            brain_fallbacks: fallbacks.to_string(),
+            model_providers_path: String::new(),
+            active_provider: active_provider.to_string(),
+            active_model: active_model.to_string(),
+            log_format: "terminal".to_string(),
+            log_level: "info".to_string(),
+            data_dir: "./data".to_string(),
+            max_react_steps: 10,
+            bus_port: 5000,
+            openrouter_api_keys: String::new(),
+            enable_dreaming: false,
+            dreaming_interval_sec: 60,
+            dreaming_mode: DreamingMode::Balanced,
+            max_semantic_memories: 1_000_000,
+            enable_curator: true,
+            curator_interval_sec: 86400,
+        }
     }
 
     #[test]
-    fn effective_brain_base_strips_trailing_slash() {
-        let c = cfg("https://api.together.xyz/v1/", "", "", "", "");
-        assert_eq!(c.effective_brain_base(), "https://api.together.xyz/v1");
+    fn effective_brain_base_reads_env_override() {
+        std::env::set_var("BRAIN_OPENROUTER_BASE", "https://override.openrouter.ai");
+        let c = cfg_active("openrouter", "gpt-4o-mini");
+        assert_eq!(c.effective_brain_base(), "https://override.openrouter.ai");
+        std::env::remove_var("BRAIN_OPENROUTER_BASE");
     }
 
     #[test]
-    fn effective_brain_base_falls_back_to_openrouter() {
-        // Empty BRAIN_BASE but legacy OPENROUTER_API_KEYS set
-        // -> auto-maps to openrouter.ai for back-compat
-        let c = cfg("", "", "", "", "sk-or-v1-abc");
-        assert_eq!(c.effective_brain_base(), "https://openrouter.ai/api/v1");
+    fn effective_brain_key_reads_env_override() {
+        std::env::set_var("BRAIN_OPENROUTER_KEY", "sk-or-override");
+        let c = cfg_active("openrouter", "gpt-4o-mini");
+        assert_eq!(c.effective_brain_key(), "sk-or-override");
+        std::env::remove_var("BRAIN_OPENROUTER_KEY");
     }
 
     #[test]
-    fn effective_brain_base_empty_when_nothing_set() {
-        let c = cfg("", "", "", "", "");
-        assert_eq!(c.effective_brain_base(), "");
+    fn effective_brain_model_returns_active_model() {
+        let c = cfg_active("ollama", "llama3.1");
+        assert_eq!(c.effective_brain_model(), "llama3.1");
     }
 
     #[test]
-    fn effective_brain_key_prefers_brain_key() {
-        let c = cfg("", "together-xyz", "", "", "sk-or-v1-legacy");
-        assert_eq!(c.effective_brain_key(), "together-xyz");
-    }
-
-    #[test]
-    fn effective_brain_key_uses_first_legacy_key() {
-        // Empty BRAIN_KEY, multiple legacy keys
-        // -> take the first non-empty one
-        let c = cfg("", "", "", "", "sk-or-v1-first, sk-or-v1-second");
-        assert_eq!(c.effective_brain_key(), "sk-or-v1-first");
-    }
-
-    #[test]
-    fn effective_brain_key_handles_empty_legacy_entries() {
-        // Legacy list with leading/trailing whitespace + empties
-        let c = cfg("", "", "", "", " , sk-or-v1-real, ");
-        assert_eq!(c.effective_brain_key(), "sk-or-v1-real");
-    }
-
-    #[test]
-    fn effective_brain_key_empty_when_nothing_set() {
-        let c = cfg("", "", "", "", "");
-        assert_eq!(c.effective_brain_key(), "");
+    fn effective_brain_provider_returns_active_provider() {
+        let c = cfg_active("ollama", "llama3.1");
+        assert_eq!(c.effective_brain_provider(), "ollama");
     }
 
     #[test]
     fn effective_brain_fallbacks_splits_comma_list() {
-        let c = cfg("", "", "", "a, b ,c", "");
+        let c = cfg_active_with_fallbacks("openrouter", "gpt-4o-mini", "a, b ,c");
         assert_eq!(
             c.effective_brain_fallbacks(),
             vec!["a".to_string(), "b".to_string(), "c".to_string()]
@@ -457,7 +483,7 @@ mod tests {
 
     #[test]
     fn effective_brain_fallbacks_filters_empty_entries() {
-        let c = cfg("", "", "", ",a,,b,", "");
+        let c = cfg_active_with_fallbacks("openrouter", "gpt-4o-mini", ",a,,b,");
         assert_eq!(
             c.effective_brain_fallbacks(),
             vec!["a".to_string(), "b".to_string()]
@@ -466,42 +492,14 @@ mod tests {
 
     #[test]
     fn effective_brain_fallbacks_empty_when_nothing_set() {
-        let c = cfg("", "", "", "", "");
+        let c = cfg_active("openrouter", "gpt-4o-mini");
         assert!(c.effective_brain_fallbacks().is_empty());
     }
 
     #[test]
     fn effective_brain_fallbacks_single_value() {
-        let c = cfg("", "", "", "only-one", "");
+        let c = cfg_active_with_fallbacks("openrouter", "gpt-4o-mini", "only-one");
         assert_eq!(c.effective_brain_fallbacks(), vec!["only-one".to_string()]);
-    }
-
-    #[test]
-    fn full_swappable_brain_scenario() {
-        // Realistic 4-var user setup
-        let c = cfg(
-            "https://api.openai.com/v1",
-            "sk-openai-xxx",
-            "gpt-4o",
-            "gpt-4o-mini,gpt-3.5-turbo",
-            "",
-        );
-        assert_eq!(c.effective_brain_base(), "https://api.openai.com/v1");
-        assert_eq!(c.effective_brain_key(), "sk-openai-xxx");
-        assert_eq!(c.effective_brain_model(), "gpt-4o");
-        assert_eq!(
-            c.effective_brain_fallbacks(),
-            vec!["gpt-4o-mini".to_string(), "gpt-3.5-turbo".to_string()]
-        );
-    }
-
-    #[test]
-    fn ollama_local_url_preserved() {
-        // Local Ollama with no auth: BRAIN_KEY is empty
-        let c = cfg("http://localhost:11434/v1", "", "llama3.1", "", "");
-        assert_eq!(c.effective_brain_base(), "http://localhost:11434/v1");
-        assert_eq!(c.effective_brain_key(), "");
-        assert_eq!(c.effective_brain_model(), "llama3.1");
     }
 
     #[test]

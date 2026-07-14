@@ -41,7 +41,7 @@ impl Mode {
     /// Short string used on the bar. Lowercase, no spaces.
     pub fn as_str(&self) -> &'static str {
         match self {
-            Mode::Normal => "normal",
+            Mode::Normal => "desk",
             Mode::Plan => "plan",
             Mode::Dream => "dream",
         }
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn mode_as_str_is_lowercase() {
-        assert_eq!(Mode::Normal.as_str(), "normal");
+        assert_eq!(Mode::Normal.as_str(), "desk");
         assert_eq!(Mode::Plan.as_str(), "plan");
         assert_eq!(Mode::Dream.as_str(), "dream");
     }
@@ -261,7 +261,7 @@ mod tests {
         let out = render_status_bar(&s);
         let stripped = strip_ansi(&out);
         // Mode
-        assert!(stripped.contains("normal"), "missing mode: {stripped}");
+        assert!(stripped.contains("desk"), "missing mode: {stripped}");
         // Model
         assert!(stripped.contains("kimi-k2.6"), "missing model: {stripped}");
         // Percentage

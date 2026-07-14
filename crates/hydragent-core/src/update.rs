@@ -846,7 +846,7 @@ const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 #[cfg(not(target_os = "windows"))]
 fn unix_installer_command() -> String {
     format!(
-        "curl -fsSL {url} | HYDRAGENT_SOURCE=1 HYDRAGENT_FORCE=1 sh",
+        "curl -fsSL {url} | HYDRAGENT_SOURCE=1 HYDRAGENT_FORCE=1 HYDRAGENT_SKIP_ONBOARD=1 sh",
         url = install_sh_url(),
     )
 }
@@ -956,6 +956,7 @@ async fn launch_source_installer_windows() -> io::Result<std::process::ExitStatu
         &tmp_arg,
         "-Source",
         "-Force",
+        "-SkipOnboard",
     ]);
     // Inherit our stdio so the installer's own output (banner,
     // progress, errors) is visible to the user instead of being
@@ -1062,6 +1063,7 @@ mod tests {
             fake_tmp.to_string_lossy().as_ref(),
             "-Source",
             "-Force",
+            "-SkipOnboard",
         ]);
         let args: Vec<String> = cmd
             .get_args()
@@ -1080,6 +1082,11 @@ mod tests {
         assert!(
             args.contains(&"-Force".to_string()),
             "powershell args must include -Force: {:?}",
+            args
+        );
+        assert!(
+            args.contains(&"-SkipOnboard".to_string()),
+            "powershell args must include -SkipOnboard: {:?}",
             args
         );
         assert!(

@@ -98,12 +98,31 @@ pub struct ModelCouncil {
 }
 
 impl ModelCouncil {
-    /// Load a council from a YAML file. Validates that exactly one
-    /// profile has `primary: true`.
+    /// Load a council from a dedicated `model_council.yaml` file.
+    ///
+    /// **Prefer [`ModelCouncil::from_registry`]** when using the unified
+    /// `model_providers.yaml` which embeds `routing_profiles:` directly.
     pub fn load_from_yaml<P: AsRef<Path>>(path: P) -> Result<Self, CouncilError> {
         let text = std::fs::read_to_string(path.as_ref())?;
         let parsed: CouncilFile = serde_yaml::from_str(&text)?;
         Self::from_profiles(parsed.profiles)
+    }
+
+    /// Build a council from a [`ProviderRegistry`] that was loaded from
+    /// `model_providers.yaml`. The registry's `routing_profiles:` section
+    /// supplies the profiles; the registry itself can be passed in for model
+    /// capability look-ups during routing.
+    ///
+    /// Returns `None` when the registry has no `routing_profiles:` section
+    /// (so callers can fall back to a standalone council file or skip routing).
+    pub fn from_registry(
+        registry: &ProviderRegistry,
+    ) -> Option<Result<Self, CouncilError>> {
+        let profiles = registry.routing_profiles();
+        if profiles.is_empty() {
+            return None;
+        }
+        Some(Self::from_profiles(profiles.to_vec()))
     }
 
     /// Build a council from an in-memory profile list.  Useful for tests
@@ -563,7 +582,7 @@ mod tests {
     fn route_resolves_model_ref_through_registry() {
         let registry = ProviderRegistry::builtin_default();
         let mut profile = prof("gpt-4o-mini-ref", CostTier::Cheap, &["general"], Some(0.81), true);
-        profile.model_ref = Some("openrouter/openai-gpt-4o-mini".to_string());
+        profile.model_ref = Some("openrouter/gpt-4o-mini".to_string());
 
         let council = ModelCouncil::from_profiles(vec![profile])
             .unwrap()
@@ -578,7 +597,7 @@ mod tests {
     #[test]
     fn route_without_registry_keeps_original_model_ref_profile() {
         let mut profile = prof("gpt-4o-mini-ref", CostTier::Cheap, &["general"], Some(0.81), true);
-        profile.model_ref = Some("openrouter/openai-gpt-4o-mini".to_string());
+        profile.model_ref = Some("openrouter/gpt-4o-mini".to_string());
 
         let council = ModelCouncil::from_profiles(vec![profile]).unwrap();
 

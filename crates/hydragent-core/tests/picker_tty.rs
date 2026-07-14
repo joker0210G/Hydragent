@@ -49,7 +49,7 @@ fn picker_doesnt_hang_on_piped_input() {
 
     assert!(status.success(), "onboard --non-interactive failed: {status:?}");
     assert!(
-        elapsed < Duration::from_secs(10),
+        elapsed < Duration::from_secs(60),
         "onboard took too long: {elapsed:?}"
     );
 

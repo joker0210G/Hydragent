@@ -1,4 +1,4 @@
-id: b31e7f85-b122-4b23-a9ff-e5a910a9351b
+id: 1626a43e-2348-41e1-8c2c-013724970c65
 name: summarize-github-issue
 version: 1
 description: Summarize a GitHub issue into a paragraph
@@ -16,7 +16,7 @@ required_tools:
 - echo
 success_examples: []
 author: builtin
-created_at: 1783530701017
-last_updated: 1783530701017
+created_at: 1784023058032
+last_updated: 1784023058032
 success_rate: 0.0
 execution_count: 0

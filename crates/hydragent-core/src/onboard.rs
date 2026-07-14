@@ -122,6 +122,8 @@ pub async fn run(opts: OnboardOptions) -> i32 {
                     timeout_secs: 180,
                     max_retries: 3,
                     default_params: std::collections::HashMap::new(),
+                    models: Vec::new(),
+                    api_key: None,
                 }
             } else {
                 match pick_provider(&mut registry, &final_registry_path) {
@@ -363,21 +365,48 @@ pub async fn run(opts: OnboardOptions) -> i32 {
     let soul_path = config_dir.join("SOUL.md");
     let soul_content = match persona {
         "developer" => {
-            "You are a pragmatic, direct, fact-focused, and objective software engineer and systems architect.\n\
-             Focus on structural correctness, optimal architecture, bug prevention, and clean implementation.\n\
-             Avoid unnecessary conversational fluff."
+            "# Agent Soul & Personality\n\
+             - Name: Hydra\n\
+             - Role: Pragmatic, direct, fact-focused software engineer and systems architect\n\
+             - Tone: Objective, technical, and precise\n\
+             - Core Guidelines: Focus on structural correctness, optimal architecture, bug prevention, and clean implementation. Avoid conversational fluff.\n\
+             - Language Capability: Global (English primary)\n\n\
+             # Behavior Rules\n".to_string()
         }
         "creative" => {
-            "You are a warm, imaginative, expressive, and brainstorming partner.\n\
-             Help the user explore concepts, design creative solutions, write engaging text, and think outside the box.\n\
-             Use rich analogies and encouraging language."
+            "# Agent Soul & Personality\n\
+             - Name: Hydra\n\
+             - Role: Warm, imaginative, expressive brainstorming partner\n\
+             - Tone: Encouraging, creative, and analogical\n\
+             - Core Guidelines: Help the user explore concepts, design creative solutions, write engaging text, and think outside the box. Use rich analogies.\n\
+             - Language Capability: Global (English primary)\n\n\
+             # Behavior Rules\n".to_string()
         }
         "minimalist" => {
-            "You are a highly concise assistant.\n\
-             Provide short, direct, and to-the-point answers with minimal explanation unless asked.\n\
-             Do not use conversational filler or introductory/concluding remarks."
+            "# Agent Soul & Personality\n\
+             - Name: Hydra\n\
+             - Role: Highly concise assistant\n\
+             - Tone: Direct, brief, and minimalist\n\
+             - Core Guidelines: Provide short, direct, and to-the-point answers with minimal explanation. Do not use conversational filler or introductory/concluding remarks.\n\
+             - Language Capability: Global (English primary)\n\n\
+             # Behavior Rules\n".to_string()
         }
-        _ => &custom_soul_prompt,
+        _ => {
+            if custom_soul_prompt.contains("# Agent Soul & Personality") {
+                custom_soul_prompt.clone()
+            } else {
+                format!(
+                    "# Agent Soul & Personality\n\
+                     - Name: Hydra\n\
+                     - Role: Custom Persona\n\
+                     - Tone: Professional, precise, adaptive, and concise\n\
+                     - Core Guidelines: {}\n\
+                     - Language Capability: Global (English primary)\n\n\
+                     # Behavior Rules\n",
+                     custom_soul_prompt
+                )
+            }
+        }
     };
     let mut write_soul = true;
     if soul_path.exists() {
@@ -399,7 +428,7 @@ pub async fn run(opts: OnboardOptions) -> i32 {
     }
 
     if write_soul {
-        if let Err(e) = std::fs::write(&soul_path, soul_content) {
+        if let Err(e) = std::fs::write(&soul_path, &soul_content) {
             eprintln!("  ⚠ Failed to write SOUL.md: {}", e);
         } else if !opts.non_interactive {
             println!("  ✓ Wrote SOUL.md (Persona: {})", persona);
@@ -408,7 +437,14 @@ pub async fn run(opts: OnboardOptions) -> i32 {
 
     let user_path = config_dir.join("USER.md");
     if !user_path.exists() {
-        let user_content = "Name: User\nPreferences: (Self-evolving based on your interactions and habits)\n";
+        let user_content = "# User Profile\n\
+                            - Name: User\n\
+                            - Role: Software Engineer & Technical Operator\n\
+                            - Preferred Tone: Professional, direct, and technically rigorous\n\
+                            - Language & Locale: English (Universal)\n\
+                            - Key Constraints: Absolute precision, strict formatting compliance, zero fluff\n\n\
+                            # Style & Communication Habits\n\
+                            - Preferences: Self-evolving based on your interactions and habits\n";
         let _ = std::fs::write(&user_path, user_content);
     }
 
@@ -478,25 +514,82 @@ pub async fn run(opts: OnboardOptions) -> i32 {
 
     let provider_name = &provider.id;
 
-    // Prepare the keys we want to update/insert
-    let mut updates = std::collections::BTreeMap::<String, String>::new();
-    updates.insert("BRAIN_PROVIDER".to_string(), provider_name.to_string());
-    updates.insert("BRAIN_BASE".to_string(), base.clone());
-    updates.insert("BRAIN_MODEL".to_string(), model.clone());
-    updates.insert("BRAIN_KEY".to_string(), api_key.clone());
-    
-    // Multi-provider compatibility configs
-    updates.insert(format!("BRAIN_{}_KEY", provider_name.to_uppercase()), api_key.clone());
-    updates.insert(format!("BRAIN_{}_BASE", provider_name.to_uppercase()), base.clone());
+    // ── Update model_providers.yaml defaults ──
+    if !final_registry_path.exists() {
+        if let Some(parent) = final_registry_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&final_registry_path, hydragent_model::registry::BUILTIN_REGISTRY_YAML);
+    }
 
+    if final_registry_path.exists() {
+        let chat_ref = format!("{}/{}", provider_name, model);
+        let content_res = std::fs::read_to_string(&final_registry_path);
+        if let Ok(content) = content_res {
+            if let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                if let Some(mapping) = doc.as_mapping_mut() {
+                    let defaults_key = serde_yaml::Value::String("defaults".to_string());
+                    if !mapping.contains_key(&defaults_key) {
+                        mapping.insert(defaults_key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+                    }
+                    if let Some(defaults) = mapping.get_mut(&defaults_key).and_then(|v| v.as_mapping_mut()) {
+                        defaults.insert(
+                            serde_yaml::Value::String("chat".to_string()),
+                            serde_yaml::Value::String(chat_ref.clone()),
+                        );
+                    }
+                }
+                if let Ok(serialized) = serde_yaml::to_string(&doc) {
+                    if let Err(e) = std::fs::write(&final_registry_path, serialized) {
+                        eprintln!("⚠ Failed to write defaults to model_providers.yaml: {}", e);
+                    } else if !opts.non_interactive {
+                        println!("  ✓ Wrote default chat model ({}) to model_providers.yaml", chat_ref);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Save secrets inside the cryptographic Vault ──
+    let vault_path = paths::data_dir().join("vault/.hydravault");
+    let vault = hydragent_vault::Vault::new(vault_path.clone());
+    let passphrase = if vault_passphrase.is_empty() {
+        "".to_string()
+    } else {
+        vault_passphrase.clone()
+    };
+
+    if !vault.exists() {
+        if let Err(e) = vault.init(&passphrase) {
+            eprintln!("⚠ Failed to initialize cryptographic Vault: {}", e);
+        }
+    }
+
+    let mut secrets = vault.load(&passphrase).unwrap_or_default();
+    if !api_key.is_empty() {
+        secrets.insert("BRAIN_KEY".to_string(), hydragent_vault::TaintedString::credential(api_key.clone()));
+        secrets.insert(format!("BRAIN_{}_KEY", provider_name.to_uppercase()), hydragent_vault::TaintedString::credential(api_key.clone()));
+    }
+    if base != provider.default_base_url {
+        secrets.insert(format!("BRAIN_{}_BASE", provider_name.to_uppercase()), hydragent_vault::TaintedString::credential(base.clone()));
+    }
+    if !telegram_token.is_empty() {
+        secrets.insert("TELEGRAM_BOT_TOKEN".to_string(), hydragent_vault::TaintedString::credential(telegram_token.clone()));
+    }
+
+    if let Err(e) = vault.save(&passphrase, &secrets) {
+        eprintln!("⚠ Failed to save secrets to cryptographic Vault: {}", e);
+    } else if !opts.non_interactive {
+        println!("  ✓ Saved credentials and tokens securely inside the cryptographic Vault.");
+    }
+
+    // Prepare the keys we want to update/insert in .env (no secret keys!)
+    let mut updates = std::collections::BTreeMap::<String, String>::new();
     updates.insert("ENFORCE_SANDBOX".to_string(), enforce_sandbox.to_string());
     updates.insert("MAX_SEMANTIC_MEMORIES".to_string(), max_semantic_memories.to_string());
     updates.insert("ENABLE_DREAMING".to_string(), enable_dreaming.to_string());
     if !vault_passphrase.is_empty() {
         updates.insert("HYDRAGENT_VAULT_PASSPHRASE".to_string(), vault_passphrase);
-    }
-    if !telegram_token.is_empty() {
-        updates.insert("TELEGRAM_BOT_TOKEN".to_string(), telegram_token.clone());
     }
     if !telegram_chat_ids.is_empty() {
         updates.insert("TELEGRAM_ALLOWED_CHAT_IDS".to_string(), telegram_chat_ids.clone());
@@ -691,6 +784,8 @@ fn add_custom_provider(
         timeout_secs: 180,
         max_retries: 3,
         default_params: std::collections::HashMap::new(),
+        models: Vec::new(),
+        api_key: None,
     };
 
     if let Err(e) = save_provider_to_yaml(registry_path, &provider) {
@@ -832,6 +927,7 @@ async fn pick_model(
                     default_params: std::collections::HashMap::new(),
                     cost_per_1k: None,
                     cost_tier: None,
+                    url: None,
                 };
 
                 if let Err(e) = save_model_to_yaml(registry_path, &model_def) {
@@ -870,10 +966,25 @@ fn save_model_to_yaml(
         }
     };
 
-    if let Some(existing) = file_data.models.iter_mut().find(|m| m.provider_id == model.provider_id && m.id == model.id) {
-        *existing = model.clone();
-    } else {
-        file_data.models.push(model.clone());
+    let mut saved = false;
+    for p in &mut file_data.providers {
+        if p.id == model.provider_id {
+            if let Some(existing) = p.models.iter_mut().find(|m| m.id == model.id) {
+                *existing = model.clone();
+            } else {
+                p.models.push(model.clone());
+            }
+            saved = true;
+            break;
+        }
+    }
+
+    if !saved {
+        if let Some(existing) = file_data.models.iter_mut().find(|m| m.provider_id == model.provider_id && m.id == model.id) {
+            *existing = model.clone();
+        } else {
+            file_data.models.push(model.clone());
+        }
     }
 
     let new_yaml = serde_yaml::to_string(&file_data)?;
@@ -1161,8 +1272,12 @@ fn prompt_yes_no_tty(question: &str, default_yes: bool) -> Option<bool> {
     let _guard = RawGuard;
 
     let mut yes_selected: bool = default_yes;
+    // Print the question once above the interactive selector.
+    // This prevents long questions from wrapping and cascading during redraws.
+    println!("  {}", question);
+
     loop {
-        // Render the single line:  "<question>  [▸ Yes] / [  No]  (←/→, Enter)".
+        // Render the single line:  "  [▸ Yes] / [  No]  (←/→, Enter)".
         let _ = queue!(stdout, Clear(ClearType::FromCursorDown));
         let (yes_str, no_str) = if yes_selected {
             (
@@ -1201,7 +1316,7 @@ fn prompt_yes_no_tty(question: &str, default_yes: bool) -> Option<bool> {
         };
         let _ = queue!(
             stdout,
-            Print(format!("  {}  {}{}   (←/→, Enter)  ", question, yes_str, no_str)),
+            Print(format!("  {}{}   (←/→, Enter)  ", yes_str, no_str)),
             MoveToColumn(0),
         );
         let _ = stdout.flush();

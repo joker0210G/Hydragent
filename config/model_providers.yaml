@@ -1,11 +1,29 @@
+# ============================================================================
+# Hydragent Model & Provider Configuration Registry
+# ============================================================================
+# This file defines defaults, providers, and models used by Hydragent.
+#
+# How to Configure API Keys:
+# -------------------------
+# For any provider requiring an API key (e.g. OpenRouter, OpenAI), you can:
+#   1. In the chat REPL, run: `/provider set <provider_id> key <your-key>`
+#      This will securely encrypt and save the key to your Lockbox.
+#   2. Set it in the `.env` file at the install root as:
+#      `BRAIN_<PROVIDER_ID_UPPERCASE>_KEY=<your-key>`
+#      (e.g., `BRAIN_OPENROUTER_KEY=sk-or-or-or-...`)
+#
+# Default Active Provider/Model is configured below.
+# ============================================================================
+
 version: 1
 defaults:
-  chat: openrouter/openai-gpt-4o-mini
-  planning: openrouter/deepseek-deepseek-r1
-  coding: openrouter/deepseek-deepseek-coder
-  research: openrouter/perplexity-sonar
-  utility: openrouter/openai-gpt-4o-mini
+  chat: openrouter/gpt-4o-mini
+  planning: openrouter/deepseek-r1
+  coding: openrouter/deepseek-coder
+  research: openrouter/sonar
+  utility: openrouter/gpt-4o-mini
   inline_chat: ollama/llama3.1
+
 providers:
   - id: openrouter
     display_name: OpenRouter
@@ -16,156 +34,155 @@ providers:
     supports_reasoning: true
     supports_tools: true
     supports_vision: true
-  - id: openai
-    display_name: OpenAI
-    kind: custom_openai
-    default_base_url: https://api.openai.com/v1
-    auth_mode: api_key
-    supports_reasoning: true
-    supports_tools: true
-    supports_vision: true
+    models:
+      - id: gpt-4o-mini
+        name: GPT-4o Mini
+        aliases:
+          - gpt-4o-mini
+        api_model_id: openai/gpt-4o-mini
+        tool_calling: true
+        vision: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 16384
+        cost_per_1k: 0.00015
+        cost_tier: cheap
+      - id: gpt-4o
+        name: GPT-4o
+        aliases:
+          - gpt-4o
+        api_model_id: openai/gpt-4o
+        tool_calling: true
+        vision: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 16384
+        cost_per_1k: 0.005
+        cost_tier: premium
+      - id: deepseek-coder
+        name: DeepSeek Coder
+        aliases:
+          - deepseek-coder
+        api_model_id: deepseek/deepseek-coder
+        tool_calling: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 8192
+        cost_per_1k: 0.00014
+        cost_tier: cheap
+      - id: deepseek-r1
+        name: DeepSeek R1
+        aliases:
+          - deepseek-r1
+        api_model_id: deepseek/deepseek-r1
+        reasoning: true
+        streaming: true
+        max_input_tokens: 128000
+        max_output_tokens: 8192
+        cost_per_1k: 0.002
+        cost_tier: standard
+      - id: sonar
+        name: Perplexity Sonar
+        aliases:
+          - sonar
+        api_model_id: perplexity/sonar
+        streaming: true
+        max_input_tokens: 127000
+        cost_per_1k: 0.001
+        cost_tier: standard
+
   - id: ollama
     display_name: Ollama
     kind: ollama
     default_base_url: http://localhost:11434/v1
     auth_mode: none
     supports_custom_models: true
-  - id: lmstudio
-    display_name: LM Studio
-    kind: custom_openai
-    default_base_url: http://localhost:1234/v1
-    auth_mode: none
-  - id: custom
-    display_name: Custom OpenAI-compatible endpoint
-    kind: custom_openai
-    default_base_url: ""
-    auth_mode: api_key
-models:
-  - id: openai-gpt-4o-mini
-    provider_id: openrouter
-    name: GPT-4o Mini
-    aliases:
-      - gpt-4o-mini
-    api_model_id: openai/gpt-4o-mini
-    tool_calling: true
-    vision: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 16384
-    cost_per_1k: 0.00015
-    cost_tier: cheap
-  - id: openai-gpt-4o
-    provider_id: openrouter
-    name: GPT-4o
-    aliases:
-      - gpt-4o
-    api_model_id: openai/gpt-4o
-    tool_calling: true
-    vision: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 16384
-    cost_per_1k: 0.005
-    cost_tier: premium
-  - id: deepseek-deepseek-coder
-    provider_id: openrouter
-    name: DeepSeek Coder
-    aliases:
-      - deepseek-coder
-    api_model_id: deepseek/deepseek-coder
-    tool_calling: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 8192
+
+
+
+# ============================================================================
+# Smart Task Routing  (formerly "Model Council")
+# ============================================================================
+# When Hydragent spawns sub-agents for planning, coding, research, etc., it
+# uses the profiles below to pick the *best model for the task* instead of
+# always using the primary model.
+#
+# Each profile maps a model to the tasks it excels at:
+#   model_id        — wire-level model id sent to the provider API
+#   provider        — which provider handles this model
+#   context_window  — max context tokens
+#   cost_per_1k     — USD per 1k output tokens (conservative estimate)
+#   cost_tier       — free | cheap | standard | premium  (budget filter)
+#   task_tags       — tasks this model is good at (code_generation, research,
+#                     planning, reasoning, review, summarization,
+#                     data_extraction, creative_writing, general)
+#   benchmark       — optional per-tag score 0.0–1.0 (used as tiebreaker)
+#   primary         — exactly ONE profile must be true (the safety-net fallback)
+# ============================================================================
+routing_profiles:
+  # ── 1. DeepSeek Coder (cheap, excellent for code) ──────────────────────
+  - model_id: "deepseek/deepseek-coder"
+    provider: "openrouter"
+    context_window: 128000
     cost_per_1k: 0.00014
-    cost_tier: cheap
-  - id: deepseek-deepseek-r1
-    provider_id: openrouter
-    name: DeepSeek R1
-    aliases:
-      - deepseek-r1
-    api_model_id: deepseek/deepseek-r1
-    reasoning: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 8192
-    cost_per_1k: 0.002
-    cost_tier: standard
-  - id: perplexity-sonar
-    provider_id: openrouter
-    name: Perplexity Sonar
-    aliases:
-      - sonar
-    api_model_id: perplexity/sonar
-    streaming: true
-    max_input_tokens: 127000
-    max_output_tokens: 4096
+    cost_tier: "cheap"
+    task_tags: ["code_generation", "review"]
+    benchmark:
+      code_generation: 0.92
+      review: 0.81
+      reasoning: 0.70
+    primary: false
+
+  # ── 2. Claude 3.5 Sonnet (premium creative + reasoning) ────────────────
+  - model_id: "anthropic/claude-3.5-sonnet"
+    provider: "openrouter"
+    context_window: 200000
+    cost_per_1k: 0.003
+    cost_tier: "premium"
+    task_tags: ["creative_writing", "reasoning", "review", "planning"]
+    benchmark:
+      creative_writing: 0.95
+      reasoning: 0.93
+      review: 0.92
+      planning: 0.89
+      code_generation: 0.86
+    primary: false
+
+  # ── 3. Claude 3 Haiku (cheap + fast, decent at summaries) ─────────────
+  - model_id: "anthropic/claude-3-haiku"
+    provider: "openrouter"
+    context_window: 200000
+    cost_per_1k: 0.00025
+    cost_tier: "cheap"
+    task_tags: ["summarization", "data_extraction"]
+    benchmark:
+      summarization: 0.84
+      data_extraction: 0.80
+      creative_writing: 0.71
+    primary: false
+
+  # ── 4. Perplexity Sonar (web-grounded research) ───────────────────────
+  - model_id: "perplexity/sonar"
+    provider: "openrouter"
+    context_window: 127000
     cost_per_1k: 0.001
-    cost_tier: standard
-  - id: openai-gpt-4o-mini-openai
-    provider_id: openai
-    name: GPT-4o Mini
-    aliases:
-      - gpt-4o-mini
-    api_model_id: gpt-4o-mini
-    tool_calling: true
-    vision: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 16384
-    cost_per_1k: 0.00015
-    cost_tier: cheap
-  - id: openai-gpt-4o-openai
-    provider_id: openai
-    name: GPT-4o
-    aliases:
-      - gpt-4o
-    api_model_id: gpt-4o
-    tool_calling: true
-    vision: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 16384
-    cost_per_1k: 0.005
-    cost_tier: premium
-  - id: llama3.1
-    provider_id: ollama
-    name: Llama 3.1
-    aliases: []
-    api_model_id: llama3.1
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 8192
+    cost_tier: "standard"
+    task_tags: ["research", "data_extraction"]
+    benchmark:
+      research: 0.94
+      data_extraction: 0.85
+      summarization: 0.79
+    primary: false
+
+  # ── 5. Llama 3.1 405B Instruct (open, free, generalist) ───────────────
+  - model_id: "meta-llama/llama-3.1-405b-instruct:free"
+    provider: "openrouter"
+    context_window: 131000
     cost_per_1k: 0.0
-    cost_tier: free
-  - id: qwen2.5-coder
-    provider_id: ollama
-    name: Qwen2.5 Coder
-    aliases: []
-    api_model_id: qwen2.5-coder
-    tool_calling: true
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 8192
-    cost_per_1k: 0.0
-    cost_tier: free
-  - id: local-model
-    provider_id: lmstudio
-    name: Local Model
-    aliases: []
-    api_model_id: local-model
-    streaming: true
-    max_input_tokens: 32000
-    max_output_tokens: 4096
-    cost_per_1k: 0.0
-    cost_tier: free
-  - id: custom-model
-    provider_id: custom
-    name: Custom Model
-    aliases: []
-    api_model_id: gpt-4o-mini
-    streaming: true
-    max_input_tokens: 128000
-    max_output_tokens: 4096
-    cost_per_1k: 0.0
-    cost_tier: free
+    cost_tier: "free"
+    task_tags: ["general", "summarization", "creative_writing"]
+    benchmark:
+      general: 0.78
+      summarization: 0.75
+      creative_writing: 0.72
+    primary: true    # ← safety-net fallback for any unknown task

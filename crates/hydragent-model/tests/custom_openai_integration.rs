@@ -30,6 +30,7 @@ fn sample_config(base_url: String) -> CustomProviderConfig {
         provider_label: "wiremock-test".to_string(),
         timeout: Duration::from_secs(5),
         max_retries: 0, // tests assert single-shot behaviour
+        model_urls: std::collections::HashMap::new(),
     }
 }
 
@@ -176,6 +177,7 @@ async fn custom_provider_is_unavailable_when_key_missing() {
         provider_label: "test".to_string(),
         timeout: Duration::from_secs(1),
         max_retries: 0,
+        model_urls: std::collections::HashMap::new(),
     };
     let client = CustomOpenAIClient::new(cfg);
     assert!(!client.is_available());

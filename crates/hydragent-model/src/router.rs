@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 pub struct ModelRouter {
     provider: RwLock<Arc<dyn ModelProvider>>,
-    registry: Option<Arc<ProviderRegistry>>,
+    registry: Option<std::sync::RwLock<Arc<ProviderRegistry>>>,
     provider_cache: RwLock<std::collections::HashMap<String, Arc<dyn ModelProvider>>>,
     primary: std::sync::RwLock<String>,
     fallbacks: Vec<String>,
@@ -33,7 +33,7 @@ impl ModelRouter {
     ) -> Self {
         Self {
             provider: RwLock::new(provider),
-            registry: Some(registry),
+            registry: Some(std::sync::RwLock::new(registry)),
             provider_cache: RwLock::new(std::collections::HashMap::new()),
             primary: std::sync::RwLock::new(primary),
             fallbacks,
@@ -51,7 +51,7 @@ impl ModelRouter {
         }
 
         // If no registry is available, fallback to the default provider
-        let registry = match &self.registry {
+        let registry = match self.registry() {
             Some(r) => r,
             None => return primary_provider,
         };
@@ -73,9 +73,28 @@ impl ModelRouter {
         let mut base_url = std::env::var(&env_base_key)
             .ok()
             .unwrap_or_else(|| provider_def.default_base_url.clone());
+
+        let resolve_api_key = |raw_key: &str| -> Option<String> {
+            let trimmed = raw_key.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if trimmed.starts_with("${input:") {
+                return None;
+            }
+            if trimmed.starts_with("${env:") && trimmed.ends_with('}') {
+                let var_name = &trimmed[6..trimmed.len() - 1];
+                if let Ok(val) = std::env::var(var_name) {
+                    return Some(val);
+                }
+                return None;
+            }
+            Some(trimmed.to_string())
+        };
             
         let api_key = std::env::var(&env_key_key)
             .ok()
+            .or_else(|| provider_def.api_key.as_ref().and_then(|k| resolve_api_key(k)))
             .unwrap_or_else(|| std::env::var("BRAIN_KEY").unwrap_or_default());
 
         if norm_id == "ollama" && base_url.is_empty() {
@@ -127,6 +146,40 @@ impl ModelRouter {
         self.primary.read().map(|g| g.clone()).unwrap_or_default()
     }
 
+    /// Check if the active primary model is a free model.
+    pub fn is_free_model(&self) -> bool {
+        let primary = self.primary_model();
+        if primary.contains(":free") || primary.contains("/free") {
+            return true;
+        }
+        if let Some(registry) = self.registry() {
+            if let Some(m_def) = registry.model(&primary) {
+                if m_def.cost_tier == Some(crate::profiles::CostTier::Free) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Access the provider registry if available.
+    pub fn registry(&self) -> Option<Arc<ProviderRegistry>> {
+        self.registry.as_ref().map(|r| r.read().unwrap().clone())
+    }
+
+    /// Update the provider registry dynamically.
+    pub fn update_registry(&self, new_registry: Arc<ProviderRegistry>) {
+        if let Some(ref r) = self.registry {
+            if let Ok(mut guard) = r.write() {
+                *guard = new_registry;
+            }
+        }
+        // Clear provider cache so they are rebuilt with new configs
+        if let Ok(mut guard) = self.provider_cache.write() {
+            guard.clear();
+        }
+    }
+
     /// Human-readable name of the underlying provider (e.g. "openrouter",
     /// "custom-openai", "ollama"). Useful for logging when a "librarian"
     /// role is routed through a different provider than the primary.
@@ -165,8 +218,7 @@ impl ModelRouter {
         // Override path: try the caller-specified model, no fallback.
         if let Some(model) = override_model {
             info!("Routing to override model: {}", model);
-            
-            let (provider_id, api_model_id) = if let Some(registry) = &self.registry {
+            let (provider_id, api_model_id) = if let Some(registry) = self.registry() {
                 if let Some(resolved) = registry.resolve(model, None) {
                     (resolved.provider_id, resolved.api_model_id)
                 } else {
@@ -200,7 +252,7 @@ impl ModelRouter {
             .map(|s| s.to_lowercase()) == Some("scholar".to_string());
             
         if is_scholar {
-            if let Some(registry) = &self.registry {
+            if let Some(registry) = self.registry() {
                 if let Some(resolved) = registry.resolve("", Some("planning")) {
                     primary = format!("{}/{}", resolved.provider_id, resolved.model_id);
                 }
@@ -208,7 +260,7 @@ impl ModelRouter {
         }
         info!("Attempting primary model: {}", primary);
 
-        let (primary_provider_id, primary_api_model_id) = if let Some(registry) = &self.registry {
+        let (primary_provider_id, primary_api_model_id) = if let Some(registry) = self.registry() {
             if let Some(resolved) = registry.resolve(&primary, None) {
                 (resolved.provider_id, resolved.api_model_id)
             } else {
@@ -245,7 +297,7 @@ impl ModelRouter {
         for fallback in &self.fallbacks {
             info!("Attempting fallback model: {}", fallback);
             
-            let (fb_provider_id, fb_api_model_id) = if let Some(registry) = &self.registry {
+            let (fb_provider_id, fb_api_model_id) = if let Some(registry) = self.registry() {
                 if let Some(resolved) = registry.resolve(fallback, None) {
                     (resolved.provider_id, resolved.api_model_id)
                 } else {
@@ -302,7 +354,7 @@ mod tests {
             primary,
             registry,
             "ollama/llama3.1".to_string(),
-            vec!["openrouter/openai-gpt-4o-mini".to_string()],
+            vec!["openrouter/gpt-4o-mini".to_string()],
         );
 
         assert_eq!(router.primary_model(), "ollama/llama3.1");

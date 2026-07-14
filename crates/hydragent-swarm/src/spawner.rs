@@ -60,8 +60,32 @@ impl SubAgentSpawner {
         }
     }
 
-    /// Build a new spawner with a Model Council loaded from a YAML file.
-    /// `path` is the path to `config/model_council.yaml`.
+    /// Build a new spawner with smart task-routing loaded from `model_providers.yaml`
+    /// via a [`ProviderRegistry`]. The registry's `routing_profiles:` section
+    /// is used to build the council. Falls back gracefully to no-council mode
+    /// when `routing_profiles:` is absent from the registry file.
+    pub fn with_council_registry(
+        registry: Arc<ToolRegistry>,
+        router: Arc<ModelRouter>,
+        provider_registry: &hydragent_model::ProviderRegistry,
+    ) -> Result<Self, SpawnError> {
+        let council = match ModelCouncil::from_registry(provider_registry) {
+            Some(Ok(c)) => Some(Arc::new(c)),
+            Some(Err(e)) => {
+                return Err(SpawnError::CouncilRouting(format!(
+                    "routing_profiles in model_providers.yaml is invalid: {e}"
+                )));
+            }
+            None => None, // no routing_profiles section — fine, use primary model
+        };
+        Ok(Self { registry, router, council })
+    }
+
+    /// Build a new spawner with a Model Council loaded from a standalone YAML file.
+    ///
+    /// **Prefer [`SubAgentSpawner::with_council_registry`]** — it reads routing
+    /// profiles from the unified `model_providers.yaml` so you only need one file.
+    /// This method is kept for backward compatibility with `model_council.yaml`.
     pub fn with_council_yaml<P: AsRef<Path>>(
         registry: Arc<ToolRegistry>,
         router: Arc<ModelRouter>,

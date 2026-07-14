@@ -269,7 +269,11 @@ fn wrap_at(text: &str, width: usize) -> Vec<String> {
 /// whole thing (logo column + tip column joined row-by-row) so
 /// the caller can `println!` it as a unit. Tests assert on this
 /// string.
-pub fn render_kimi_header(brand: &BrandInfo, tip: &TipBox) -> String {
+/// Render the two-column header as a single string. Returns the
+/// whole thing (logo column + tip column joined row-by-row) so
+/// the caller can `println!` it as a unit. Tests assert on this
+/// string.
+pub fn render_hydra_header(brand: &BrandInfo, tip: &TipBox) -> String {
     // The right-hand panel drives the column width. The logo is
     // a fixed 18 columns; the tip box is `inner_width + 2`
     // (for the `│` borders). We size the gap between the two
@@ -301,11 +305,11 @@ pub fn render_kimi_header(brand: &BrandInfo, tip: &TipBox) -> String {
             brand.path.if_supports_color(Stdout, |p| p.style(Style::new().dimmed())).to_string()
         ),
         (
-            format!("page {} · model {} · {} tools", brand.page_id_short, brand.model, brand.tool_count),
+            format!("page {} · model {} · {} tools", brand.page_id_short, shorten_model_name(&brand.model), brand.tool_count),
             format!(
                 "page {} · model {} · {} tools",
                 brand.page_id_short.if_supports_color(Stdout, |p| p.style(Style::new().cyan())),
-                brand.model.if_supports_color(Stdout, |m| m.style(Style::new().dimmed())),
+                shorten_model_name(&brand.model).if_supports_color(Stdout, |m| m.style(Style::new().dimmed())),
                 brand.tool_count
             )
         ),
@@ -325,12 +329,25 @@ pub fn render_kimi_header(brand: &BrandInfo, tip: &TipBox) -> String {
     // line them up so the *bottom* of the sidecar is one row
     // above the *bottom* of the logo — that puts the
     // version/branch/path lines in the lower half of the
-    // silhouette, mirroring Kimi's layout where the branch and
-    // path sit below the mascot.
+    // silhouette.
     let mut out = String::new();
     let sidecar_offset = LOGO.len().saturating_sub(sidecar.len() + 1);
+
+    // Dynamic gradient colors for the mascot logo: first 4 rows are bright cyan, last 4 are bright magenta.
+    let logo_styles = [
+        Style::new().bright_cyan(),
+        Style::new().bright_cyan(),
+        Style::new().bright_cyan(),
+        Style::new().bright_cyan(),
+        Style::new().bright_magenta(),
+        Style::new().bright_magenta(),
+        Style::new().bright_magenta(),
+        Style::new().bright_magenta(),
+    ];
+
     for (i, logo_line) in LOGO.iter().enumerate() {
         let left = format!("{:<width$}", logo_line, width = LOGO_WIDTH);
+        let left_colored = left.if_supports_color(Stdout, |l| l.style(logo_styles[i]));
         let right = if i >= sidecar_offset && i - sidecar_offset < sidecar.len() {
             sidecar[i - sidecar_offset].clone()
         } else {
@@ -343,7 +360,7 @@ pub fn render_kimi_header(brand: &BrandInfo, tip: &TipBox) -> String {
         // The format below is:  <logo>  <sidecar>    <tip box>
         // The 4-space gap between the sidecar and the tip box
         // gives the two columns clear visual separation.
-        let _ = writeln!(out, "  {left}  {right}    {tip_row}");
+        let _ = writeln!(out, "  {left_colored}  {right}    {tip_row}");
     }
     // Render any tip rows that extend below the logo.
     for extra in tip_lines.iter().skip(LOGO.len()) {
@@ -353,11 +370,21 @@ pub fn render_kimi_header(brand: &BrandInfo, tip: &TipBox) -> String {
     out
 }
 
+fn shorten_model_name(name: &str) -> String {
+    let last_part = name.split('/').last().unwrap_or(name);
+    if last_part.chars().count() > 28 {
+        let truncated: String = last_part.chars().take(27).collect();
+        format!("{}…", truncated)
+    } else {
+        last_part.to_string()
+    }
+}
+
 /// Convenience wrapper: build the header string and print it to
-/// stdout. Most callers will use this; tests use `render_kimi_header`
+/// stdout. Most callers will use this; tests use `render_hydra_header`
 /// directly so they can assert on the bytes.
-pub fn print_kimi_header(brand: &BrandInfo, tip: &TipBox) {
-    print!("{}", render_kimi_header(brand, tip));
+pub fn print_hydra_header(brand: &BrandInfo, tip: &TipBox) {
+    print!("{}", render_hydra_header(brand, tip));
     use std::io::Write;
     let _ = std::io::stdout().flush();
 }
@@ -512,18 +539,18 @@ mod tests {
     }
 
     #[test]
-    fn render_kimi_header_is_eight_lines_minimum() {
+    fn render_hydra_header_is_eight_lines_minimum() {
         let brand = sample_brand();
         let tip = TipBox::new("Hi", vec!["body".into()]);
-        let out = render_kimi_header(&brand, &tip);
+        let out = render_hydra_header(&brand, &tip);
         assert!(out.lines().count() >= LOGO.len());
     }
 
     #[test]
-    fn render_kimi_header_contains_brand_metadata() {
+    fn render_hydra_header_contains_brand_metadata() {
         let brand = sample_brand();
         let tip = TipBox::new("X", vec!["y".into()]);
-        let out = render_kimi_header(&brand, &tip);
+        let out = render_hydra_header(&brand, &tip);
         // We strip ANSI for the assertion so a colour-disabled
         // terminal doesn't break the test. The metadata is
         // *semantically* the contract — visible to the user,
@@ -584,5 +611,15 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn test_shorten_model_name() {
+        assert_eq!(shorten_model_name("openai/gpt-4o-mini"), "gpt-4o-mini");
+        assert_eq!(
+            shorten_model_name("hf.co/QuantFactory/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_S"),
+            "Qwen2.5-0.5B-Instruct-GGUF:…"
+        );
+        assert_eq!(shorten_model_name("short"), "short");
     }
 }

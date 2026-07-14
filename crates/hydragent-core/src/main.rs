@@ -385,7 +385,7 @@ enum Commands {
                       Examples:\n\
                       \x20 hydragent model list                          ← list all models\n\
                       \x20 hydragent model list --provider openrouter    ← filter by provider\n\
-                      \x20 hydragent model set --role coding openrouter/deepseek-deepseek-coder  ← set role default"
+                      \x20 hydragent model set --role coding openrouter/deepseek-coder  ← set role default"
     )]
     Model {
         #[command(subcommand)]
@@ -1733,36 +1733,70 @@ async fn main() {
         debug_dump_env_and_config(&app_config);
     }
 
-    // Load secrets from encrypted vault if configured and passphrase is provided
+    // Load secrets from encrypted vault if configured
     let vault_path = std::path::PathBuf::from(&app_config.data_dir).join("vault/.hydravault");
     if vault_path.exists() {
-        if let Ok(passphrase) = std::env::var("HYDRAGENT_VAULT_PASSPHRASE") {
-            let vault = hydragent_vault::Vault::new(vault_path);
-            match vault.load(&passphrase) {
-                Ok(secrets) => {
-                    tracing::info!("Loaded secrets from cryptographic Vault.");
-                    if let Some(keys) = secrets.get("OPENROUTER_API_KEYS") {
-                        app_config.openrouter_api_keys = keys.expose_secret().to_string();
-                    }
-                    if let Some(model) = secrets.get("PRIMARY_MODEL") {
-                        // Legacy key — re-export as BRAIN_MODEL so it seeds
-                        // the new effective_brain_model() helper.
-                        app_config.brain_model = model.expose_secret().to_string();
-                    }
-                    if let Some(model) = secrets.get("BRAIN_MODEL") {
-                        app_config.brain_model = model.expose_secret().to_string();
-                    }
-                    // Load any other configuration keys from Vault dynamically
-                    for (scope, secret) in secrets {
-                        std::env::set_var(scope, secret.expose_secret());
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to decrypt cryptographic Vault: incorrect passphrase. Error: {}", e);
-                }
+        let skip_vault_prompt = matches!(
+            args.command,
+            Some(Commands::Onboard { .. })
+                | Some(Commands::Vault { .. })
+                | Some(Commands::Security { .. })
+                | Some(Commands::Ps)
+                | Some(Commands::Stop { .. })
+                | Some(Commands::Update)
+                | Some(Commands::Uninstall { .. })
+                | Some(Commands::Config { .. })
+        );
+
+        let vault = hydragent_vault::Vault::new(vault_path.clone());
+        let passphrase_res = if vault.load("").is_ok() {
+            Ok("".to_string())
+        } else if let Ok(val) = std::env::var("HYDRAGENT_VAULT_PASSPHRASE") {
+            Ok(val)
+        } else if !skip_vault_prompt && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            println!("🔒 Hydragent Cryptographic Vault is locked.");
+            match rpassword::prompt_password("Enter vault passphrase/PIN to unlock: ") {
+                Ok(p) => Ok(p),
+                Err(e) => Err(anyhow::anyhow!("Failed to read passphrase: {}", e)),
             }
         } else {
-            eprintln!("Cryptographic Vault exists, but HYDRAGENT_VAULT_PASSPHRASE is not set. Bypassing Vault decryption.");
+            Err(anyhow::anyhow!("HYDRAGENT_VAULT_PASSPHRASE is not set"))
+        };
+
+        match passphrase_res {
+            Ok(passphrase) => {
+                match vault.load(&passphrase) {
+                    Ok(secrets) => {
+                        tracing::info!("Loaded secrets from cryptographic Vault.");
+                        std::env::set_var("HYDRAGENT_VAULT_PASSPHRASE", &passphrase);
+                        if let Some(keys) = secrets.get("OPENROUTER_API_KEYS") {
+                            app_config.openrouter_api_keys = keys.expose_secret().to_string();
+                        }
+                        if let Some(model) = secrets.get("PRIMARY_MODEL") {
+                            app_config.brain_model = model.expose_secret().to_string();
+                        }
+                        if let Some(model) = secrets.get("BRAIN_MODEL") {
+                            app_config.brain_model = model.expose_secret().to_string();
+                        }
+                        // Load any other configuration keys from Vault dynamically
+                        for (scope, secret) in secrets {
+                            std::env::set_var(scope, secret.expose_secret());
+                        }
+                    }
+                    Err(e) => {
+                        if !skip_vault_prompt {
+                            eprintln!("Failed to decrypt cryptographic Vault: incorrect passphrase/PIN. Error: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                if !skip_vault_prompt {
+                    eprintln!("Failed to unlock cryptographic Vault: {}.", e);
+                    std::process::exit(1);
+                }
+            }
         }
     }
 
@@ -3136,6 +3170,7 @@ async fn main() {
                     skill_library_for_worker.clone(),
                     enable_curator,
                     curator_interval_sec,
+                    true, // is_background
                 ).await;
                 match cycle {
                     Ok(stats) => {
