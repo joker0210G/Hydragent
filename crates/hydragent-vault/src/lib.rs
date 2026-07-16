@@ -1,5 +1,6 @@
 pub mod column_cipher;
 pub mod crypto;
+pub mod developer_recovery;
 pub mod injector;
 pub mod mlock;
 pub mod rotator;
@@ -14,7 +15,8 @@ pub use mlock::{is_mlock_available, mlock, munlock, MlockError};
 pub use rotator::{Rotator, RotationError, RotationReport};
 pub use secure_buffer::{SecureBuffer, SecureBufferError};
 pub use taint::{TaintCategory, TaintedString};
-pub use vault::Vault;
+pub use developer_recovery::{derive_slot2_key_developer_side, derive_slot2_key_user_side, parse_dev_private_key_file};
+pub use vault::{InitOptions, RecoveryApplyResult, RecoveryRequestResult, Vault, VaultMetadataV3};
 
 #[cfg(test)]
 mod tests {

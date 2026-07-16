@@ -69,13 +69,19 @@ const DEFAULT_CATEGORIES: &str = "general";
 const SNIPPET_MAX_CHARS: usize = 300;
 const LOCAL_BASE_URLS: &[&str] = &["http://127.0.0.1:7777", "http://localhost:7777"];
 
-/// Public SearXNG instances to rotate through if the default fails.
-/// These are updated periodically — stale entries will just fail fast.
+/// Public SearXNG instances used when the configured instance fails or is absent.
+/// Rotated by time-based offset so load is distributed across instances.
 const FALLBACK_INSTANCES: &[&str] = &[
     "https://searx.be",
     "https://search.disroot.org",
+    "https://searxng.world",
+    "https://priv.au",
+    "https://search.ononoki.org",
+    "https://baresearch.org",
     "https://searx.tiekoetter.com",
     "https://paulgo.io",
+    "https://searx.fmac.xyz",
+    "https://search.bus-hit.me",
 ];
 
 // Use a realistic browser User-Agent. Public SearXNG instances fingerprint
@@ -623,26 +629,54 @@ impl Tool for WebSearchTool {
         let mut last_error = String::new();
         let _ = self.ensure_local_search_shim(&self.base_url).await;
 
-        let instances = {
+        // Rotate starting fallback instance by time so load is distributed and single bad
+        // instances don't always block the first slot. No external dep needed.
+        let rotation_offset = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as usize)
+            % FALLBACK_INSTANCES.len();
+        let rotated_fallbacks: Vec<&str> = FALLBACK_INSTANCES[rotation_offset..]
+            .iter()
+            .chain(FALLBACK_INSTANCES[..rotation_offset].iter())
+            .copied()
+            .collect();
+
+        // Build the primary instances list (configured + locals), then append rotated fallbacks.
+        let primary_instances = {
             let mut list = vec![self.base_url.clone()];
             for local in LOCAL_BASE_URLS {
                 if !list.iter().any(|u| u == local) {
                     list.push(local.to_string());
                 }
             }
-            let mut fallback = FALLBACK_INSTANCES
-                .iter()
-                .filter(|&&u| !list.iter().any(|existing| existing == u))
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>();
-            list.append(&mut fallback);
             list
         };
+        let fallback_instances: Vec<String> = rotated_fallbacks
+            .iter()
+            .filter(|&&u| !primary_instances.iter().any(|existing| existing == u))
+            .map(|s| s.to_string())
+            .collect();
+        let instances: Vec<String> = primary_instances
+            .iter()
+            .cloned()
+            .chain(fallback_instances.iter().cloned())
+            .collect();
 
-        for base in &instances {
+        // Build a short-timeout client for fallback instances (8s) to avoid hanging too long.
+        let fallback_client = Client::builder()
+            .timeout(Duration::from_secs(8))
+            .user_agent(USER_AGENT)
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
+        let primary_count = primary_instances.len();
+
+        for (idx, base) in instances.iter().enumerate() {
+            // Use the short-timeout client for fallback instances.
+            let http_client = if idx < primary_count { &self.client } else { &fallback_client };
             let url = Self::build_url_with_base(base, query, categories, language);
-            match self
-                .client
+            match http_client
                 .get(&url)
                 .header(reqwest::header::ACCEPT, ACCEPT_HEADER)
                 .header(reqwest::header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)

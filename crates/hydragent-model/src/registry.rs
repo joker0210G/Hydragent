@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::custom_openai::{CustomOpenAIClient, CustomProviderConfig};
 use crate::model_trait::ModelProvider;
-use crate::ollama::{OllamaClient, OllamaProviderConfig};
+use crate::ollama_native::{OllamaNativeClient, OllamaNativeConfig};
 use crate::openrouter::OpenRouterClient;
 use crate::profiles::CostTier;
 
@@ -788,9 +788,13 @@ impl ProviderRegistry {
         let normalized = Self::normalize_provider_id(provider_id);
         match normalized {
             "ollama" => {
-                let mut cfg = OllamaProviderConfig::from_env();
+                let mut cfg = OllamaNativeConfig::from_env();
                 if !base_url.is_empty() {
-                    cfg.base_url = base_url.trim_end_matches('/').to_string();
+                    // Strip /v1 suffix — native client uses the raw Ollama base URL
+                    cfg.base_url = base_url
+                        .trim_end_matches('/')
+                        .trim_end_matches("/v1")
+                        .to_string();
                 }
                 if !model.is_empty() {
                     cfg.default_model = model.to_string();
@@ -798,7 +802,7 @@ impl ProviderRegistry {
                 if timeout_secs > 0 {
                     cfg.timeout = Duration::from_secs(timeout_secs);
                 }
-                Arc::new(OllamaClient::new(cfg))
+                Arc::new(OllamaNativeClient::new(cfg))
             }
             "openrouter" => {
                 let keys = api_key

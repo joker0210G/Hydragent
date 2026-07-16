@@ -521,10 +521,13 @@ function Initialize-EnvFile {
         return
     }
     # Try alongside the script, then the source checkout.
-    $candidates = @(
-        (Join-Path $PSScriptRoot '.env.example'),
-        (Join-Path $SourceDir '.env.example')
-    )
+    $candidates = @()
+    if ($PSScriptRoot) {
+        $candidates += Join-Path $PSScriptRoot '.env.example'
+    }
+    if ($SourceDir) {
+        $candidates += Join-Path $SourceDir '.env.example'
+    }
     foreach ($src in $candidates) {
         if (Test-Path $src) {
             Copy-Item $src $dest

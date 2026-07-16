@@ -96,3 +96,6 @@ target/agent_reach_source/
 .agents/
 
 *.log
+
+# Developer emergency recovery private key — NEVER commit this
+config/security/dev_private_key.txt

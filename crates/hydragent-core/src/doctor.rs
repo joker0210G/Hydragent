@@ -173,13 +173,13 @@ pub fn run(app_config: &crate::config::AppConfig) -> Report {
     let brain_base = app_config.effective_brain_base();
     if brain_base.is_empty() {
         checks.push(Check::fail(
-            "BRAIN_BASE",
-            "unset (or OPENROUTER_API_KEYS not set)",
-            "set BRAIN_BASE in `.env` — try `hydragent onboard`",
+            "provider_base_url",
+            "unset",
+            "configure model provider base URL in model_providers.yaml or run onboard",
         ));
     } else {
         checks.push(Check::ok(
-            "BRAIN_BASE",
+            "provider_base_url",
             format!("{}", redact_url(&brain_base)),
         ));
     }
@@ -190,14 +190,14 @@ pub fn run(app_config: &crate::config::AppConfig) -> Report {
         let is_local = brain_base.contains("localhost") || brain_base.contains("127.0.0.1");
         if is_local {
             checks.push(Check::ok(
-                "BRAIN_KEY",
+                "provider_api_key",
                 "<empty> (local provider — OK)".to_string(),
             ));
         } else {
             checks.push(Check::fail(
-                "BRAIN_KEY",
+                "provider_api_key",
                 "unset",
-                "set BRAIN_KEY in `.env` (or use OPENROUTER_API_KEYS for back-compat)",
+                "set provider API key in vault (run: hydragent vault set <provider_name> <key>)",
             ));
         }
     } else if brain_key.contains("your-key-here")
@@ -206,15 +206,15 @@ pub fn run(app_config: &crate::config::AppConfig) -> Report {
         || brain_key.contains("sk-XXXX")
     {
         checks.push(Check::fail(
-            "BRAIN_KEY",
-            "looks like the placeholder from .env.example",
-            "paste your real key into `.env` (BRAIN_KEY=...)",
+            "provider_api_key",
+            "placeholder value detected",
+            "set a valid provider API key in vault (run: hydragent vault set <provider_name> <key>)",
         ));
     } else {
         let head: String = brain_key.chars().take(4).collect();
         let n = brain_key.chars().count();
         checks.push(Check::ok(
-            "BRAIN_KEY",
+            "provider_api_key",
             format!("set ({}…  {} chars)", head, n),
         ));
     }
@@ -222,12 +222,12 @@ pub fn run(app_config: &crate::config::AppConfig) -> Report {
     let brain_model = app_config.effective_brain_model();
     if brain_model.is_empty() {
         checks.push(Check::fail(
-            "BRAIN_MODEL",
+            "provider_model",
             "unset",
-            "set BRAIN_MODEL in `.env` (e.g. `openai/gpt-4o-mini` or `gpt-4o-mini`)",
+            "configure a default model in model_providers.yaml or run onboard",
         ));
     } else {
-        checks.push(Check::ok("BRAIN_MODEL", brain_model.clone()));
+        checks.push(Check::ok("provider_model", brain_model.clone()));
     }
 
     // ── [3] data directory ────────────────────────────────────────────
@@ -408,6 +408,64 @@ pub fn run(app_config: &crate::config::AppConfig) -> Report {
                 format!("{} is free", port),
             ));
         }
+    }
+
+    // ── [11] Ollama reachability (only if configured as provider) ─────
+    let brain_base_for_ollama = app_config.effective_brain_base();
+    let is_ollama_provider = brain_base_for_ollama.contains("localhost:11434")
+        || brain_base_for_ollama.contains("127.0.0.1:11434")
+        || std::env::var("OLLAMA_API_BASE").is_ok();
+    let ollama_port = std::env::var("OLLAMA_HOST")
+        .ok()
+        .and_then(|h| h.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()))
+        .unwrap_or(11434);
+
+    if is_ollama_provider {
+        let addr_str = format!("127.0.0.1:{}", ollama_port);
+        let ollama_reachable = addr_str
+            .parse::<std::net::SocketAddr>()
+            .ok()
+            .and_then(|addr| {
+                std::net::TcpStream::connect_timeout(
+                    &addr,
+                    std::time::Duration::from_millis(500),
+                )
+                .ok()
+            })
+            .is_some();
+
+        if ollama_reachable {
+            checks.push(Check::ok(
+                "ollama_server",
+                format!("reachable on :{}", ollama_port),
+            ));
+        } else {
+            checks.push(Check::warn(
+                "ollama_server",
+                format!("not responding on :{}", ollama_port),
+                "run `ollama serve` or install Ollama from https://ollama.com",
+            ));
+        }
+
+        // Ollama model configured?
+        let ollama_model = std::env::var("OLLAMA_MODEL")
+            .unwrap_or_else(|_| app_config.effective_brain_model());
+        if ollama_model.is_empty() {
+            checks.push(Check::warn(
+                "ollama_model",
+                "no model configured",
+                "set OLLAMA_MODEL=llama3.1 (or any model you have pulled)",
+            ));
+        } else {
+            checks.push(Check::ok("ollama_model", &ollama_model));
+        }
+
+        // Thinking mode configured?
+        let think_mode = std::env::var("OLLAMA_THINKING").unwrap_or_else(|_| "auto".to_string());
+        checks.push(Check::ok(
+            "ollama_thinking",
+            format!("{} (set OLLAMA_THINKING=auto|true|false|low|medium|high|max)", think_mode),
+        ));
     }
 
     Report { checks }

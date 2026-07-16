@@ -55,6 +55,64 @@ pub async fn run_react_loop(
     active_permissions: crate::orchestrator::ActivePermissions,
     skill_library: Option<Arc<hydragent_skills::SkillLibrary>>,
 ) -> anyhow::Result<(String, Vec<ToolResult>)> {
+    let active_model = model_router.primary_model();
+    let tool_calling_enabled = if let Some(reg) = model_router.registry() {
+        reg.model(&active_model).map(|m| m.tool_calling).unwrap_or(true)
+    } else {
+        true
+    };
+
+    if !tool_calling_enabled {
+        info!("Model '{}' does not support tool calling; bypassing ReAct loop", active_model);
+        let mut messages = Vec::new();
+        let mut system_prompt = "You are Hydra, a helpful AI assistant.".to_string();
+        if let Some(soul) = soul_guidelines {
+            if !soul.trim().is_empty() {
+                system_prompt = format!("{}\n\n{}", soul, system_prompt);
+            }
+        }
+        if let Some(user) = user_profile {
+            if !user.trim().is_empty() {
+                system_prompt = format!("{}\n\n{}", user, system_prompt);
+            }
+        }
+        messages.push(ModelChatMessage {
+            role: "system".to_string(),
+            content: system_prompt,
+        });
+        for msg in history {
+            let role = match msg.role {
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+                MessageRole::System => "system",
+                MessageRole::Tool => "tool",
+            };
+            messages.push(ModelChatMessage {
+                role: role.to_string(),
+                content: msg.content,
+            });
+        }
+        messages.push(ModelChatMessage {
+            role: "user".to_string(),
+            content: user_query.to_string(),
+        });
+
+        let (token_tx, mut token_rx) = mpsc::channel(100);
+        let model_router_clone = model_router.clone();
+        let handle = tokio::spawn(async move {
+            model_router_clone.chat_stream(messages, token_tx, None).await
+        });
+
+        let mut raw_response = String::new();
+        while let Some(token) = token_rx.recv().await {
+            raw_response.push_str(&token);
+            send_token(&response_tx, token).await;
+        }
+
+        let _ = handle.await?;
+        return Ok((raw_response, Vec::new()));
+    }
+
     let mut system_prompt = format!(
         "You are Hydra, an advanced agentic AI assistant. You solve problems step-by-step using a ReAct loop.\n\
         You must respond with a single JSON object. DO NOT wrap it in markdown block unless required, and DO NOT output anything else.\n\n\

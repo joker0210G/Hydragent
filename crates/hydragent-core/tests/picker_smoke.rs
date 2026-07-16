@@ -36,7 +36,7 @@ fn non_tty_picker_falls_back_to_numeric() {
         .expect("failed to spawn hydragent");
     assert!(out.status.success(), "first-run banner exited non-zero: {out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Welcome to Hydragent"), "missing welcome banner");
+    assert!(stderr.contains("First-time setup required"), "missing welcome banner");
     assert!(stderr.contains("hydragent onboard"), "banner should suggest onboard");
 
     // 2) Run `hydragent doctor` with no .env → should print the report
@@ -49,7 +49,7 @@ fn non_tty_picker_falls_back_to_numeric() {
         .expect("failed to spawn doctor");
     assert!(!out.status.success(), "doctor should exit non-zero when .env missing");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("BRAIN_BASE"), "doctor must report BRAIN_BASE");
+    assert!(stdout.contains("provider_base_url"), "doctor must report provider_base_url");
     assert!(stdout.contains("hydragent onboard"), "doctor should suggest onboard");
 
     // 3) Run `hydragent onboard --non-interactive` with all flags → should

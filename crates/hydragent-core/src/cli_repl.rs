@@ -195,6 +195,67 @@ pub fn print_banner(brand: &BrandInfo) {
 
 /// Run the REPL. Returns the process exit code.
 pub async fn run(mut state: ReplState) -> i32 {
+    // ── Ollama Active Model Resolution ──────────────────────────────
+    if state.model_router.provider_label() == "ollama" {
+        let ollama_base = std::env::var("OLLAMA_API_BASE")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let ollama_base = ollama_base.trim_end_matches('/')
+            .trim_end_matches("/v1").to_string();
+        let _ = hydragent_model::ensure_ollama_server(&ollama_base).await;
+
+        let yaml_path = std::path::PathBuf::from(state.app_config.effective_model_providers_path());
+        
+        // Sync models first synchronously so we have local models mapped before banner
+        if let Ok(Ok(tags)) = tokio::time::timeout(
+            std::time::Duration::from_millis(1500),
+            hydragent_model::discover_ollama_models(&ollama_base)
+        ).await {
+            if !tags.is_empty() {
+                // Initialize YAML file if missing
+                if !yaml_path.exists() {
+                    if let Some(parent) = yaml_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let repo_config = std::path::Path::new("config/model_providers.yaml");
+                    if repo_config.exists() {
+                        let _ = std::fs::copy(repo_config, &yaml_path);
+                    } else {
+                        let default_skeleton = r#"providers:
+  - id: ollama
+    display_name: Ollama (Local)
+    kind: ollama
+    default_base_url: http://localhost:11434
+    auth_mode: none
+    supports_custom_models: true
+    supports_reasoning: true
+    supports_tools: true
+    models: []
+"#;
+                        let _ = std::fs::write(&yaml_path, default_skeleton);
+                    }
+                }
+                
+                let _ = hydragent_model::sync_discovered_models_to_yaml(&yaml_path, &tags);
+                if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                    state.model_router.update_registry(Arc::new(new_reg));
+                }
+                
+                // Now check if our active model is pulled
+                let active_model = state.app_config.effective_active_model();
+                let has_active_model = tags.iter().any(|t| t.name == active_model || t.model == active_model);
+                if !has_active_model {
+                    // Switch to the first discovered tag!
+                    let first_model_name = &tags[0].name;
+                    let full_ref = format!("ollama/{}", first_model_name);
+                    state.model_router.set_primary_model(full_ref.clone());
+                    state.app_config.active_model = first_model_name.clone();
+                    state.app_config.brain_model = first_model_name.clone();
+                    state.brand.model = full_ref;
+                }
+            }
+        }
+    }
+
     // ── Banner ────────────────────────────────────────────────────────
     print_banner(&state.brand);
     // Print the status bar right under the header so the user
@@ -232,12 +293,11 @@ pub async fn run(mut state: ReplState) -> i32 {
 
     let env_key = format!("BRAIN_{}_KEY", active_provider.to_uppercase().replace('-', "_"));
     let api_key = std::env::var(&env_key)
-        .ok()
-        .unwrap_or_else(|| std::env::var("BRAIN_KEY").unwrap_or_default());
+        .unwrap_or_default();
 
     if requires_key && api_key.is_empty() {
         println!("  \x1b[33m⚠ Active provider '{}' requires an API key, but none is set.\x1b[0m", active_provider);
-        println!("    To configure it, use: \x1b[36m/provider set {} key <your-api-key>\x1b[0m", active_provider);
+        println!("    To configure it, use: \x1b[36m/model set {} key <your-api-key>\x1b[0m", active_provider);
         println!();
     }
 
@@ -250,6 +310,33 @@ pub async fn run(mut state: ReplState) -> i32 {
 
     let mut stdout = std::io::stdout();
 
+    // ── Ollama: auto-serve + model sync ──────────────────────────────
+    if state.model_router.provider_label() == "ollama" {
+        let ollama_base = std::env::var("OLLAMA_API_BASE")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let ollama_base = ollama_base.trim_end_matches('/')
+            .trim_end_matches("/v1").to_string();
+        let _auto_serve = std::env::var("OLLAMA_AUTO_SERVE")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(true);
+        let _ = hydragent_model::ensure_ollama_server(&ollama_base).await;
+
+        let yaml_path = std::path::PathBuf::from(state.app_config.effective_model_providers_path());
+        let ollama_base2 = ollama_base.clone();
+        let router = state.model_router.clone();
+        tokio::spawn(async move {
+            if let Ok(tags) = hydragent_model::discover_ollama_models(&ollama_base2).await {
+                if yaml_path.exists() && !tags.is_empty() {
+                    let _ = hydragent_model::sync_discovered_models_to_yaml(&yaml_path, &tags);
+                }
+                if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                    router.update_registry(Arc::new(new_reg));
+                }
+            }
+        });
+    }
+
     // ── Ollama Context Pre-Warming ────────────────────────────────────
     let skip_warmup = std::env::var("HYDRAGENT_SKIP_WARMUP").unwrap_or_default() == "1";
     if state.model_router.provider_label() == "ollama" && !skip_warmup {
@@ -258,112 +345,99 @@ pub async fn run(mut state: ReplState) -> i32 {
         let page_id = state.page_id.clone();
         let channel_id = state.channel_id.clone();
         let user_id = state.user_id.clone();
-
-        // Start spinner
-        let warmup_spinner = start_spinner(format!("  {ANSI_CYAN}hydra{ANSI_RESET} warming up local brain cache (makes first response instant)"));
-
-        // Construct the static system prompt exactly as in react_loop.rs
-        let mut system_prompt = format!(
-            "You are Hydra, an advanced agentic AI assistant. You solve problems step-by-step using a ReAct loop.\n\
-            You must respond with a single JSON object. DO NOT wrap it in markdown block unless required, and DO NOT output anything else.\n\n\
-            Your JSON response must follow one of these two schemas:\n\n\
-            1. To call a tool:\n\
-            {{\n\
-              \"thought\": \"your step-by-step reasoning about what to do next\",\n\
-              \"tool\": \"tool_name\",\n\
-              \"params\": {{ ... key-value parameters for the tool ... }}\n\
-            }}\n\n\
-            2. To provide the final answer to the user:\n\
-            {{\n\
-              \"thought\": \"your final reasoning summary\",\n\
-              \"answer\": \"your detailed markdown response to the user\"\n\
-            }}\n\n\
-            ReAct Loop Rules (follow strictly):\n\
-            - Trust live tool results over your training knowledge. If search results contradict what you know, believe the search.\n\
-            - Stay STRICTLY on the user's topic. Do NOT rewrite their query into unrelated domains just because the first search is empty.\n\
-            - If a search returns 0 results, say you could not find current information. Do NOT invent alternative queries about related topics.\n\
-            - When search results contain promising URLs, use url_fetch to read the full page content before drawing conclusions.\n\
-            - Do NOT answer from memory if you just ran a search — use what the search returned.\n\
-            - Limit yourself to ONE search per topic unless the user explicitly asks for comparisons.\n\n\
-            Available Tools:\n\
-            {}\n\n\
-            IMPORTANT: Only use the tools listed above. Always output valid JSON.\n\n\
-            # Active Session Context:\n\
-            - Page ID: {}\n\
-            - Channel ID: {}\n\
-            - User ID: {}\n\
-            (Note: Use these values if you need to specify target_channel_id or channel_id in tools. For example, if target_channel_id is required, construct it as channel_id:user_id or as appropriate for the active channel context.)",
-            registry.build_system_prompt_block(),
-            page_id,
-            channel_id,
-            user_id
-        );
-
-        // Prepend user profile and soul guidelines exactly as in react_loop.rs
-        let user_profile = std::fs::read_to_string(crate::paths::config_dir().join("USER.md")).ok();
-        let soul_guidelines = std::fs::read_to_string(crate::paths::config_dir().join("SOUL.md")).ok();
-
-        if let Some(soul) = soul_guidelines {
-            if !soul.trim().is_empty() {
-                system_prompt = format!(
-                    "# Agent Soul & Guidelines\n{}\n\n{}",
-                    soul, system_prompt
-                );
-            }
-        }
-        if let Some(user) = user_profile {
-            if !user.trim().is_empty() {
-                system_prompt = format!(
-                    "# User Profile & Style Preferences\n{}\n\n{}",
-                    user, system_prompt
-                );
-            }
-        }
-
-        let messages = vec![
-            hydragent_model::openrouter::ChatMessage {
-                role: "system".to_string(),
-                content: system_prompt,
-            },
-            hydragent_model::openrouter::ChatMessage {
-                role: "user".to_string(),
-                content: "warmup".to_string(),
-            },
-        ];
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
-        
-        // Trigger a 1-token streaming completion to force Ollama to evaluate and cache the system prompt
-        let pre_warm_req = hydragent_model::openrouter::LLMRequest {
-            model: model_name,
-            messages,
-            stream: true,
-            max_tokens: Some(1),
-            models: vec![],
-            reasoning_effort: None,
-        };
-
-        // Spawn the provider call in the background to avoid blocking the thread and causing a deadlock
         let provider = state.model_router.provider();
-        let handle = tokio::spawn(async move {
-            provider.chat_stream(&pre_warm_req, tx).await
+ 
+        println!("  · Warming up local brain cache in background (makes first response instant)...");
+ 
+        tokio::spawn(async move {
+            // Construct the static system prompt exactly as in react_loop.rs
+            let mut system_prompt = format!(
+                "You are Hydra, an advanced agentic AI assistant. You solve problems step-by-step using a ReAct loop.\n\
+                You must respond with a single JSON object. DO NOT wrap it in markdown block unless required, and DO NOT output anything else.\n\n\
+                Your JSON response must follow one of these two schemas:\n\n\
+                1. To call a tool:\n\
+                {{\n\
+                  \"thought\": \"your step-by-step reasoning about what to do next\",\n\
+                  \"tool\": \"tool_name\",\n\
+                  \"params\": {{ ... key-value parameters for the tool ... }}\n\
+                }}\n\n\
+                2. To provide the final answer to the user:\n\
+                {{\n\
+                  \"thought\": \"your final reasoning summary\",\n\
+                  \"answer\": \"your detailed markdown response to the user\"\n\
+                }}\n\n\
+                ReAct Loop Rules (follow strictly):\n\
+                - Trust live tool results over your training knowledge. If search results contradict what you know, believe the search.\n\
+                - Stay STRICTLY on the user's topic. Do NOT rewrite their query into unrelated domains just because the first search is empty.\n\
+                - If a search returns 0 results, say you could not find current information. Do NOT invent alternative queries about related topics.\n\
+                - When search results contain promising URLs, use url_fetch to read the full page content before drawing conclusions.\n\
+                - Do NOT answer from memory if you just ran a search — use what the search returned.\n\
+                - Limit yourself to ONE search per topic unless the user explicitly asks for comparisons.\n\n\
+                Available Tools:\n\
+                {}\n\n\
+                IMPORTANT: Only use the tools listed above. Always output valid JSON.\n\n\
+                # Active Session Context:\n\
+                - Page ID: {}\n\
+                - Channel ID: {}\n\
+                - User ID: {}\n\
+                (Note: Use these values if you need to specify target_channel_id or channel_id in tools. For example, if target_channel_id is required, construct it as channel_id:user_id or as appropriate for the active channel context.)",
+                registry.build_system_prompt_block(),
+                page_id,
+                channel_id,
+                user_id
+            );
+ 
+            // Prepend user profile and soul guidelines exactly as in react_loop.rs
+            let user_profile = std::fs::read_to_string(crate::paths::config_dir().join("USER.md")).ok();
+            let soul_guidelines = std::fs::read_to_string(crate::paths::config_dir().join("SOUL.md")).ok();
+ 
+            if let Some(soul) = soul_guidelines {
+                if !soul.trim().is_empty() {
+                    system_prompt = format!(
+                        "# Agent Soul & Guidelines\n{}\n\n{}",
+                        soul, system_prompt
+                    );
+                }
+            }
+            if let Some(user) = user_profile {
+                if !user.trim().is_empty() {
+                    system_prompt = format!(
+                        "# User Profile & Style Preferences\n{}\n\n{}",
+                        user, system_prompt
+                    );
+                }
+            }
+ 
+            let messages = vec![
+                hydragent_model::openrouter::ChatMessage {
+                    role: "system".to_string(),
+                    content: system_prompt,
+                },
+                hydragent_model::openrouter::ChatMessage {
+                    role: "user".to_string(),
+                    content: "warmup".to_string(),
+                },
+            ];
+ 
+            let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+            
+            // Trigger a 1-token streaming completion to force Ollama to evaluate and cache the system prompt
+            let pre_warm_req = hydragent_model::openrouter::LLMRequest {
+                model: model_name,
+                messages,
+                stream: true,
+                max_tokens: Some(1),
+                models: vec![],
+                reasoning_effort: None,
+            };
+ 
+            let handle = tokio::spawn(async move {
+                provider.chat_stream(&pre_warm_req, tx).await
+            });
+ 
+            while rx.recv().await.is_some() {}
+            let _ = handle.await;
         });
-
-        // Drain the tokens concurrently in the main thread
-        while rx.recv().await.is_some() {}
-
-        // Wait for the background task to complete and check if it succeeded
-        let warmup_success = match handle.await {
-            Ok(Ok(_)) => true,
-            _ => false,
-        };
-
-        warmup_spinner.stop();
-        if warmup_success {
-            println!("\r\x1b[2K  ✨ Brain cache ready! (First response will be instant)\n");
-        } else {
-            println!("\r\x1b[2K  ⚠️  Brain cache warm-up skipped or failed (is Ollama offline?)\n");
-        }
     }
 
     let mut paste_mode = false;
@@ -907,10 +981,6 @@ async fn handle_slash_command(
                                     Ok(mut secrets) => {
                                         let env_key = format!("BRAIN_{}_KEY", name.to_uppercase().replace('-', "_"));
                                         secrets.insert(env_key.clone(), hydragent_vault::TaintedString::credential(value.clone()));
-                                        if state.app_config.effective_active_provider() == name {
-                                            secrets.insert("BRAIN_KEY".to_string(), hydragent_vault::TaintedString::credential(value.clone()));
-                                            std::env::set_var("BRAIN_KEY", &value);
-                                        }
                                         match vault.save(&passphrase, &secrets) {
                                             Ok(_) => {
                                                 std::env::set_var(&env_key, &value);
@@ -934,10 +1004,6 @@ async fn handle_slash_command(
                                     Ok(mut secrets) => {
                                         let env_key = format!("BRAIN_{}_BASE", name.to_uppercase().replace('-', "_"));
                                         secrets.insert(env_key.clone(), hydragent_vault::TaintedString::credential(value.clone()));
-                                        if state.app_config.effective_active_provider() == name {
-                                            secrets.insert("BRAIN_BASE".to_string(), hydragent_vault::TaintedString::credential(value.clone()));
-                                            std::env::set_var("BRAIN_BASE", &value);
-                                        }
                                         match vault.save(&passphrase, &secrets) {
                                             Ok(_) => {
                                                 std::env::set_var(&env_key, &value);
@@ -1192,9 +1258,9 @@ async fn handle_slash_command(
 
                     // Warn if API key is missing
                     let env_key = format!("BRAIN_{}_KEY", res.provider_id.to_uppercase().replace('-', "_"));
-                    if res.provider_id != "ollama" && std::env::var(&env_key).is_err() && std::env::var("BRAIN_KEY").is_err() {
-                        println!("  ⚠️  Warning: No API key found for provider '{}' (tried {} and BRAIN_KEY).", res.provider_id, env_key);
-                        println!("     You may need to edit your .env file or run `hydragent onboard` to configure it.");
+                    if res.provider_id != "ollama" && std::env::var(&env_key).is_err() {
+                        println!("  ⚠️  Warning: No API key found for provider '{}' (tried {}).", res.provider_id, env_key);
+                        println!("     Set your provider API key in vault using: `/model set {} key <your-api-key>`", res.provider_id);
                     }
                 } else {
                     // Fallback to custom/model_ref if registry failed to resolve
@@ -1269,8 +1335,7 @@ async fn handle_slash_command(
                 // Get masked API key
                 let env_key = format!("BRAIN_{}_KEY", active_provider.to_uppercase().replace('-', "_"));
                 let api_key = std::env::var(&env_key)
-                    .ok()
-                    .unwrap_or_else(|| std::env::var("BRAIN_KEY").unwrap_or_default());
+                    .unwrap_or_default();
                 println!("  API Key        : {}", mask(&api_key));
                 
                 // List all providers in the registry
@@ -1280,7 +1345,10 @@ async fn handle_slash_command(
                         println!("  - {:<14} {}", p.id, p.display_name);
                     }
                 }
-                println!("\n  (Use `/provider <id>` to switch, `/provider save <id>` to persist)");
+                println!("\n  💡 Tip: The `/provider` command is simplified. You can switch models directly");
+                println!("     using `/model <name>` (or Ctrl+P picker), and the active provider will automatically switch.");
+                println!("     To configure API keys or URLs, use `/model set <provider_id> key <your-api-key>`.");
+                println!("  (Use `/provider <id>` to switch, `/provider save <id>` to persist)");
                 println!("  (Use `/provider set <id> <field> [value]` to configure key/url)");
                 println!("  (Use `/provider edit` to open the registry YAML file)");
             } else if args[0] == "edit" {
@@ -1464,12 +1532,13 @@ async fn handle_slash_command(
                       state.app_config.brain_provider = provider_ref.to_string();
                       
                       println!("  ✓ Switched active provider to {}", provider_ref);
+                      println!("  💡 Tip: Next time, you can switch directly by selecting a model (e.g. `/model llama3.1`),");
+                      println!("     and the provider will switch automatically!");
                       
                       // Check if API key is required and set
                       let env_key = format!("BRAIN_{}_KEY", provider_ref.to_uppercase().replace('-', "_"));
                       let api_key = std::env::var(&env_key)
-                          .ok()
-                          .unwrap_or_else(|| std::env::var("BRAIN_KEY").unwrap_or_default());
+                          .unwrap_or_default();
                       
                       let requires_key = registry.as_ref()
                           .and_then(|r| r.provider(provider_ref))
@@ -1478,7 +1547,7 @@ async fn handle_slash_command(
 
                       if requires_key && api_key.is_empty() {
                           println!("  \x1b[33m⚠ Warning: Provider '{}' requires an API key, but none is set.\x1b[0m", provider_ref);
-                          println!("    Please set your key using: \x1b[36m/provider set {} key <your-api-key>\x1b[0m", provider_ref);
+                          println!("    Please set your key using: \x1b[36m/model set {} key <your-api-key>\x1b[0m", provider_ref);
                       }
 
                       // Auto-select first model for this provider

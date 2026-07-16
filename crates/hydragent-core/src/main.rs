@@ -475,6 +475,59 @@ enum VaultAction {
     Delete {
         scope: String,
     },
+    /// Export the admin key file for local or portable storage
+    ExportAdminKey {
+        /// Destination path to save the admin key file (e.g. D:\backup\admin_key.bin)
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Recover/reset the passphrase using the admin key file
+    RecoverPassphrase {
+        /// Path to the admin key file (admin_key.bin)
+        #[arg(short, long)]
+        key_file: String,
+    },
+    /// Emergency developer recovery — decrypt vault using the developer private key file
+    DevRecover {
+        /// Path to the developer private key file (dev_private_key.txt)
+        #[arg(short, long)]
+        dev_key_file: String,
+    },
+    /// 🔑 STEP 1 of developer recovery — generate a signed request to send to the developer.
+    ///
+    /// Run this when you are locked out of your vault and need the developer to
+    /// recover it for you. This command:
+    ///   1. Reads your Recovery Identity private key (the one shown during vault init).
+    ///   2. Generates a signed JSON payload { request, signature }.
+    ///   3. Saves a recovery_session.json (keep this file — you'll need it for step 2).
+    ///   4. Prints the payload so you can copy-paste it to the developer via any channel.
+    ///
+    /// Send the printed payload to the developer and wait for them to reply with a
+    /// WrappedResponse JSON. Then run `vault recovery-apply --response <...>`.
+    #[command(name = "recovery-request")]
+    RecoveryRequest {
+        /// Your Recovery Identity private key (64 hex chars shown during vault init-v3).
+        /// You can also pass a path to a file containing the key with `file:<path>`.
+        #[arg(long, value_name = "HEX_OR_FILE")]
+        recovery_key: String,
+    },
+    /// 🔓 STEP 2 of developer recovery — apply the WrappedResponse from the developer.
+    ///
+    /// After the developer sends you their WrappedResponse JSON, run this command to:
+    ///   1. Decrypt the MasterKey using the saved recovery_session.json and the DH response.
+    ///   2. Re-encrypt the vault under your new passphrase.
+    ///   3. Write a fresh admin_key.bin.
+    ///   4. Rotate the Recovery Identity keypair and print the new recovery phrase to back up.
+    ///
+    /// After this command succeeds, you have a fully functional vault again.
+    #[command(name = "recovery-apply")]
+    RecoveryApply {
+        /// The WrappedResponse JSON from the developer. Can be:
+        ///   - A raw JSON string (single-line, quoted)
+        ///   - A path to a JSON file with `file:<path>`
+        #[arg(long, value_name = "JSON_OR_FILE")]
+        response: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]
@@ -608,40 +661,121 @@ patterns:
     description: 'Shell-style outbound exfiltration request'
 "#;
 
-/// Print a friendly welcome banner for first-time users who ran the
-/// binary with no `.env` and no subcommand. Goal: never let the first
-/// `hydragent` invocation crash silently with a config error.
+/// Print a visually premium welcome banner for first-time users who ran the
+/// binary with no `.env` and no subcommand.  Supports 256-colour ANSI where
+/// the terminal allows it and gracefully degrades when NO_COLOR is set.
 fn print_first_run_banner() {
-    eprintln!();
-    eprintln!("╔══════════════════════════════════════════════════════════════════╗");
-    eprintln!("║  🐉  Welcome to Hydragent!                                       ║");
-    eprintln!("╚══════════════════════════════════════════════════════════════════╝");
-    eprintln!();
+    // ── colour palette (256-colour; degrades gracefully) ──────────────────
+    use std::io::IsTerminal;
+    let is_tty   = std::io::stderr().is_terminal();
+    let no_color = std::env::var("NO_COLOR").is_ok();
+    let (rst, bld, dim, brand, accent, grn, ylw, cyn, mag, red) =
+        if is_tty && !no_color {
+            (
+                "\x1b[0m",
+                "\x1b[1m",
+                "\x1b[2m",
+                "\x1b[38;5;99m",   // soft violet  #875fff
+                "\x1b[38;5;213m",  // pink-magenta #ff87ff
+                "\x1b[38;5;114m",  // sea-green    #87d787
+                "\x1b[38;5;221m",  // warm amber   #ffd75f
+                "\x1b[38;5;116m",  // sky cyan     #87d7d7
+                "\x1b[38;5;177m",  // lavender     #d787ff
+                "\x1b[38;5;203m",  // coral red    #ff5f5f
+            )
+        } else {
+            ("","","","","","","","","","")
+        };
+
     let env_path = paths::env_file();
-    eprintln!("  It looks like this is your first time here — no `.env` file was");
-    eprintln!("  found at:");
+    let env_str  = env_path.display().to_string();
+
+    // ── logo wordmark — same block-art technique as install.ps1 ───────────
+    // Characters built from \u{XXXX} escapes so source stays ASCII-safe.
+    // B=full-block  h=dbl-horiz  v=dbl-vert  tl/tr/bl/br=dbl-corners
+    let b  = '\u{2588}'; // █  full block
+    let h  = '\u{2550}'; // ═  double horizontal
+    let v  = '\u{2551}'; // ║  double vertical
+    let tl = '\u{2554}'; // ╔  double top-left
+    let tr = '\u{2557}'; // ╗  double top-right
+    let bl = '\u{255A}'; // ╚  double bottom-left
+    let br = '\u{255D}'; // ╝  double bottom-right
+
     eprintln!();
-    eprintln!("     {}", env_path.display());
+    // Line 1  ██╗  ██╗██╗   ██╗██████╗ ██████╗  █████╗  ██████╗ ███████╗███╗   ██╗████████╗
+    eprintln!("{brand}{bld}  {b}{b}{tr}  {b}{b}{tr}{b}{b}{tr}   {b}{b}{tr}{b}{b}{b}{b}{b}{b}{tr} {b}{b}{b}{b}{b}{b}{tr}  {b}{b}{b}{b}{b}{tr}  {b}{b}{b}{b}{b}{b}{tr} {b}{b}{b}{b}{b}{b}{b}{tr}{b}{b}{b}{tr}   {b}{b}{tr}{b}{b}{b}{b}{b}{b}{b}{b}{tr}{rst}");
+    // Line 2  ██║  ██║╚██╗ ██╔╝██╔══██╗██╔══██╗██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
+    eprintln!("{brand}{bld}  {b}{b}{v}  {b}{b}{v}{bl}{b}{b}{tr} {b}{b}{tl}{br}{b}{b}{tl}{h}{h}{b}{b}{tr}{b}{b}{tl}{h}{h}{b}{b}{tr}{b}{b}{tl}{h}{h}{b}{b}{tr}{b}{b}{tl}{h}{h}{h}{h}{br} {b}{b}{tl}{h}{h}{h}{h}{br}{b}{b}{b}{b}{tr}  {b}{b}{v}{bl}{h}{h}{b}{b}{tl}{h}{h}{br}{rst}");
+    // Line 3  ███████║ ╚████╔╝ ██║  ██║██████╔╝███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║
+    eprintln!("{brand}{bld}  {b}{b}{b}{b}{b}{b}{b}{v} {bl}{b}{b}{b}{b}{tl}{br} {b}{b}{v}  {b}{b}{v}{b}{b}{b}{b}{b}{b}{tl}{br}{b}{b}{b}{b}{b}{b}{b}{v}{b}{b}{v}  {b}{b}{b}{tr}{b}{b}{b}{b}{b}{tr}  {b}{b}{tl}{b}{b}{tr} {b}{b}{v}   {b}{b}{v}   {rst}");
+    // Line 4  ██╔══██║  ╚██╔╝  ██║  ██║██╔══██╗██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║
+    eprintln!("{accent}{bld}  {b}{b}{tl}{h}{h}{b}{b}{v}  {bl}{b}{b}{tl}{br}  {b}{b}{v}  {b}{b}{v}{b}{b}{tl}{h}{h}{b}{b}{tr}{b}{b}{tl}{h}{h}{b}{b}{v}{b}{b}{v}   {b}{b}{v}{b}{b}{tl}{h}{h}{br}  {b}{b}{v}{bl}{b}{b}{tr}{b}{b}{v}   {b}{b}{v}   {rst}");
+    // Line 5  ██║  ██║   ██║   ██████╔╝██║  ██║██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║
+    eprintln!("{accent}{bld}  {b}{b}{v}  {b}{b}{v}   {b}{b}{v}   {b}{b}{b}{b}{b}{b}{tl}{br}{b}{b}{v}  {b}{b}{v}{b}{b}{v}  {b}{b}{v}{bl}{b}{b}{b}{b}{b}{b}{tl}{br}{b}{b}{b}{b}{b}{b}{b}{tr}{b}{b}{v} {bl}{b}{b}{b}{b}{v}   {b}{b}{v}   {rst}");
+    // Line 6  ╚═╝  ╚═╝   ╚═╝   ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝
+    eprintln!("{dim}  {bl}{h}{br}  {bl}{h}{br}   {bl}{h}{br}   {bl}{h}{h}{h}{h}{h}{br} {bl}{h}{br}  {bl}{h}{br}{bl}{h}{br}  {bl}{h}{br} {bl}{h}{h}{h}{h}{h}{br} {bl}{h}{h}{h}{h}{h}{h}{br}{bl}{h}{br}  {bl}{h}{h}{h}{br}   {bl}{h}{br}   {rst}");
     eprintln!();
-    eprintln!("  Let's fix that.");
+    eprintln!("{brand}  Privacy-first \u{00b7} Model-agnostic \u{00b7} Encrypted vault \u{00b7} Multi-channel{rst}");
     eprintln!();
-    eprintln!("  Quickest path:");
+
+    // ── setup status ──────────────────────────────────────────────────────
+    eprintln!("{ylw}  ┌───────────────────────────────────────────────────────────────────┐{rst}");
+    eprintln!("{ylw}  │  ⚙  First-time setup required                                     │{rst}");
+    eprintln!("{ylw}  └───────────────────────────────────────────────────────────────────┘{rst}");
     eprintln!();
-    eprintln!("     hydragent onboard          ← guided setup (recommended)");
+    eprintln!("  {dim}No configuration found at:{rst}");
+    eprintln!("  {cyn}{env_str}{rst}");
     eprintln!();
-    eprintln!("  After onboard, you'll be one command away from chatting:");
+
+    // ── quickstart ────────────────────────────────────────────────────────
+    eprintln!("{grn}{bld}  ▶  Quickest path — run this one command:{rst}");
     eprintln!();
-    eprintln!("     hydragent chat             ← interactive terminal REPL");
+    eprintln!("     {bld}{grn}hydragent onboard{rst}    {dim}← guided setup wizard (recommended){rst}");
     eprintln!();
-    eprintln!("  Other useful commands:");
+    eprintln!("  The wizard will:");
+    eprintln!("  {cyn}❶{rst}  Pick an AI provider  {dim}(OpenAI · OpenRouter · Ollama · custom){rst}");
+    eprintln!("  {cyn}❷{rst}  Store your API key in the {brand}{bld}encrypted vault{rst}");
+    eprintln!("  {cyn}❸{rst}  Choose a primary model and verify the connection live");
+    eprintln!("  {cyn}❹{rst}  Drop you straight into the chat REPL");
     eprintln!();
-    eprintln!("     hydragent doctor           ← diagnose an existing setup");
-    eprintln!("     hydragent test-brain       ← smoke-test the live brain");
-    eprintln!("     hydragent examples         ← starter prompts to try");
-    eprintln!("     hydragent --help           ← full command reference");
+
+    // ── command reference ─────────────────────────────────────────────────
+    eprintln!("{mag}  ┌───────────────────────────────────────────────────────────────────┐{rst}");
+    eprintln!("{mag}  │  Command reference                                                 │{rst}");
+    eprintln!("{mag}  └───────────────────────────────────────────────────────────────────┘{rst}");
     eprintln!();
-    eprintln!("  Manual setup: copy `.env.example` to `{}` and fill", env_path.display());
-    eprintln!("  in BRAIN_BASE + BRAIN_KEY, then run `hydragent chat`.");
+    eprintln!("  {bld}{grn}hydragent onboard{rst}          Guided first-time setup wizard");
+    eprintln!("  {bld}{grn}hydragent chat{rst}             Interactive AI terminal REPL");
+    eprintln!("  {bld}{grn}hydragent serve{rst}            Start the gateway daemon");
+    eprintln!("  {bld}{cyn}hydragent doctor{rst}           Diagnose your installation");
+    eprintln!("  {bld}{cyn}hydragent test-brain{rst}       Smoke-test the live AI brain");
+    eprintln!("  {bld}{cyn}hydragent status{rst}           One-shot system dashboard");
+    eprintln!("  {bld}{cyn}hydragent examples{rst}         Starter prompts to try");
+    eprintln!("  {bld}{mag}hydragent vault init{rst}       Set up encrypted credential vault");
+    eprintln!("  {bld}{mag}hydragent vault set{rst}        Store an API key or secret");
+    eprintln!("  {bld}{ylw}hydragent update{rst}           Self-update to the latest release");
+    eprintln!("  {bld}hydragent --help{rst}           Full command reference");
+    eprintln!();
+
+    // ── feature snapshot ──────────────────────────────────────────────────
+    eprintln!("{brand}  ┌───────────────────────────────────────────────────────────────────┐{rst}");
+    eprintln!("{brand}  │  What Hydragent gives you                                          │{rst}");
+    eprintln!("{brand}  └───────────────────────────────────────────────────────────────────┘{rst}");
+    eprintln!();
+    eprintln!("  {grn}✦{rst}  {bld}Encrypted vault{rst}         Secrets never touch .env in plaintext");
+    eprintln!("  {grn}✦{rst}  {bld}Any LLM provider{rst}        OpenAI · OpenRouter · Ollama · custom");
+    eprintln!("  {grn}✦{rst}  {bld}Multi-channel adapters{rst}  Telegram · Discord · Slack · WebSocket · CLI");
+    eprintln!("  {grn}✦{rst}  {bld}Long-term memory{rst}        Semantic search across all sessions");
+    eprintln!("  {grn}✦{rst}  {bld}Dream cycle{rst}             Background memory consolidation");
+    eprintln!("  {grn}✦{rst}  {bld}Skill curator{rst}           Self-improving tool library");
+    eprintln!("  {grn}✦{rst}  {bld}Developer recovery{rst}      X25519 + Ed25519 vault recovery keys");
+    eprintln!();
+
+    // ── manual setup footnote ─────────────────────────────────────────────
+    eprintln!("  {dim}Manual: copy `.env.example` \u{2192} {env_str}{rst}");
+    eprintln!("  {dim}then run `hydragent vault init` to configure your keys.{rst}");
+    eprintln!();
+    eprintln!("  {red}Tip:{rst} Run {bld}hydragent vault init{rst} to configure your cryptographic credentials.");
     eprintln!();
 }
 
@@ -700,13 +834,6 @@ fn debug_dump_env_and_config(cfg: &config::AppConfig) {
     eprintln!();
     eprintln!("[3] Environment variables (raw — before vault overrides)");
     let interesting: &[(&str, &str)] = &[
-        ("BRAIN_BASE",            "plain"),
-        ("BRAIN_KEY",             "secret"),
-        ("BRAIN_MODEL",           "plain"),
-        ("BRAIN_FALLBACKS",       "plain"),
-        ("OPENROUTER_API_KEYS",   "secret"),
-        ("PRIMARY_MODEL",         "plain"),
-        ("FALLBACK_MODELS",       "plain"),
         ("HYDRAGENT_VAULT_PASSPHRASE", "secret"),
         ("DATA_DIR",              "plain"),
         ("LOG_LEVEL",             "plain"),
@@ -2314,6 +2441,172 @@ async fn main() {
                     std::process::exit(1);
                 }
             }
+            VaultAction::ExportAdminKey { output: _ } => {
+                println!("Admin key export: use vault init-v3 --export-admin-key <path> to generate a new vault with admin key.");
+            }
+            VaultAction::RecoverPassphrase { key_file } => {
+                // TODO: implement recover_passphrase on the Vault struct (Slot 1 admin-key recovery)
+                let new_pass = rpassword::prompt_password("Enter new passphrase: ").unwrap_or_else(|e| {
+                    eprintln!("Error reading passphrase: {}", e);
+                    std::process::exit(1);
+                });
+                // vault.recover_passphrase(std::path::Path::new(key_file), &new_pass)
+                //     .unwrap_or_else(|e| { eprintln!("Recovery failed: {}", e); std::process::exit(1); });
+                println!("Passphrase recovery via admin key file '{}' is not yet implemented.", key_file);
+                let _ = new_pass;
+            }
+            VaultAction::DevRecover { dev_key_file } => {
+                // TODO: implement developer emergency recovery (Slot 2 DH decryption)
+                println!("Loading developer private key from '{}'...", dev_key_file);
+                println!("Developer emergency vault decryption is not yet implemented.");
+            }
+
+            // ── STEP 1: Generate a signed recovery request payload ──────────
+            VaultAction::RecoveryRequest { recovery_key } => {
+                // Resolve the key: either `file:<path>` or a raw hex string.
+                let key_hex = if recovery_key.starts_with("file:") {
+                    let path = recovery_key.trim_start_matches("file:");
+                    std::fs::read_to_string(path).unwrap_or_else(|e| {
+                        eprintln!("❌  Could not read recovery key file '{}': {}", path, e);
+                        std::process::exit(1);
+                    }).trim().to_string()
+                } else {
+                    recovery_key.trim().to_string()
+                };
+
+                println!();
+                println!("╔══════════════════════════════════════════════════════════════════╗");
+                println!("║  🔑  Hydragent Vault — Developer Recovery  (Step 1 of 2)         ║");
+                println!("╚══════════════════════════════════════════════════════════════════╝");
+                println!();
+                println!("  Generating a signed recovery request…");
+                println!();
+
+                let result = vault.generate_recovery_request(&key_hex).unwrap_or_else(|e| {
+                    eprintln!("❌  Failed to generate recovery request: {}", e);
+                    std::process::exit(1);
+                });
+
+                println!("┌──────────────────────────────────────────────────────────────────┐");
+                println!("│  📋  Recovery Request Payload (copy everything between the lines) │");
+                println!("└──────────────────────────────────────────────────────────────────┘");
+                println!();
+                println!("{}", result.payload_json);
+                println!();
+                println!("┌──────────────────────────────────────────────────────────────────┐");
+                println!("│  ✅  Session state saved to:                                      │");
+                println!("│     {}",  result.session_file_path.display());
+                println!("└──────────────────────────────────────────────────────────────────┘");
+                println!();
+                println!("╔══════════════════════════════════════════════════════════════════╗");
+                println!("║  ⚠️   IMPORTANT — What to do next                                 ║");
+                println!("╠══════════════════════════════════════════════════════════════════╣");
+                println!("║                                                                    ║");
+                println!("║  1. Copy the JSON payload above and send it to the developer.      ║");
+                println!("║     (email, encrypted message, GitHub issue — any channel works)   ║");
+                println!("║                                                                    ║");
+                println!("║  2. ⚠️  DO NOT delete the recovery_session.json file.              ║");
+                println!("║     Without it, Step 2 cannot decrypt the developer's response.    ║");
+                println!("║     Back it up alongside your vault if possible.                   ║");
+                println!("║                                                                    ║");
+                println!("║  3. Wait for the developer to reply with a WrappedResponse JSON.  ║");
+                println!("║     (This may take days or weeks — the session file is permanent.) ║");
+                println!("║                                                                    ║");
+                println!("║  4. Once you receive the WrappedResponse, run:                    ║");
+                println!("║     hydragent vault recovery-apply --response <JSON_OR_FILE>      ║");
+                println!("║                                                                    ║");
+                println!("╚══════════════════════════════════════════════════════════════════╝");
+                println!();
+            }
+
+            // ── STEP 2: Apply the WrappedResponse and rebuild the vault ──────
+            VaultAction::RecoveryApply { response } => {
+                // Resolve the response: either `file:<path>` or a raw JSON string.
+                let response_json = if response.starts_with("file:") {
+                    let path = response.trim_start_matches("file:");
+                    std::fs::read_to_string(path).unwrap_or_else(|e| {
+                        eprintln!("❌  Could not read response file '{}': {}", path, e);
+                        std::process::exit(1);
+                    })
+                } else {
+                    response.clone()
+                };
+
+                // Prompt for the new passphrase (used to re-encrypt Slot 0)
+                println!();
+                println!("╔══════════════════════════════════════════════════════════════════╗");
+                println!("║  🔓  Hydragent Vault — Developer Recovery  (Step 2 of 2)         ║");
+                println!("╚══════════════════════════════════════════════════════════════════╝");
+                println!();
+                println!("  You are about to decrypt your vault using the developer's response");
+                println!("  and re-encrypt it with a brand-new passphrase.");
+                println!();
+                println!("  Choose a strong new passphrase (min 12 characters recommended).");
+                println!();
+
+                let new_pass = rpassword::prompt_password("  Enter new vault passphrase: ").unwrap_or_else(|e| {
+                    eprintln!("❌  Could not read passphrase: {}", e);
+                    std::process::exit(1);
+                });
+                let new_pass2 = rpassword::prompt_password("  Confirm new vault passphrase: ").unwrap_or_else(|e| {
+                    eprintln!("❌  Could not read passphrase: {}", e);
+                    std::process::exit(1);
+                });
+                if new_pass != new_pass2 {
+                    eprintln!("❌  Passphrases do not match. Aborting.");
+                    std::process::exit(1);
+                }
+                if new_pass.trim().is_empty() {
+                    eprintln!("❌  Passphrase cannot be empty.");
+                    std::process::exit(1);
+                }
+
+                println!();
+                println!("  Decrypting vault and rotating all keys…");
+                println!();
+
+                let result = vault.apply_recovery_response(&response_json, new_pass.trim()).unwrap_or_else(|e| {
+                    eprintln!("❌  Recovery failed: {}", e);
+                    std::process::exit(1);
+                });
+
+                println!("╔══════════════════════════════════════════════════════════════════╗");
+                println!("║  🎉  Vault recovery complete!                                     ║");
+                println!("╠══════════════════════════════════════════════════════════════════╣");
+                println!("║                                                                    ║");
+                println!("║  ✅  New passphrase set — vault is accessible with your new PIN.   ║");
+                println!("║  ✅  New admin_key.bin written to:                                 ║");
+                println!("║      {}",  result.admin_key_path.display());
+                println!("║  ✅  Recovery Identity keypair rotated.                            ║");
+                println!("║                                                                    ║");
+                println!("╠══════════════════════════════════════════════════════════════════╣");
+                println!("║  ⚠️   BACK UP THE FOLLOWING — you cannot recover without them      ║");
+                println!("╠══════════════════════════════════════════════════════════════════╣");
+                println!("║                                                                    ║");
+                println!("║  New Recovery Identity Private Key (Recovery Phrase):              ║");
+                println!("║  ──────────────────────────────────────────────────────────────── ║");
+                println!("  {}", result.new_id_priv_hex);
+                println!("║                                                                    ║");
+                println!("║  New Recovery Identity Public Key (for developer reference):       ║");
+                println!("║  ──────────────────────────────────────────────────────────────── ║");
+                println!("  {}", result.new_id_pub_hex);
+                println!("║                                                                    ║");
+                println!("║  New Admin Key File path:                                          ║");
+                println!("  {}",  result.admin_key_path.display());
+                println!("║                                                                    ║");
+                println!("╠══════════════════════════════════════════════════════════════════╣");
+                println!("║  What to do right now:                                             ║");
+                println!("║                                                                    ║");
+                println!("║  1. Write down or encrypt the Recovery Identity Private Key above.  ║");
+                println!("║     Store it somewhere safe (hardware wallet, encrypted USB, etc.) ║");
+                println!("║  2. Copy the new admin_key.bin to a safe offline location.         ║");
+                println!("║  3. Send the new Recovery Identity Public Key to the developer     ║");
+                println!("║     so they can update their records for future recoveries.         ║");
+                println!("║  4. Test vault access: hydragent vault list                        ║");
+                println!("║                                                                    ║");
+                println!("╚══════════════════════════════════════════════════════════════════╝");
+                println!();
+             }
         }
         return;
     }
@@ -2699,15 +2992,11 @@ async fn main() {
     // back to the legacy `BRAIN_*` environment variables for backward
     // compatibility.
     //
-    // Legacy vars:
-    //   BRAIN_BASE     = https://api.together.xyz/v1   (or openai, openrouter, ollama, ...)
-    //   BRAIN_KEY      = sk-...                       (empty for local providers)
-    //   BRAIN_MODEL    = meta-llama/Llama-3-70b-chat-hf
-    //   BRAIN_FALLBACKS= smaller-model1,smaller-model2
+    // ── The "brain" (single live provider) ────────────────────────────
     //
-    // Backward compat: if BRAIN_BASE is unset but OPENROUTER_API_KEYS is set,
-    // we use OpenRouter's URL. If BRAIN_MODEL is unset we use PRIMARY_MODEL,
-    // and BRAIN_FALLBACKS falls back to FALLBACK_MODELS.
+    // The agent has one brain. It is selected using the registry-backed
+    // `ACTIVE_PROVIDER` / `ACTIVE_MODEL` settings when present.
+    //
     let brain_base = app_config.effective_brain_base();
     let brain_key = app_config.effective_brain_key();
     let _brain_model = app_config.effective_brain_model();
@@ -2715,19 +3004,17 @@ async fn main() {
 
     if brain_base.is_empty() {
         eprintln!(
-            "🤔 I don't know where to connect. Set `BRAIN_BASE` in `.env`.\n\
-             Examples:\n\
-               BRAIN_BASE=https://api.openai.com/v1\n\
-               BRAIN_BASE=https://openrouter.ai/api/v1\n\
-               BRAIN_BASE=http://localhost:11434/v1  (Ollama in OpenAI-compat mode)\n\
-             Or set `OPENROUTER_API_KEYS` for backward compatibility."
+            "🤔 Model provider configuration is missing or base URL is empty.\n\
+             Please run `hydragent onboard` or configure model_providers.yaml,\n\
+             and set your provider credentials in the vault using:\n\
+               hydragent vault set <provider> <key>"
         );
         std::process::exit(1);
     }
 
-    if !brain_key.is_empty() && brain_key.contains("9b9c8f09436e") {
+    if !brain_key.is_empty() && brain_key.contains("your-key-here") {
         tracing::warn!(
-            "⚠️ Default placeholder API key detected. Replace it with a valid key in `.env`."
+            "⚠️ Default placeholder API key detected. Run `hydragent vault set <provider> <key>` to set your key."
         );
     }
 

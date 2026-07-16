@@ -12,10 +12,11 @@ This design borrows the useful parts of OpenClaw, Hermes, and OpenCode:
 
 Hydragent stores secrets in the vault, not in prompts, transcripts, or skill bodies.
 
-The lockbox should support two unlock paths:
+The lockbox should support three unlock paths:
 
-- Slot 0: a user-entered secret or PIN-derived unlock path for interactive use.
-- Slot 1: a local admin or machine-bound file for trusted unattended startup.
+- Slot 0: Passphrase PIN — a user-entered secret or PIN-derived unlock path for interactive and remote use.
+- Slot 1: Admin Key File — a local admin or machine-bound file for trusted unattended startup; also used as a permission slip to authorize passphrase changes.
+- Slot 2: Developer Recovery — emergency path using the developer's offline private key combined with the user's public key (stored in vault metadata) via Diffie-Hellman; only active if the user opted in at vault initialization.
 
 Hydragent should keep the unlock story explicit:
 
