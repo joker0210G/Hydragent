@@ -86,11 +86,13 @@ impl SubAgentSpawner {
     /// **Prefer [`SubAgentSpawner::with_council_registry`]** — it reads routing
     /// profiles from the unified `model_providers.yaml` so you only need one file.
     /// This method is kept for backward compatibility with `model_council.yaml`.
+    #[deprecated(since = "0.2.0", note = "Use with_council_registry instead")]
     pub fn with_council_yaml<P: AsRef<Path>>(
         registry: Arc<ToolRegistry>,
         router: Arc<ModelRouter>,
         path: P,
     ) -> Result<Self, SpawnError> {
+        #[allow(deprecated)]
         let council = ModelCouncil::load_from_yaml(path).map_err(|e| {
             SpawnError::CouncilRouting(format!("failed to load council yaml: {e}"))
         })?;

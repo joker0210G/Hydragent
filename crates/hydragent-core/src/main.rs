@@ -169,6 +169,10 @@ enum Commands {
         /// at a different mirror/proxy.
         #[arg(long)]
         base_url: Option<String>,
+
+        /// Path to an existing model_providers.yaml config to import
+        #[arg(long)]
+        import_providers: Option<std::path::PathBuf>,
     },
     /// 🩺 Run diagnostic checks and print a colour-coded report
     #[command(
@@ -231,10 +235,10 @@ enum Commands {
                       \x20 hydragent test-brain \"Reply with exactly: PONG\""
     )]
     TestBrain {
-        /// The prompt to send. Default: a one-liner that asks the model
-        /// to introduce itself so you can confirm the brain is wired up.
-        #[arg(default_value = "In one sentence, who are you and which model are you?")]
-        prompt: String,
+        /// Optional model or prompt
+        model_or_prompt: Option<String>,
+        /// Optional prompt if model is provided as the first argument
+        prompt: Option<String>,
     },
     /// Inspect the Phase 6 Merkle audit chain (Track 6.1)
     Audit {
@@ -1971,7 +1975,7 @@ async fn main() {
     // the wizard's optional `test-brain` verification step, so we
     // initialise the logger first.
     if let Some(Commands::Onboard {
-        provider, api_key, model, non_interactive, no_verify, force, base_url,
+        provider, api_key, model, non_interactive, no_verify, force, base_url, import_providers,
     }) = &args.command
     {
         let code = onboard::run(onboard::OnboardOptions {
@@ -1982,6 +1986,7 @@ async fn main() {
             no_verify: *no_verify,
             force: *force,
             base_url: base_url.clone(),
+            import_providers: import_providers.clone(),
         }).await;
         std::process::exit(code);
     }
@@ -2997,9 +3002,61 @@ async fn main() {
     // The agent has one brain. It is selected using the registry-backed
     // `ACTIVE_PROVIDER` / `ACTIVE_MODEL` settings when present.
     //
-    let brain_base = app_config.effective_brain_base();
-    let brain_key = app_config.effective_brain_key();
-    let _brain_model = app_config.effective_brain_model();
+    let mut active_provider = app_config.effective_active_provider();
+    let mut active_model = app_config.effective_active_model();
+    let mut brain_base = app_config.effective_brain_base();
+    let mut brain_key = app_config.effective_brain_key();
+    let mut final_prompt = "In one sentence, who are you and which model are you?".to_string();
+
+    if let Some(Commands::TestBrain { model_or_prompt, prompt }) = &args.command {
+        if let Some(val) = model_or_prompt {
+            if let Some(p) = prompt {
+                // Both model and prompt provided
+                let parts: Vec<&str> = val.splitn(2, '/').collect();
+                if parts.len() == 2 {
+                    active_provider = parts[0].to_string();
+                    active_model = parts[1].to_string();
+                } else {
+                    active_model = val.clone();
+                }
+                final_prompt = p.clone();
+            } else {
+                // Only one argument provided. Is it a model reference?
+                let is_model = val.contains('/') || val.contains(':') || val.contains("openai") || val.contains("ollama");
+                if is_model {
+                    let parts: Vec<&str> = val.splitn(2, '/').collect();
+                    if parts.len() == 2 {
+                        active_provider = parts[0].to_string();
+                        active_model = parts[1].to_string();
+                    } else {
+                        active_model = val.clone();
+                    }
+                } else {
+                    final_prompt = val.clone();
+                }
+            }
+        }
+
+        // Dynamically resolve base URL and key for the overridden provider
+        let path = app_config.effective_model_providers_path();
+        let yaml_path = std::path::PathBuf::from(&path);
+        let reg = if yaml_path.exists() {
+            hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path).ok()
+        } else {
+            Some(hydragent_model::ProviderRegistry::builtin_default())
+        };
+
+        if let Some(r) = reg {
+            if let Some(prov) = r.provider(&active_provider) {
+                let env_base = format!("BRAIN_{}_BASE", active_provider.to_uppercase().replace('-', "_"));
+                brain_base = std::env::var(&env_base)
+                    .unwrap_or_else(|_| prov.default_base_url.clone());
+            }
+        }
+        let env_key = format!("BRAIN_{}_KEY", active_provider.to_uppercase().replace('-', "_"));
+        brain_key = std::env::var(&env_key).unwrap_or_default();
+    }
+
     let brain_fallbacks = app_config.effective_brain_fallbacks();
 
     if brain_base.is_empty() {
@@ -3022,9 +3079,6 @@ async fn main() {
     // from `DEFAULT_MODEL_<ROLE>` environment variables.
     let mut registry = load_provider_registry(&app_config);
     apply_role_overrides(&mut registry);
-
-    let active_provider = app_config.effective_active_provider();
-    let active_model = app_config.effective_active_model();
 
     // Try to resolve the active provider/model through the registry. If the
     // user is still on legacy `BRAIN_*` vars pointing at a custom endpoint
@@ -3078,13 +3132,13 @@ async fn main() {
     // print the response. Exercises the full BRAIN_* → ModelRouter →
     // CustomOpenAIClient → SSE pipeline. This is the quickest way to
     // confirm a freshly pasted key actually works end-to-end.
-    if let Some(Commands::TestBrain { prompt }) = &args.command {
+    if let Some(Commands::TestBrain { .. }) = &args.command {
         println!("------------------------------------------------------------------------");
         println!("  🧠 Hydragent live-brain test");
         println!("  base     : {}", brain_base);
-        println!("  primary  : {}", app_config.effective_brain_model());
+        println!("  primary  : {}", active_model);
         println!("  fallbacks: {:?}", app_config.effective_brain_fallbacks());
-        println!("  prompt   : {}", prompt);
+        println!("  prompt   : {}", final_prompt);
         println!("------------------------------------------------------------------------");
         println!();
 
@@ -3093,7 +3147,7 @@ async fn main() {
         let (tx, mut rx) = mpsc::channel::<String>(256);
         let messages = vec![ChatMessage {
             role: "user".to_string(),
-            content: prompt.clone(),
+            content: final_prompt.clone(),
         }];
 
         // Collect tokens and stream them to the terminal. In

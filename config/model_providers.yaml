@@ -99,13 +99,15 @@ providers:
     supports_custom_models: true
     supports_reasoning: true
     supports_tools: true
-    # Models are auto-discovered from your local Ollama installation at startup.
-    # Run `ollama pull <model>` to add a model, then restart hydragent chat.
-    # See: https://ollama.com/library
+    default_params:
+      warmup: true
+      native_tool_calling: true
+      structured_output: true
+      thinking_mode: auto
+      keep_alive: "5m"
+    # Models are auto-discovered from your local Ollama installation.
+    # Run `ollama pull <model>` to add a model.
     models: []
-
-
-
 
 # ============================================================================
 # Smart Task Routing  (formerly "Model Council")

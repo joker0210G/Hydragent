@@ -47,6 +47,42 @@ struct RegistryFile {
 pub async fn run(opts: OnboardOptions) -> i32 {
     let mut vault_passphrase = String::new();
 
+    let app_config = crate::config::AppConfig::load().unwrap_or_default();
+    let target_registry_path = std::path::PathBuf::from(app_config.effective_model_providers_path());
+
+    if let Some(ref import_path) = opts.import_providers {
+        if import_path.exists() {
+            if let Some(parent) = target_registry_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::copy(import_path, &target_registry_path).is_ok() {
+                println!("  ✓ Imported providers config from {}", import_path.display());
+            } else {
+                eprintln!("  ✗ Failed to copy providers config from {}", import_path.display());
+            }
+        } else {
+            eprintln!("  ✗ Import file does not exist: {}", import_path.display());
+        }
+    } else if !opts.non_interactive {
+        if let Some(true) = prompt_yes_no("  Import an existing model_providers.yaml config?", false) {
+            if let Some(ref path_str) = prompt("  Enter path to model_providers.yaml: ") {
+                let import_path = std::path::PathBuf::from(path_str.trim());
+                if import_path.exists() {
+                    if let Some(parent) = target_registry_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if std::fs::copy(&import_path, &target_registry_path).is_ok() {
+                        println!("  ✓ Successfully imported providers config!");
+                    } else {
+                        eprintln!("  ✗ Failed to copy file.");
+                    }
+                } else {
+                    eprintln!("  ✗ File not found at: {}", import_path.display());
+                }
+            }
+        }
+    }
+
     // ── 1. Welcome ────────────────────────────────────────────────────
     if !opts.non_interactive {
         println!();
@@ -700,6 +736,7 @@ pub struct OnboardOptions {
     pub no_verify: bool,
     pub force: bool,
     pub base_url: Option<String>,
+    pub import_providers: Option<std::path::PathBuf>,
 }
 
 // ── helpers ────────────────────────────────────────────────────────────

@@ -22,7 +22,9 @@
 //!
 //! ```ignore
 //! use hydragent_model::council::ModelCouncil;
-//! let council = ModelCouncil::load_from_yaml("config/model_council.yaml")?;
+//! use hydragent_model::registry::ProviderRegistry;
+//! let reg = ProviderRegistry::load_from_yaml("config/model_providers.yaml")?;
+//! let council = ModelCouncil::from_registry(&reg).unwrap().unwrap();
 //! let profile = council.route("code_generation", CostTier::Cheap);
 //! ```
 //!
@@ -102,6 +104,7 @@ impl ModelCouncil {
     ///
     /// **Prefer [`ModelCouncil::from_registry`]** when using the unified
     /// `model_providers.yaml` which embeds `routing_profiles:` directly.
+    #[deprecated(since = "0.2.0", note = "Use from_registry instead")]
     pub fn load_from_yaml<P: AsRef<Path>>(path: P) -> Result<Self, CouncilError> {
         let text = std::fs::read_to_string(path.as_ref())?;
         let parsed: CouncilFile = serde_yaml::from_str(&text)?;
@@ -640,11 +643,11 @@ profiles:
     #[test]
     fn load_real_config_routes_canonical_pairs() {
         // Walk up from CARGO_MANIFEST_DIR to find the repo root that
-        // contains `config/model_council.yaml`.
+        // contains `config/model_providers.yaml`.
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let repo_root = manifest.parent().and_then(|p| p.parent());
         let cfg_path = match repo_root {
-            Some(root) => root.join("config").join("model_council.yaml"),
+            Some(root) => root.join("config").join("model_providers.yaml"),
             None => {
                 eprintln!("no repo root; skipping");
                 return;
@@ -655,8 +658,11 @@ profiles:
             return;
         }
 
-        let c = ModelCouncil::load_from_yaml(&cfg_path)
-            .expect("config/model_council.yaml must load");
+        let reg = ProviderRegistry::load_from_yaml(&cfg_path)
+            .expect("config/model_providers.yaml must load");
+        let c = ModelCouncil::from_registry(&reg)
+            .expect("routing_profiles must be present")
+            .expect("routing_profiles must parse into a council");
         assert!(
             c.len() >= 20,
             "Track 5.2 design calls for 20+ profiles; got {}",

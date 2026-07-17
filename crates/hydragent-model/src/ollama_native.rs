@@ -432,8 +432,8 @@ async fn start_ollama_linux() -> bool {
 fn find_ollama_binary(name: &str) -> Option<PathBuf> {
     // Check PATH first
     if let Ok(path_var) = std::env::var("PATH") {
-        for dir in path_var.split(std::path::MAIN_SEPARATOR) {
-            let candidate = PathBuf::from(dir).join(name);
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(name);
             if candidate.exists() {
                 return Some(candidate);
             }
@@ -1385,6 +1385,21 @@ impl OllamaNativeClient {
                                 duration_ms = %duration_ms,
                                 "Ollama native generation completed"
                             );
+
+                            let is_warmup = request.messages.last().map(|m| m.content.as_str()) == Some("warmup") && request.max_tokens == Some(1);
+                            if is_warmup {
+                                let load_dur = chunk_data.load_duration.map(|ns| ns / 1_000_000).unwrap_or(0);
+                                let eval_dur = chunk_data.prompt_eval_duration.map(|ns| ns / 1_000_000).unwrap_or(0);
+                                let is_cached = eval_dur < 100;
+                                println!(
+                                    "\n  ✓ Brain cache warm · prompt: {} tokens · load: {}ms · eval: {}ms {}",
+                                    prompt_tokens,
+                                    load_dur,
+                                    eval_dur,
+                                    if is_cached { "[KV cache HIT]" } else { "[KV cache MISS]" }
+                                );
+                            }
+
                             break;
                         }
                     }
@@ -1456,6 +1471,8 @@ struct OllamaNativeChatResponseChunk {
     prompt_eval_count: Option<u32>,
     eval_count: Option<u32>,
     total_duration: Option<u64>,
+    load_duration: Option<u64>,
+    prompt_eval_duration: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]

@@ -201,26 +201,26 @@ pub async fn run(mut state: ReplState) -> i32 {
             .unwrap_or_else(|_| "http://localhost:11434".to_string());
         let ollama_base = ollama_base.trim_end_matches('/')
             .trim_end_matches("/v1").to_string();
-        let _ = hydragent_model::ensure_ollama_server(&ollama_base).await;
 
         let yaml_path = std::path::PathBuf::from(state.app_config.effective_model_providers_path());
         
-        // Sync models first synchronously so we have local models mapped before banner
-        if let Ok(Ok(tags)) = tokio::time::timeout(
-            std::time::Duration::from_millis(1500),
-            hydragent_model::discover_ollama_models(&ollama_base)
-        ).await {
-            if !tags.is_empty() {
-                // Initialize YAML file if missing
-                if !yaml_path.exists() {
-                    if let Some(parent) = yaml_path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    let repo_config = std::path::Path::new("config/model_providers.yaml");
-                    if repo_config.exists() {
-                        let _ = std::fs::copy(repo_config, &yaml_path);
-                    } else {
-                        let default_skeleton = r#"providers:
+        // Non-blocking fast check: only discover if already running
+        if matches!(hydragent_model::check_ollama_server(&ollama_base).await, hydragent_model::OllamaServerStatus::Running) {
+            if let Ok(Ok(tags)) = tokio::time::timeout(
+                std::time::Duration::from_millis(800),
+                hydragent_model::discover_ollama_models(&ollama_base)
+            ).await {
+                if !tags.is_empty() {
+                    // Initialize YAML file if missing
+                    if !yaml_path.exists() {
+                        if let Some(parent) = yaml_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let repo_config = std::path::Path::new("config/model_providers.yaml");
+                        if repo_config.exists() {
+                            let _ = std::fs::copy(repo_config, &yaml_path);
+                        } else {
+                            let default_skeleton = r#"providers:
   - id: ollama
     display_name: Ollama (Local)
     kind: ollama
@@ -231,26 +231,27 @@ pub async fn run(mut state: ReplState) -> i32 {
     supports_tools: true
     models: []
 "#;
-                        let _ = std::fs::write(&yaml_path, default_skeleton);
+                            let _ = std::fs::write(&yaml_path, default_skeleton);
+                        }
                     }
-                }
-                
-                let _ = hydragent_model::sync_discovered_models_to_yaml(&yaml_path, &tags);
-                if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
-                    state.model_router.update_registry(Arc::new(new_reg));
-                }
-                
-                // Now check if our active model is pulled
-                let active_model = state.app_config.effective_active_model();
-                let has_active_model = tags.iter().any(|t| t.name == active_model || t.model == active_model);
-                if !has_active_model {
-                    // Switch to the first discovered tag!
-                    let first_model_name = &tags[0].name;
-                    let full_ref = format!("ollama/{}", first_model_name);
-                    state.model_router.set_primary_model(full_ref.clone());
-                    state.app_config.active_model = first_model_name.clone();
-                    state.app_config.brain_model = first_model_name.clone();
-                    state.brand.model = full_ref;
+                    
+                    let _ = hydragent_model::sync_discovered_models_to_yaml(&yaml_path, &tags);
+                    if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                        state.model_router.update_registry(Arc::new(new_reg));
+                    }
+                    
+                    // Now check if our active model is pulled
+                    let active_model = state.app_config.effective_active_model();
+                    let has_active_model = tags.iter().any(|t| t.name == active_model || t.model == active_model);
+                    if !has_active_model {
+                        // Switch to the first discovered tag!
+                        let first_model_name = &tags[0].name;
+                        let full_ref = format!("ollama/{}", first_model_name);
+                        state.model_router.set_primary_model(full_ref.clone());
+                        state.app_config.active_model = first_model_name.clone();
+                        state.app_config.brain_model = first_model_name.clone();
+                        state.brand.model = full_ref;
+                    }
                 }
             }
         }
@@ -316,22 +317,22 @@ pub async fn run(mut state: ReplState) -> i32 {
             .unwrap_or_else(|_| "http://localhost:11434".to_string());
         let ollama_base = ollama_base.trim_end_matches('/')
             .trim_end_matches("/v1").to_string();
-        let _auto_serve = std::env::var("OLLAMA_AUTO_SERVE")
-            .ok()
-            .and_then(|s| s.parse::<bool>().ok())
-            .unwrap_or(true);
-        let _ = hydragent_model::ensure_ollama_server(&ollama_base).await;
 
         let yaml_path = std::path::PathBuf::from(state.app_config.effective_model_providers_path());
         let ollama_base2 = ollama_base.clone();
         let router = state.model_router.clone();
         tokio::spawn(async move {
-            if let Ok(tags) = hydragent_model::discover_ollama_models(&ollama_base2).await {
-                if yaml_path.exists() && !tags.is_empty() {
-                    let _ = hydragent_model::sync_discovered_models_to_yaml(&yaml_path, &tags);
-                }
-                if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
-                    router.update_registry(Arc::new(new_reg));
+            // Ensure server is running in background thread to avoid blocking startup
+            if hydragent_model::ensure_ollama_server(&ollama_base2).await.is_ok() {
+                if let Ok(tags) = hydragent_model::discover_ollama_models(&ollama_base2).await {
+                    let count = tags.len();
+                    if yaml_path.exists() && !tags.is_empty() {
+                        let _ = hydragent_model::sync_discovered_models_to_yaml(&yaml_path, &tags);
+                    }
+                    if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                        router.update_registry(Arc::new(new_reg));
+                    }
+                    println!("\n  ✓ Local Ollama connection ready! (discovered {} models)", count);
                 }
             }
         });
@@ -339,7 +340,18 @@ pub async fn run(mut state: ReplState) -> i32 {
 
     // ── Ollama Context Pre-Warming ────────────────────────────────────
     let skip_warmup = std::env::var("HYDRAGENT_SKIP_WARMUP").unwrap_or_default() == "1";
-    if state.model_router.provider_label() == "ollama" && !skip_warmup {
+    let mut warmup_enabled = true;
+    if let Some(ref reg) = state.model_router.registry() {
+        if let Some(prov) = reg.provider("ollama") {
+            if let Some(val) = prov.default_params.get("warmup") {
+                if let Some(b) = val.as_bool() {
+                    warmup_enabled = b;
+                }
+            }
+        }
+    }
+
+    if state.model_router.provider_label() == "ollama" && !skip_warmup && warmup_enabled {
         let model_name = state.brand.model.clone();
         let registry = state.registry.clone();
         let page_id = state.page_id.clone();
@@ -350,6 +362,7 @@ pub async fn run(mut state: ReplState) -> i32 {
         println!("  · Warming up local brain cache in background (makes first response instant)...");
  
         tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             // Construct the static system prompt exactly as in react_loop.rs
             let mut system_prompt = format!(
                 "You are Hydra, an advanced agentic AI assistant. You solve problems step-by-step using a ReAct loop.\n\
@@ -623,6 +636,214 @@ async fn handle_slash_command(
         "exit" | "quit" | "q" => {
             println!("  Goodbye. 👋");
             return SlashExit::Exit(0);
+        }
+        "think" | "thinking" => {
+            let active_provider = state.app_config.effective_active_provider();
+            if active_provider != "ollama" {
+                println!("  ⚠ The `/think` command is only supported when the active provider is Ollama.");
+                return SlashExit::Continue;
+            }
+
+            let args: Vec<&str> = rest.split_whitespace().collect();
+            let path = state.app_config.effective_model_providers_path();
+            let yaml_path = std::path::PathBuf::from(&path);
+
+            if args.is_empty() {
+                let mut current_mode = "auto".to_string();
+                if yaml_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&yaml_path) {
+                        if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                            if let Some(providers) = doc.get("providers").and_then(|p| p.as_sequence()) {
+                                for p in providers {
+                                    if p.get("id").and_then(|i| i.as_str()) == Some("ollama") {
+                                        if let Some(params) = p.get("default_params").and_then(|dp| dp.as_mapping()) {
+                                            if let Some(mode) = params.get(&serde_yaml::Value::String("thinking_mode".to_string())) {
+                                                if let Some(s) = mode.as_str() {
+                                                    current_mode = s.to_string();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                println!("  🧠 Current Ollama thinking mode: {}", current_mode);
+                println!("  (Use `/think on|off|auto|low|medium|high|max` to configure)");
+            } else {
+                let mode_str = args[0].to_lowercase();
+                let valid_modes = ["on", "off", "auto", "low", "medium", "high", "max", "true", "false"];
+                if !valid_modes.contains(&mode_str.as_str()) {
+                    eprintln!("  ✗ Invalid thinking mode: '{}'. Valid options: on, off, auto, low, medium, high, max", mode_str);
+                    return SlashExit::Continue;
+                }
+
+                let mut updated = false;
+                if yaml_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&yaml_path) {
+                        if let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                            if let Some(providers) = doc.get_mut("providers").and_then(|p| p.as_sequence_mut()) {
+                                for p in providers {
+                                    if p.get("id").and_then(|i| i.as_str()) == Some("ollama") {
+                                        let map = p.as_mapping_mut().unwrap();
+                                        let params_key = serde_yaml::Value::String("default_params".to_string());
+                                        if !map.contains_key(&params_key) {
+                                            map.insert(params_key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+                                        }
+                                        if let Some(params) = map.get_mut(&params_key).and_then(|dp| dp.as_mapping_mut()) {
+                                            params.insert(
+                                                serde_yaml::Value::String("thinking_mode".to_string()),
+                                                serde_yaml::Value::String(mode_str.clone()),
+                                            );
+                                            updated = true;
+                                        }
+                                    }
+                                }
+                            }
+                            if updated {
+                                if let Ok(serialized) = serde_yaml::to_string(&doc) {
+                                    if std::fs::write(&yaml_path, serialized).is_ok() {
+                                        println!("  ✓ Ollama thinking mode updated to '{}' permanently!", mode_str);
+                                        if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                                            state.model_router.update_registry(Arc::new(new_reg));
+                                            let client = state.model_router.get_or_build_provider(&active_provider);
+                                            state.model_router.set_provider(client);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !updated {
+                    eprintln!("  ✗ Failed to update thinking mode in model_providers.yaml");
+                }
+            }
+        }
+        "ollama" => {
+            let args: Vec<&str> = rest.split_whitespace().collect();
+            if args.is_empty() {
+                println!("  Usage:");
+                println!("    /ollama ps             List running models and their VRAM usage");
+                println!("    /ollama pull <model>   Pull a model from Ollama registry");
+                println!("    /ollama stop <model>   Stop/unload a running model from memory");
+                return SlashExit::Continue;
+            }
+
+            let ollama_base = std::env::var("OLLAMA_API_BASE")
+                .unwrap_or_else(|_| "http://localhost:11434".to_string());
+            let ollama_base = ollama_base.trim_end_matches('/')
+                .trim_end_matches("/v1").to_string();
+
+            match args[0] {
+                "ps" => {
+                    let client = reqwest::Client::new();
+                    let url = format!("{}/api/ps", ollama_base);
+                    match client.get(&url).send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            #[derive(serde::Deserialize)]
+                            struct PsModel {
+                                name: String,
+                                size: u64,
+                                size_vram: u64,
+                            }
+                            #[derive(serde::Deserialize)]
+                            struct PsResponse {
+                                models: Vec<PsModel>,
+                            }
+                            if let Ok(res) = resp.json::<PsResponse>().await {
+                                println!("------------------------------------------------------------------------");
+                                println!("  Running Ollama Models");
+                                println!("------------------------------------------------------------------------");
+                                if res.models.is_empty() {
+                                    println!("  No models currently loaded in memory.");
+                                } else {
+                                    for m in res.models {
+                                        let size_gb = m.size as f64 / 1_000_000_000.0;
+                                        let vram_gb = m.size_vram as f64 / 1_000_000_000.0;
+                                        let vram_pct = if m.size > 0 { (m.size_vram as f64 / m.size as f64) * 100.0 } else { 0.0 };
+                                        println!("  - {:<28} (size: {:.2} GB, VRAM: {:.2} GB [{:.0}%])", m.name, size_gb, vram_gb, vram_pct);
+                                    }
+                                }
+                                println!("------------------------------------------------------------------------");
+                            }
+                        }
+                        _ => eprintln!("  ✗ Failed to connect to Ollama server at {}", ollama_base),
+                    }
+                }
+                "pull" => {
+                    if args.len() < 2 {
+                        eprintln!("  ✗ Usage: /ollama pull <model>");
+                        return SlashExit::Continue;
+                    }
+                    let model = args[1].to_string();
+                    println!("  Pulling model '{}' in background...", model);
+                    let client = reqwest::Client::new();
+                    let url = format!("{}/api/pull", ollama_base);
+                    tokio::spawn(async move {
+                        let req = serde_json::json!({
+                            "model": model,
+                            "stream": true
+                        });
+                        if let Ok(resp) = client.post(&url).json(&req).send().await {
+                            if resp.status().is_success() {
+                                use tokio_stream::StreamExt;
+                                let mut stream = resp.bytes_stream();
+                                let mut last_percent = -1;
+                                while let Some(chunk) = stream.next().await {
+                                    if let Ok(bytes) = chunk {
+                                        if let Ok(line) = String::from_utf8(bytes.to_vec()) {
+                                            for part in line.split('\n') {
+                                                if part.trim().is_empty() { continue; }
+                                                #[derive(serde::Deserialize)]
+                                                struct PullChunk {
+                                                    status: String,
+                                                    completed: Option<u64>,
+                                                    total: Option<u64>,
+                                                }
+                                                if let Ok(c) = serde_json::from_str::<PullChunk>(part) {
+                                                    if let (Some(comp), Some(tot)) = (c.completed, c.total) {
+                                                        let pct = (comp as f64 / tot as f64 * 100.0) as i32;
+                                                        if pct != last_percent && pct % 10 == 0 {
+                                                            println!("    · Pulling '{}' ... {}%", model, pct);
+                                                            last_percent = pct;
+                                                        }
+                                                    } else if c.status == "success" {
+                                                        println!("  ✓ Model '{}' successfully pulled!", model);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                eprintln!("  ✗ Failed to pull model '{}': HTTP {}", model, resp.status());
+                            }
+                        }
+                    });
+                }
+                "stop" => {
+                    if args.len() < 2 {
+                        eprintln!("  ✗ Usage: /ollama stop <model>");
+                        return SlashExit::Continue;
+                    }
+                    let model = args[1];
+                    let client = reqwest::Client::new();
+                    let url = format!("{}/api/generate", ollama_base);
+                    let req = serde_json::json!({
+                        "model": model,
+                        "keep_alive": 0
+                    });
+                    match client.post(&url).json(&req).send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            println!("  ✓ Model '{}' successfully unloaded from memory.", model);
+                        }
+                        _ => eprintln!("  ✗ Failed to unload model '{}'", model),
+                    }
+                }
+                _ => eprintln!("  ✗ Unknown Ollama command: '{}'", args[0]),
+            }
         }
         "new" => {
             // Let's create a new page, optionally allowing the user to assign it to a Shelf and Book
@@ -907,7 +1128,130 @@ async fn handle_slash_command(
                 }
                 println!("\n  (Use `/model <name>` to switch, `/model save <name>` to persist)");
                 println!("  (Use `/model set <name> <field> <value>` to edit context/cost/tier)");
+                println!("  (Use `/model default [role] [model_ref]` to edit default role models)");
                 println!("  (Use `/model edit` to open the registry YAML file)");
+            } else if args[0] == "ctx" {
+                if args.len() < 2 {
+                    let registry = state.model_router.registry();
+                    let active_model = state.app_config.effective_active_model();
+                    let active_provider = state.app_config.effective_active_provider();
+                    let mut current_ctx = 8192;
+                    if let Some(ref r) = registry {
+                        if let Some(m) = r.models(Some(&active_provider)).iter().find(|m| m.id == active_model || m.api_model_id == active_model) {
+                            current_ctx = m.max_input_tokens.unwrap_or(8192) as i32;
+                        }
+                    }
+                    println!("  🧠 Current model context window: {} tokens", current_ctx);
+                    println!("  (Use `/model ctx <number>` to change it permanently)");
+                } else {
+                    let value = args[1];
+                    if let Ok(num) = value.parse::<i64>() {
+                        let active_model = state.app_config.effective_active_model();
+                        let active_provider = state.app_config.effective_active_provider();
+                        let path = state.app_config.effective_model_providers_path();
+                        let yaml_path = std::path::PathBuf::from(&path);
+                        
+                        if let Ok(yaml_str) = std::fs::read_to_string(&yaml_path) {
+                            if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_str) {
+                                let mut mutated = false;
+                                if let Some(providers) = val.get_mut("providers").and_then(|p| p.as_sequence_mut()) {
+                                    for p in providers {
+                                        let p_id = p.get("id").and_then(|i| i.as_str()).unwrap_or_default().to_owned();
+                                        if p_id == active_provider {
+                                            if let Some(models) = p.get_mut("models").and_then(|m| m.as_sequence_mut()) {
+                                                for m in models {
+                                                    let m_id = m.get("id").and_then(|i| i.as_str()).unwrap_or_default();
+                                                    let api_id = m.get("api_model_id").and_then(|i| i.as_str()).unwrap_or_default();
+                                                    if m_id == active_model || api_id == active_model {
+                                                        let map = m.as_mapping_mut().unwrap();
+                                                        map.insert(serde_yaml::Value::String("max_input_tokens".to_string()), serde_yaml::Value::Number(num.into()));
+                                                        mutated = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if mutated {
+                                    if let Ok(serialized) = serde_yaml::to_string(&val) {
+                                        if std::fs::write(&yaml_path, serialized).is_ok() {
+                                            println!("  ✓ Model '{}' context window updated to {} tokens permanently!", active_model, num);
+                                            if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                                                state.model_router.update_registry(Arc::new(new_reg));
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("  ✗ Failed to find model '{}' under provider '{}' in model_providers.yaml", active_model, active_provider);
+                                }
+                            }
+                        }
+                    } else {
+                        eprintln!("  ✗ Invalid integer: {}", value);
+                    }
+                }
+            } else if args[0] == "default" || args[0] == "defaults" {
+                if args.len() < 3 {
+                    let path = state.app_config.effective_model_providers_path();
+                    let yaml_path = std::path::PathBuf::from(&path);
+                    println!("------------------------------------------------------------------------");
+                    println!("  🧠 Role Defaults");
+                    println!("------------------------------------------------------------------------");
+                    if yaml_path.exists() {
+                        if let Ok(content) = std::fs::read_to_string(&yaml_path) {
+                            if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                                if let Some(defaults) = doc.get("defaults").and_then(|v| v.as_mapping()) {
+                                    for (k, v) in defaults {
+                                        let k_str = k.as_str().unwrap_or_default();
+                                        let v_str = v.as_str().unwrap_or_default();
+                                        println!("    {:<12} : {}", k_str, v_str);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    println!("\n  (Use `/model default <role> <model_name>` to update defaults)");
+                    println!("  Allowed roles: chat, planning, coding, research, utility, inline_chat");
+                } else {
+                    let role = args[1].to_lowercase();
+                    let model_val = args[2..].join(" ");
+                    let path = state.app_config.effective_model_providers_path();
+                    let yaml_path = std::path::PathBuf::from(&path);
+                    let mut updated = false;
+                    if yaml_path.exists() {
+                        if let Ok(content) = std::fs::read_to_string(&yaml_path) {
+                            if let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                                if let Some(mapping) = doc.as_mapping_mut() {
+                                    let defaults_key = serde_yaml::Value::String("defaults".to_string());
+                                    if !mapping.contains_key(&defaults_key) {
+                                        mapping.insert(defaults_key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+                                    }
+                                    if let Some(defaults) = mapping.get_mut(&defaults_key).and_then(|v| v.as_mapping_mut()) {
+                                        defaults.insert(
+                                            serde_yaml::Value::String(role.clone()),
+                                            serde_yaml::Value::String(model_val.clone()),
+                                        );
+                                        updated = true;
+                                    }
+                                }
+                                if updated {
+                                    if let Ok(serialized) = serde_yaml::to_string(&doc) {
+                                        if std::fs::write(&yaml_path, serialized).is_ok() {
+                                            println!("  ✓ Default for role '{}' updated to '{}' permanently!", role, model_val);
+                                            if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                                                state.model_router.update_registry(Arc::new(new_reg));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !updated {
+                        eprintln!("  ✗ Failed to update defaults in {}", path);
+                    }
+                }
             } else if args[0] == "edit" {
                 let path = state.app_config.effective_model_providers_path();
                 println!("  Opening {} in default system editor...", path);
@@ -2632,10 +2976,16 @@ fn print_help() {
     println!("  Diagnostics:");
     println!("    /model [name]        Show or switch primary model (relative to active provider)");
     println!("    /model set <name> <field> <value>   Edit model parameters (context, output, cost, tier)");
+    println!("    /model defaults      Show or update role-based default models");
+    println!("    /model ctx [tokens]  Show or update the active model's context window size");
     println!("    /model edit          Open model_providers.yaml in system editor");
     println!("    /provider [id]       Show or switch active provider");
     println!("    /provider set <id> <field> <value>  Configure provider credentials/endpoint");
     println!("    /provider edit       Open model_providers.yaml in system editor");
+    println!("    /think [mode]        Get or set Ollama thinking mode (on|off|auto|low|medium|high|max)");
+    println!("    /ollama ps           Show loaded Ollama models and VRAM usage");
+    println!("    /ollama pull <model> Pull a model from the Ollama library in the background");
+    println!("    /ollama stop <model> Stop/unload an Ollama model from memory");
     println!("    /brain               Show base URL + masked key");
     println!("    /tools               List registered tools");
     println!("    /status              Render the Kimi-style status bar");

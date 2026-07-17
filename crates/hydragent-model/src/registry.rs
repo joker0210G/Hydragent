@@ -670,8 +670,21 @@ impl ProviderRegistry {
             model_ref
         };
 
-        let (provider_id, model_part) = effective_ref.split_once('/')?;
-        let provider_id = Self::normalize_provider_id(provider_id).to_string();
+        let (provider_id, model_part) = if let Some((p_id, m_part)) = effective_ref.split_once('/') {
+            let normalized = Self::normalize_provider_id(p_id).to_string();
+            if self.providers.contains_key(&normalized) {
+                (normalized, m_part.to_string())
+            } else {
+                let default_ref = self.role_defaults.get(role)?;
+                let (default_provider, _) = default_ref.split_once('/')?;
+                (Self::normalize_provider_id(default_provider).to_string(), effective_ref.to_string())
+            }
+        } else {
+            let default_ref = self.role_defaults.get(role)?;
+            let (default_provider, _) = default_ref.split_once('/')?;
+            (Self::normalize_provider_id(default_provider).to_string(), effective_ref.to_string())
+        };
+
         let provider = self.providers.get(&provider_id)?;
 
         let key = format!("{}/{}", provider_id, model_part);
@@ -789,6 +802,38 @@ impl ProviderRegistry {
         match normalized {
             "ollama" => {
                 let mut cfg = OllamaNativeConfig::from_env();
+                if let Some(prov) = self.provider(provider_id) {
+                    if let Some(val) = prov.default_params.get("native_tool_calling").and_then(|v| v.as_bool()) {
+                        cfg.native_tool_calling = val;
+                    }
+                    if let Some(val) = prov.default_params.get("structured_output").and_then(|v| v.as_bool()) {
+                        cfg.structured_output = val;
+                    }
+                    if let Some(val) = prov.default_params.get("auto_serve").and_then(|v| v.as_bool()) {
+                        cfg.auto_serve = val;
+                    }
+                    if let Some(val) = prov.default_params.get("auto_discover").and_then(|v| v.as_bool()) {
+                        cfg.auto_discover = val;
+                    }
+                    if let Some(val) = prov.default_params.get("default_num_ctx").and_then(|v| v.as_u64()) {
+                        cfg.default_num_ctx = val as u32;
+                    }
+                    if let Some(val) = prov.default_params.get("thinking_mode").and_then(|v| v.as_str()) {
+                        cfg.thinking_mode = match val.to_lowercase().as_str() {
+                            "auto" => crate::ollama_native::ThinkingMode::Auto,
+                            "true" | "on" | "enabled" => crate::ollama_native::ThinkingMode::Enabled,
+                            "false" | "off" | "disabled" => crate::ollama_native::ThinkingMode::Disabled,
+                            "low" => crate::ollama_native::ThinkingMode::Low,
+                            "medium" => crate::ollama_native::ThinkingMode::Medium,
+                            "high" => crate::ollama_native::ThinkingMode::High,
+                            "max" => crate::ollama_native::ThinkingMode::Max,
+                            _ => cfg.thinking_mode,
+                        };
+                    }
+                    if let Some(val) = prov.default_params.get("keep_alive").and_then(|v| v.as_str()) {
+                        cfg.keep_alive = Some(val.to_string());
+                    }
+                }
                 if !base_url.is_empty() {
                     // Strip /v1 suffix — native client uses the raw Ollama base URL
                     cfg.base_url = base_url

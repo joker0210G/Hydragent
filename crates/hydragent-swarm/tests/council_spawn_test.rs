@@ -37,11 +37,18 @@ fn sample_spec(role: SubAgentRole, hint: Option<&str>) -> SubAgentSpec {
     }
 }
 
+fn load_test_council() -> ModelCouncil {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/model_providers.yaml");
+    let reg = hydragent_model::ProviderRegistry::load_from_yaml(path)
+        .expect("config/model_providers.yaml should parse");
+    ModelCouncil::from_registry(&reg)
+        .expect("routing_profiles must be present")
+        .expect("routing_profiles must parse into a council")
+}
+
 #[test]
 fn council_yaml_loads_and_contains_expected_profiles() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/model_council.yaml");
-    let council = ModelCouncil::load_from_yaml(path)
-        .expect("config/model_council.yaml should parse");
+    let council = load_test_council();
     assert!(council.len() >= 20, "expected >=20 profiles, got {}", council.len());
     assert!(council.get("deepseek/deepseek-coder").is_some(),
         "deepseek-coder should be in the council");
@@ -51,8 +58,7 @@ fn council_yaml_loads_and_contains_expected_profiles() {
 
 #[test]
 fn council_routes_code_role_to_code_generation_pick() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/model_council.yaml");
-    let council = ModelCouncil::load_from_yaml(path).expect("yaml should load");
+    let council = load_test_council();
     let decision = council.route("code_generation", CostTier::Any);
     assert!(!decision.profile.model_id.is_empty(),
         "council should pick *some* model for code_generation");
@@ -71,18 +77,16 @@ fn council_routes_code_role_to_code_generation_pick() {
 
 #[test]
 fn spawn_with_council_builds_spawner() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/model_council.yaml");
     let (spawner, _mock) = common::spawner_with_answer(r#"{"answer":"hi"}"#);
-    let council = ModelCouncil::load_from_yaml(path).expect("yaml should load");
+    let council = load_test_council();
     let spawner = spawner.with_council(Arc::new(council));
     assert!(spawner.council().is_some(), "council should be attached");
 }
 
 #[tokio::test]
 async fn spawn_with_council_uses_routed_model_when_no_hint() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/model_council.yaml");
     let (spawner_no_council, _mock) = common::spawner_with_answer(r#"{"answer":"done"}"#);
-    let council = ModelCouncil::load_from_yaml(path).expect("yaml should load");
+    let council = load_test_council();
     let decision = council.route("code_generation", CostTier::Any);
     let expected_model = decision.profile.model_id.clone();
     let spawner = spawner_no_council.with_council(Arc::new(council));
@@ -105,9 +109,8 @@ async fn spawn_with_council_uses_routed_model_when_no_hint() {
 
 #[tokio::test]
 async fn spawn_with_council_preserves_caller_hint() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/model_council.yaml");
     let (spawner, _mock) = common::spawner_with_answer(r#"{"answer":"done"}"#);
-    let council = ModelCouncil::load_from_yaml(path).expect("yaml should load");
+    let council = load_test_council();
     let spawner = spawner.with_council(Arc::new(council));
 
     // Caller explicitly picks a model. The council's pick should
@@ -127,9 +130,8 @@ async fn spawn_with_council_preserves_caller_hint() {
 
 #[tokio::test]
 async fn spawn_with_council_preserves_caller_hint_even_if_unknown_to_council() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/model_council.yaml");
     let (spawner, _mock) = common::spawner_with_answer(r#"{"answer":"done"}"#);
-    let council = ModelCouncil::load_from_yaml(path).expect("yaml should load");
+    let council = load_test_council();
     let spawner = spawner.with_council(Arc::new(council));
 
     // Caller override for a model *not* in the council.
@@ -163,8 +165,7 @@ async fn spawn_without_council_uses_router_primary() {
 
 #[test]
 fn route_explicit_returns_decision_for_known_model() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/model_council.yaml");
-    let council = ModelCouncil::load_from_yaml(path).expect("yaml should load");
+    let council = load_test_council();
     let d = council
         .route_explicit("deepseek/deepseek-coder")
         .expect("deepseek-coder is in the council");
@@ -173,7 +174,6 @@ fn route_explicit_returns_decision_for_known_model() {
 
 #[test]
 fn route_explicit_returns_none_for_unknown_model() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/model_council.yaml");
-    let council = ModelCouncil::load_from_yaml(path).expect("yaml should load");
+    let council = load_test_council();
     assert!(council.route_explicit("not-a-real-model-xyz").is_none());
 }

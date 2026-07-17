@@ -2,7 +2,7 @@
 //!
 //! A [`ModelProfile`] describes a single LLM the [`ModelCouncil`](crate::council::ModelCouncil)
 //! can route sub-agent dispatches to. Profiles are loaded in bulk from
-//! `config/model_council.yaml` and indexed by model id.
+//! `config/model_providers.yaml` and indexed by model id.
 //!
 //! The schema is intentionally aligned with the 8 [`hydragent_types::TaskType`]
 //! variants (which the planner emits) plus a `general` catch-all tag. A profile
@@ -70,7 +70,7 @@ impl CostTier {
 
 /// A single model's metadata and routing metadata.
 ///
-/// Sourced from `config/model_council.yaml`; deserialized via
+/// Sourced from `config/model_providers.yaml`; deserialized via
 /// `#[serde(deny_unknown_fields)]` to fail loudly on typos.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelProfile {
