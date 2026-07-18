@@ -35,7 +35,7 @@ pub enum ProviderKind {
 impl ProviderKind {
     /// Normalize a free-form provider id string to a known kind.
     pub fn from_id(id: &str) -> Self {
-        match ProviderRegistry::normalize_provider_id(id) {
+        match ProviderRegistry::normalize_provider_id(id).as_str() {
             "openrouter" => ProviderKind::OpenRouter,
             "openai" => ProviderKind::CustomOpenAi,
             "ollama" => ProviderKind::Ollama,
@@ -626,7 +626,7 @@ impl ProviderRegistry {
             return Some(p);
         }
         let normalized = Self::normalize_provider_id(id);
-        self.providers.get(normalized)
+        self.providers.get(&normalized)
     }
 
     /// Look up a model by its full id `provider_id/model_id`.
@@ -671,18 +671,18 @@ impl ProviderRegistry {
         };
 
         let (provider_id, model_part) = if let Some((p_id, m_part)) = effective_ref.split_once('/') {
-            let normalized = Self::normalize_provider_id(p_id).to_string();
+            let normalized = Self::normalize_provider_id(p_id);
             if self.providers.contains_key(&normalized) {
                 (normalized, m_part.to_string())
             } else {
                 let default_ref = self.role_defaults.get(role)?;
                 let (default_provider, _) = default_ref.split_once('/')?;
-                (Self::normalize_provider_id(default_provider).to_string(), effective_ref.to_string())
+                (Self::normalize_provider_id(default_provider), effective_ref.to_string())
             }
         } else {
             let default_ref = self.role_defaults.get(role)?;
             let (default_provider, _) = default_ref.split_once('/')?;
-            (Self::normalize_provider_id(default_provider).to_string(), effective_ref.to_string())
+            (Self::normalize_provider_id(default_provider), effective_ref.to_string())
         };
 
         let provider = self.providers.get(&provider_id)?;
@@ -799,7 +799,7 @@ impl ProviderRegistry {
         timeout_secs: u64,
     ) -> Arc<dyn ModelProvider> {
         let normalized = Self::normalize_provider_id(provider_id);
-        match normalized {
+        match normalized.as_str() {
             "ollama" => {
                 let mut cfg = OllamaNativeConfig::from_env();
                 if let Some(prov) = self.provider(provider_id) {
@@ -903,17 +903,17 @@ impl ProviderRegistry {
 
     /// Normalize a free-form provider id to the canonical form used by the
     /// registry.
-    pub fn normalize_provider_id(id: &str) -> &'static str {
+    pub fn normalize_provider_id(id: &str) -> String {
         let normalized = id.trim().to_lowercase();
         match normalized.as_str() {
-            "openrouter" | "or" => "openrouter",
-            "openai" | "oai" => "openai",
-            "ollama" | "local-ollama" => "ollama",
-            "lmstudio" | "lm-studio" | "lm_studio" => "lmstudio",
-            "custom" | "custom-openai" | "custom-openai-compatible" => "custom",
-            "together" | "together-ai" | "together.ai" => "custom",
-            "groq" => "custom",
-            _ => "custom",
+            "openrouter" | "or" => "openrouter".to_string(),
+            "openai" | "oai" => "openai".to_string(),
+            "ollama" | "local-ollama" => "ollama".to_string(),
+            "lmstudio" | "lm-studio" | "lm_studio" => "lmstudio".to_string(),
+            "custom" | "custom-openai" | "custom-openai-compatible" => "custom".to_string(),
+            "together" | "together-ai" | "together.ai" => "custom".to_string(),
+            "groq" => "custom".to_string(),
+            _ => normalized,
         }
     }
 }
@@ -1201,7 +1201,7 @@ providers:
         assert_eq!(ProviderRegistry::normalize_provider_id("OR"), "openrouter");
         assert_eq!(ProviderRegistry::normalize_provider_id("oai"), "openai");
         assert_eq!(ProviderRegistry::normalize_provider_id("lm-studio"), "lmstudio");
-        assert_eq!(ProviderRegistry::normalize_provider_id("unknown"), "custom");
+        assert_eq!(ProviderRegistry::normalize_provider_id("unknown"), "unknown");
     }
 
     #[test]

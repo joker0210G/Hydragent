@@ -81,32 +81,42 @@ impl AgentReachTool {
     /// Locate the runner and Python interpreter. We accept a workspace_root
     /// (parent of the crate dir) for the default search; explicit env vars
     /// always win.
+    ///
+    /// Resolution priority for both python and runner:
+    ///   1. Explicit env var (AGENT_REACH_PYTHON / AGENT_REACH_RUNNER)
+    ///   2. HYDRAGENT_HOME (or ~/.hydragent on Windows / ~/. hydragent on Unix)
+    ///   3. workspace_root (passed in from main, which reads WORKSPACE_DIR)
     pub fn new(workspace_root: PathBuf) -> Self {
+        // ── Resolve the hydragent home dir ───────────────────────────────────
+        // This is the same logic used for python_path AND runner_path so that
+        // both consistently land in `~/.hydragent/` when the binary is launched
+        // from an arbitrary CWD (e.g. C:\WINDOWS\system32).
+        let home_path = env::var("HYDRAGENT_HOME")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                #[cfg(target_os = "windows")]
+                {
+                    env::var("USERPROFILE")
+                        .ok()
+                        .map(|h| PathBuf::from(h).join(".hydragent"))
+                        .unwrap_or_else(|| PathBuf::from(".hydragent"))
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    env::var("HOME")
+                        .ok()
+                        .map(|h| PathBuf::from(h).join(".hydragent"))
+                        .unwrap_or_else(|| PathBuf::from(".hydragent"))
+                }
+            });
+
+        // ── Python interpreter ───────────────────────────────────────────────
         let python_path = env::var("AGENT_REACH_PYTHON")
             .ok()
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                let home_path = env::var("HYDRAGENT_HOME")
-                    .ok()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| {
-                        #[cfg(target_os = "windows")]
-                        {
-                            env::var("USERPROFILE")
-                                .ok()
-                                .map(|h| PathBuf::from(h).join(".hydragent"))
-                                .unwrap_or_else(|| PathBuf::from(".hydragent"))
-                        }
-                        #[cfg(not(target_os = "windows"))]
-                        {
-                            env::var("HOME")
-                                .ok()
-                                .map(|h| PathBuf::from(h).join(".hydragent"))
-                                .unwrap_or_else(|| PathBuf::from(".hydragent"))
-                        }
-                    });
-
                 let home_venv = if cfg!(target_os = "windows") {
                     home_path.join(".venv").join("Scripts").join("python.exe")
                 } else {
@@ -116,8 +126,7 @@ impl AgentReachTool {
                 if home_venv.exists() {
                     home_venv
                 } else {
-                    // Prefer the venv inside `adapters/`. If the workspace
-                    // layout ever changes, callers can still override via env.
+                    // Fallback: venv inside `adapters/` of the source workspace.
                     let windows = workspace_root.join(RELATIVE_PY);
                     if windows.exists() {
                         return windows;
@@ -126,11 +135,22 @@ impl AgentReachTool {
                 }
             });
 
+        // ── Runner script ────────────────────────────────────────────────────
+        // Check HYDRAGENT_HOME first (installed layout), then fall back to the
+        // source workspace. This prevents the tool from looking in CWD when
+        // the binary is launched from a system directory like C:\WINDOWS\system32.
         let runner_path = env::var("AGENT_REACH_RUNNER")
             .ok()
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| workspace_root.join(RELATIVE_RUNNER));
+            .unwrap_or_else(|| {
+                let home_runner = home_path.join("adapters").join("agent_reach_runner.py");
+                if home_runner.exists() {
+                    home_runner
+                } else {
+                    workspace_root.join(RELATIVE_RUNNER)
+                }
+            });
 
         let timeout_secs = env::var("AGENT_REACH_TIMEOUT")
             .ok()
@@ -236,22 +256,22 @@ impl Tool for AgentReachTool {
     }
 
     fn description(&self) -> &str {
-        "Bridge to the Agent-Reach ecosystem (Agent-Reach = installer+doctor for \
-         upstream tools like Jina Reader, yt-dlp, feedparser, B站 search, GitHub \
-         raw). Use this for structured reads from specific sources:\n\
+        "Fetch content from specific external sources (URLs, YouTube, Bilibili, \
+         RSS feeds, GitHub repos). ONLY call this when you have a concrete URL, \
+         video link, feed URL, or GitHub repo to retrieve content from. \
+         DO NOT call this for general conversation, greetings, or questions — \
+         use it only for structured content retrieval.\n\
          \n\
-         Channels:\n\
-         - jina_fetch: read any URL as clean Markdown (the universal channel)\n\
-         - youtube:   fetch YouTube video metadata (+ optional subtitles)\n\
-         - bilibili:  search Bilibili videos\n\
-         - rss:       read an RSS/Atom feed\n\
-         - github:    fetch a README or raw file from a public GitHub repo\n\
-         - doctor:    show which Agent-Reach channels are active\n\
+         Commands (required parameter):\n\
+         - jina_fetch: Fetch any web URL and return its content as clean Markdown.\n\
+         - youtube:   Fetch YouTube video metadata and optional subtitles (requires a YouTube URL).\n\
+         - bilibili:  Search Bilibili videos by keyword query.\n\
+         - rss:       Read entries from an RSS/Atom feed URL.\n\
+         - github:    Fetch a README or raw file from a public GitHub repo (e.g. 'owner/repo').\n\
+         - doctor:    Check which Agent-Reach channels are installed and healthy.\n\
          \n\
-         Prefer this over `web_search` when the LLM already has a specific URL, \
-         a YouTube/Bilibili link, an RSS feed, or a GitHub repo in mind. For \
-         open-ended discovery across the general web, use `web_search` first \
-         and then `agent_reach` with `command=jina_fetch` on the result URL."
+         For open-ended web discovery, use `web_search` first, then call this \
+         with command=jina_fetch on a result URL to read the full page."
     }
 
     fn params_schema(&self) -> &str {

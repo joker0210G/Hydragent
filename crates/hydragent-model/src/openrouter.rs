@@ -551,14 +551,18 @@ impl OpenRouterClient {
         let mut full_content = String::new();
         let mut full_reasoning = String::new();
         let mut in_reasoning = false;
+        let mut line_buffer = String::new();
         let mut stream = resp.bytes_stream();
-
         use tokio_stream::StreamExt;
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.context("SSE chunk error")?;
             let text = std::str::from_utf8(&bytes)?;
+            line_buffer.push_str(text);
 
-            for line in text.lines() {
+            while let Some(pos) = line_buffer.find('\n') {
+                let line = line_buffer[..pos].to_string();
+                line_buffer.drain(..pos + 1);
+
                 // Ignore SSE keep-alive comments like ": OPENROUTER PROCESSING"
                 if line.starts_with(':') {
                     continue;

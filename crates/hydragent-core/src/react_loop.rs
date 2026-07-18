@@ -129,6 +129,8 @@ pub async fn run_react_loop(
           \"answer\": \"your detailed markdown response to the user\"\n\
         }}\n\n\
         ReAct Loop Rules (follow strictly):\n\
+        - For simple greetings, conversational replies, or questions you can answer directly, output ONLY the 'answer' field — do NOT call any tool.\n\
+        - Never call the same tool with the same parameters more than once per response. If you already have the result, use it.\n\
         - Trust live tool results over your training knowledge. If search results contradict what you know, believe the search.\n\
         - Stay STRICTLY on the user's topic. Do NOT rewrite their query into unrelated domains just because the first search is empty.\n\
         - If a search returns 0 results, say you could not find current information. Do NOT invent alternative queries about related topics.\n\
@@ -142,7 +144,7 @@ pub async fn run_react_loop(
         - Page ID: {}\n\
         - Channel ID: {}\n\
         - User ID: {}\n\
-        (Note: Use these values if you need to specify target_channel_id or channel_id in tools. For example, if target_channel_id is required, construct it as channel_id:user_id or as appropriate for the active channel context.)",
+        ",
         registry.build_system_prompt_block(),
         page_id,
         channel_id,
@@ -240,6 +242,9 @@ pub async fn run_react_loop(
 
     let mut executed_tools = Vec::new();
     let mut step = 0;
+    // Track (tool_name, params_json) pairs already executed this turn to
+    // prevent the model from issuing identical calls redundantly.
+    let mut seen_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     while step < max_steps {
         step += 1;
@@ -318,6 +323,25 @@ pub async fn run_react_loop(
             send_status(&response_tx, format!("`[Calling tool]` **{}** with params `{}`\n", tool_name, params_str)).await;
 
             let call_id = uuid::Uuid::new_v4().to_string();
+            let dedup_key = format!("{}:{}", tool_name, params_str);
+
+            // Guard: skip identical calls already executed in this turn.
+            if !seen_calls.insert(dedup_key) {
+                warn!("Duplicate tool call detected for '{}', skipping.", tool_name);
+                messages.push(ModelChatMessage {
+                    role: "assistant".to_string(),
+                    content: model_res,
+                });
+                messages.push(ModelChatMessage {
+                    role: "user".to_string(),
+                    content: format!(
+                        "Observation: tool '{}' was already called with those exact parameters this turn and returned the same result. Do NOT call it again — use the previous observation to form your answer.",
+                        tool_name
+                    ),
+                });
+                continue;
+            }
+
             let tier = registry.get_tier(tool_name);
             
             let tool_call = ToolCall {

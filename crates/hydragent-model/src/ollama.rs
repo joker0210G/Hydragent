@@ -10,7 +10,7 @@ use crate::openrouter::LLMRequest;
 use crate::ollama_native::{
     OllamaNativeClient, OllamaNativeConfig, ThinkingMode,
     OllamaModelTag, OllamaModelInfo,
-    fetch_model_info, resolve_thinking_param,
+    fetch_model_info,
     OllamaServerStatus, check_ollama_server,
 };
 

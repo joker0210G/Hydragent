@@ -34,7 +34,11 @@ impl crate::tool_trait::Tool for SendMessageTool {
     }
 
     fn description(&self) -> &str {
-        "Proactively send a message to any registered channel or user. Use when you need to notify the user on a different channel or push an update after completing a background task."
+        "Push a proactive notification to an EXTERNAL channel or user (e.g. Telegram, webhook). \
+         Use ONLY when you need to notify someone on a DIFFERENT channel after completing a background task. \
+         DO NOT use this to reply to the user you are currently talking to — \
+         simply provide your answer in the 'answer' field of your JSON response instead. \
+         Requires a valid channel_id like 'telegram:123456789'."
     }
 
     fn params_schema(&self) -> &str {

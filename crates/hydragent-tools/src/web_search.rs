@@ -66,7 +66,7 @@ const DEFAULT_BASE_URL: &str = "http://127.0.0.1:7777";
 const DEFAULT_MAX_RESULTS: usize = 5;
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_CATEGORIES: &str = "general";
-const SNIPPET_MAX_CHARS: usize = 300;
+const SNIPPET_MAX_CHARS: usize = 200;
 const LOCAL_BASE_URLS: &[&str] = &["http://127.0.0.1:7777", "http://localhost:7777"];
 
 /// Public SearXNG instances used when the configured instance fails or is absent.
@@ -150,7 +150,7 @@ impl WebSearchTool {
         ];
 
         for candidate in python_candidates.into_iter().flatten() {
-            let mut child = match Command::new(&candidate)
+            let _child = match Command::new(&candidate)
                 .arg(&shim_path)
                 .arg("--host")
                 .arg("127.0.0.1")
@@ -164,7 +164,6 @@ impl WebSearchTool {
                 Err(_) => continue,
             };
 
-            let _ = child.wait().await;
             return true;
         }
 
@@ -473,7 +472,7 @@ impl WebSearchTool {
                 if title.is_empty() && url.is_empty() {
                     continue;
                 }
-                let snippet = truncate_chars(raw_snippet, SNIPPET_MAX_CHARS);
+                let snippet = truncate_chars(&strip_html_tags(raw_snippet), SNIPPET_MAX_CHARS);
                 results.push(serde_json::json!({
                     "title": title,
                     "url": url,
@@ -489,7 +488,7 @@ impl WebSearchTool {
             .and_then(|a| a.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .filter_map(|v| v.as_str().map(|s| strip_html_tags(s)))
                     .filter(|s| !s.is_empty())
                     .collect()
             })
@@ -503,7 +502,7 @@ impl WebSearchTool {
                 arr.iter()
                     .filter_map(|ib| ib.get("content").and_then(|c| c.as_str()))
                     .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
+                    .map(|s| truncate_chars(&strip_html_tags(s), 400))
                     .collect()
             })
             .unwrap_or_default();

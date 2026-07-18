@@ -411,7 +411,49 @@ impl<'a> Library<'a> {
         stats.pages_clustered = pages_clustered;
         let books_organized = self.organize_books_onto_shelves().await?;
         stats.books_organized = books_organized;
+
+        // Prune orphaned book/shelf nodes and dangling edges to maintain referential integrity
+        self.prune_orphaned_nodes_and_edges().await?;
+
         Ok(stats)
+    }
+
+    /// Prune orphaned book/shelf nodes and dangling edges that no longer have associations.
+    pub async fn prune_orphaned_nodes_and_edges(&self) -> Result<()> {
+        let pool = self.store.pool();
+        // 1. Delete book nodes that have no pages linked to them
+        sqlx::query(
+            "DELETE FROM nodes WHERE type = 'book' AND node_id NOT IN (SELECT DISTINCT target_node_id FROM edges WHERE relation_type = 'belongs_to')"
+        )
+        .execute(pool)
+        .await
+        .context("prune_orphaned_books")?;
+
+        // 2. Delete sits_on edges for books that were just deleted or don't exist
+        sqlx::query(
+            "DELETE FROM edges WHERE relation_type = 'sits_on' AND source_node_id NOT IN (SELECT node_id FROM nodes WHERE type = 'book')"
+        )
+        .execute(pool)
+        .await
+        .context("prune_dangling_sits_on_edges")?;
+
+        // 3. Delete shelf nodes that have no books sitting on them
+        sqlx::query(
+            "DELETE FROM nodes WHERE type = 'shelf' AND node_id NOT IN (SELECT DISTINCT target_node_id FROM edges WHERE relation_type = 'sits_on')"
+        )
+        .execute(pool)
+        .await
+        .context("prune_orphaned_shelves")?;
+
+        // 4. Delete tag edges for nodes that no longer exist
+        sqlx::query(
+            "DELETE FROM edges WHERE relation_type = 'tag' AND source_node_id NOT IN (SELECT node_id FROM nodes)"
+        )
+        .execute(pool)
+        .await
+        .context("prune_dangling_tag_edges")?;
+
+        Ok(())
     }
 
     /// Wipe all `belongs_to` and `sits_on` edges so the clusterer

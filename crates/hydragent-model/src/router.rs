@@ -57,12 +57,12 @@ impl ModelRouter {
         };
 
         if let Ok(guard) = self.provider_cache.read() {
-            if let Some(client) = guard.get(norm_id) {
+            if let Some(client) = guard.get(&norm_id) {
                 return client.clone();
             }
         }
 
-        let provider_def = match registry.provider(norm_id) {
+        let provider_def = match registry.provider(&norm_id) {
             Some(def) => def,
             None => return primary_provider,
         };
@@ -112,7 +112,7 @@ impl ModelRouter {
         };
 
         let client = registry.build_provider(
-            norm_id,
+            &norm_id,
             &base_url,
             &api_key,
             "",

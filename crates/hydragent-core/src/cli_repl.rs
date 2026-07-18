@@ -1696,7 +1696,180 @@ async fn handle_slash_command(
                 println!("     To configure API keys or URLs, use `/model set <provider_id> key <your-api-key>`.");
                 println!("  (Use `/provider <id>` to switch, `/provider save <id>` to persist)");
                 println!("  (Use `/provider set <id> <field> [value]` to configure key/url)");
+                println!("  (Use `/provider add [id]` to register a custom OpenAI-compatible endpoint)");
                 println!("  (Use `/provider edit` to open the registry YAML file)");
+            } else if args[0] == "add" {
+                let id = if args.len() >= 2 {
+                    args[1].to_lowercase()
+                } else {
+                    let _ = crossterm::terminal::disable_raw_mode();
+                    print!("  Enter provider ID (lowercase, e.g. nvidia): ");
+                    let _ = std::io::stdout().flush();
+                    let mut input = String::new();
+                    let _ = std::io::stdin().read_line(&mut input);
+                    let _ = crossterm::terminal::enable_raw_mode();
+                    let cleaned = input.trim().to_lowercase();
+                    if cleaned.is_empty() {
+                        eprintln!("  ✗ Setup aborted.");
+                        return SlashExit::Continue;
+                    }
+                    cleaned
+                };
+
+                let _ = crossterm::terminal::disable_raw_mode();
+                
+                print!("  Enter display name (e.g. NVIDIA NIM): ");
+                let _ = std::io::stdout().flush();
+                let mut display_name_input = String::new();
+                let _ = std::io::stdin().read_line(&mut display_name_input);
+                let display_name = display_name_input.trim().to_string();
+                
+                print!("  Enter Base URL: ");
+                let _ = std::io::stdout().flush();
+                let mut url_input = String::new();
+                let _ = std::io::stdin().read_line(&mut url_input);
+                let base_url = url_input.trim().to_string();
+                
+                let _ = crossterm::terminal::enable_raw_mode();
+                
+                if display_name.is_empty() || base_url.is_empty() {
+                    eprintln!("  ✗ Setup aborted: display name and Base URL are required.");
+                    return SlashExit::Continue;
+                }
+                
+                let _ = crossterm::terminal::disable_raw_mode();
+                let secret = rpassword::prompt_password(format!("  Enter API key for '{}' (leave empty if none): ", id))
+                    .ok()
+                    .map(|s| s.trim().to_string());
+                
+                print!("  Enter default model ID (e.g. meta/llama3-70b-instruct): ");
+                let _ = std::io::stdout().flush();
+                let mut model_id_input = String::new();
+                let _ = std::io::stdin().read_line(&mut model_id_input);
+                let model_id = model_id_input.trim().to_string();
+                
+                print!("  Enter default model display name (e.g. Llama 3 70B): ");
+                let _ = std::io::stdout().flush();
+                let mut model_name_input = String::new();
+                let _ = std::io::stdin().read_line(&mut model_name_input);
+                let model_name = model_name_input.trim().to_string();
+                
+                let _ = crossterm::terminal::enable_raw_mode();
+                
+                if model_id.is_empty() || model_name.is_empty() {
+                    eprintln!("  ✗ Setup aborted: default model ID and name are required.");
+                    return SlashExit::Continue;
+                }
+
+                // Append the provider definition to model_providers.yaml
+                let path = state.app_config.effective_model_providers_path();
+                let yaml_path = std::path::PathBuf::from(&path);
+                
+                let yaml_str = match std::fs::read_to_string(&yaml_path) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        eprintln!("  ✗ model_providers.yaml not found at {}", path);
+                        String::new()
+                    }
+                };
+                
+                if !yaml_str.is_empty() {
+                    if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_str) {
+                        let mut exists = false;
+                        if let Some(providers) = val.get("providers").and_then(|p| p.as_sequence()) {
+                            for p in providers {
+                                if p.get("id").and_then(|i| i.as_str()) == Some(&id) {
+                                    exists = true;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if exists {
+                            eprintln!("  ✗ Provider '{}' already exists in the configuration file.", id);
+                            return SlashExit::Continue;
+                        }
+                        
+                        // Create the new provider definition
+                        let mut new_provider = serde_yaml::Mapping::new();
+                        new_provider.insert(serde_yaml::Value::String("id".to_string()), serde_yaml::Value::String(id.clone()));
+                        new_provider.insert(serde_yaml::Value::String("display_name".to_string()), serde_yaml::Value::String(display_name.clone()));
+                        new_provider.insert(serde_yaml::Value::String("kind".to_string()), serde_yaml::Value::String("custom_openai".to_string()));
+                        new_provider.insert(serde_yaml::Value::String("default_base_url".to_string()), serde_yaml::Value::String(base_url.clone()));
+                        
+                        let auth_mode_str = if secret.as_ref().map_or(true, |s| s.is_empty()) {
+                            "none"
+                        } else {
+                            "api_key"
+                        };
+                        new_provider.insert(serde_yaml::Value::String("auth_mode".to_string()), serde_yaml::Value::String(auth_mode_str.to_string()));
+                        new_provider.insert(serde_yaml::Value::String("supports_custom_models".to_string()), serde_yaml::Value::Bool(true));
+                        new_provider.insert(serde_yaml::Value::String("supports_tools".to_string()), serde_yaml::Value::Bool(true));
+                        new_provider.insert(serde_yaml::Value::String("supports_reasoning".to_string()), serde_yaml::Value::Bool(true));
+                        
+                        // Create default model entry
+                        let mut new_model = serde_yaml::Mapping::new();
+                        let short_model_id = model_id.split('/').last().unwrap_or(&model_id).to_string();
+                        new_model.insert(serde_yaml::Value::String("id".to_string()), serde_yaml::Value::String(short_model_id.clone()));
+                        new_model.insert(serde_yaml::Value::String("name".to_string()), serde_yaml::Value::String(model_name.clone()));
+                        new_model.insert(serde_yaml::Value::String("api_model_id".to_string()), serde_yaml::Value::String(model_id.clone()));
+                        new_model.insert(serde_yaml::Value::String("tool_calling".to_string()), serde_yaml::Value::Bool(true));
+                        new_model.insert(serde_yaml::Value::String("streaming".to_string()), serde_yaml::Value::Bool(true));
+                        
+                        let mut models_seq = serde_yaml::Sequence::new();
+                        models_seq.push(serde_yaml::Value::Mapping(new_model));
+                        new_provider.insert(serde_yaml::Value::String("models".to_string()), serde_yaml::Value::Sequence(models_seq));
+                        
+                        if let Some(providers) = val.get_mut("providers").and_then(|p| p.as_sequence_mut()) {
+                            providers.push(serde_yaml::Value::Mapping(new_provider));
+                        }
+                        
+                        if let Ok(new_yaml) = serde_yaml::to_string(&val) {
+                            if std::fs::write(&yaml_path, new_yaml).is_ok() {
+                                println!("  ✓ Registered provider '{}' and model '{}/{}' inside {}", id, id, short_model_id, path);
+                                
+                                // Save key to Vault if provided
+                                if let Some(key_val) = secret {
+                                    if !key_val.is_empty() {
+                                        let vault_path = crate::paths::data_dir().join("vault/.hydravault");
+                                        let vault = hydragent_vault::Vault::new(vault_path);
+                                        let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+                                        if !vault.exists() {
+                                            let _ = vault.init(&passphrase);
+                                        }
+                                        if let Ok(mut secrets) = vault.load(&passphrase) {
+                                            let env_key = format!("BRAIN_{}_KEY", id.to_uppercase().replace('-', "_"));
+                                            secrets.insert(env_key.clone(), hydragent_vault::TaintedString::credential(key_val.clone()));
+                                            if vault.save(&passphrase, &secrets).is_ok() {
+                                                std::env::set_var(&env_key, &key_val);
+                                                println!("  ✓ Securely saved API key to Vault.");
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Reload
+                                if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                                    state.model_router.update_registry(Arc::new(new_reg));
+                                    
+                                    // Make active!
+                                    let client = state.model_router.get_or_build_provider(&id);
+                                    state.model_router.set_provider(client);
+                                    state.app_config.active_provider = id.clone();
+                                    state.app_config.brain_provider = id.clone();
+                                    
+                                    let full_ref = format!("{}/{}", id, short_model_id);
+                                    state.model_router.set_primary_model(full_ref.clone());
+                                    state.app_config.active_model = short_model_id.clone();
+                                    state.app_config.brain_model = short_model_id.clone();
+                                    state.brand.model = full_ref;
+                                    
+                                    println!("  ✓ Switched active provider to '{}' and primary model to '{}'!", id, short_model_id);
+                                }
+                            }
+                        }
+                    }
+                }
             } else if args[0] == "edit" {
                 let path = state.app_config.effective_model_providers_path();
                 println!("  Opening {} in default system editor...", path);
@@ -2125,6 +2298,33 @@ async fn handle_slash_command(
                     let user_bmd = BoundedMd::new(crate::paths::config_dir().join("USER.md"), USER_MD_CHAR_LIMIT);
                     let soul_bmd = BoundedMd::new(crate::paths::config_dir().join("SOUL.md"), SOUL_MD_CHAR_LIMIT);
 
+                    let pool = state.store.pool();
+                    let page_count = sqlx::query("SELECT COUNT(*) FROM nodes WHERE type = 'page'")
+                        .fetch_one(pool)
+                        .await
+                        .map(|r| sqlx::Row::get::<i64, _>(&r, 0))
+                        .unwrap_or(0);
+                    let book_count = sqlx::query("SELECT COUNT(*) FROM nodes WHERE type = 'book'")
+                        .fetch_one(pool)
+                        .await
+                        .map(|r| sqlx::Row::get::<i64, _>(&r, 0))
+                        .unwrap_or(0);
+                    let shelf_count = sqlx::query("SELECT COUNT(*) FROM nodes WHERE type = 'shelf'")
+                        .fetch_one(pool)
+                        .await
+                        .map(|r| sqlx::Row::get::<i64, _>(&r, 0))
+                        .unwrap_or(0);
+                    let edge_count = sqlx::query("SELECT COUNT(*) FROM edges")
+                        .fetch_one(pool)
+                        .await
+                        .map(|r| sqlx::Row::get::<i64, _>(&r, 0))
+                        .unwrap_or(0);
+                    let pending_count = sqlx::query("SELECT COUNT(*) FROM messages WHERE requires_consolidation = 1")
+                        .fetch_one(pool)
+                        .await
+                        .map(|r| sqlx::Row::get::<i64, _>(&r, 0))
+                        .unwrap_or(0);
+
                     println!("  🌙 Dream cycle status:");
                     println!(
                         "    enabled   : {}",
@@ -2136,6 +2336,13 @@ async fn handle_slash_command(
                         state.app_config.dreaming_interval_sec as f64 / 60.0
                     );
                     println!("    .env      : {}", env_path.display());
+                    println!();
+                    println!("  Library Graph & Ingestion Status:");
+                    println!("    shelves   : {}", shelf_count);
+                    println!("    books     : {}", book_count);
+                    println!("    pages     : {}", page_count);
+                    println!("    edges     : {}", edge_count);
+                    println!("    draft papers (pending consolidation): {}", pending_count);
                     println!();
                     println!("  Bounded Personality Memory Status:");
                     if let (Ok(u_len), Ok(u_headroom), Ok(s_len), Ok(s_headroom)) = (user_bmd.len(), user_bmd.headroom_pct(), soul_bmd.len(), soul_bmd.headroom_pct()) {
@@ -2151,6 +2358,13 @@ async fn handle_slash_command(
                 }
                 "run" | "now" | "force" => {
                     println!("  🌙 Initiating memory consolidation (Dreaming)...");
+                    println!("    ┌─ What happens during the Dream phase? ──────────────────────────┐");
+                    println!("    │ • Memory Consolidation: Extracts facts, style habits, and rules │");
+                    println!("    │   from recent chat logs to update USER.md and SOUL.md.          │");
+                    println!("    │ • Graph Structure: Clusters Pages into Books and Shelves.       │");
+                    println!("    │ • Optimization: Prunes duplicates & regenerates the D3 graph.   │");
+                    println!("    └─────────────────────────────────────────────────────────────────┘");
+                    println!();
                     let stats_result = crate::dream::run_dream_cycle(
                         state.store.clone(),
                         state.model_router.clone(),
@@ -3959,6 +4173,8 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
 
     let mut history_idx: Option<usize> = None;
     let mut saved_line = String::new();
+    // Cursor position in chars (not bytes) within `line`.
+    let mut cur_pos: usize = 0;
 
     const SLASH_COMMANDS: &[(&str, &str)] = &[
         ("help", "Show help menu"),
@@ -4127,51 +4343,60 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                     "provider" => {
                         let is_save = rest_part.starts_with("save");
                         let is_set = rest_part.starts_with("set");
-                        let provider_prefix = if is_save {
-                            rest_part["save".len()..].trim_start()
-                        } else if is_set {
-                            rest_part["set".len()..].trim_start()
-                        } else {
-                            rest_part
-                        };
+                        let is_add = rest_part.starts_with("add");
                         
-                        let mut providers: Vec<String> = if let Some(ref r) = state.model_router.registry() {
-                            r.providers().iter().map(|p| p.id.clone()).collect()
-                        } else {
+                        if is_add {
                             vec![
-                                "openrouter".to_string(),
-                                "openai".to_string(),
-                                "ollama".to_string(),
-                                "lmstudio".to_string(),
-                                "custom".to_string(),
+                                ("provider add <id> [base_url]".to_string(), "Start interactive setup for a custom OpenAI provider (e.g. nvidia)".to_string())
                             ]
-                        };
-                        providers.sort();
-                        providers.dedup();
-                        
-                        let provider_options: Vec<_> = providers.into_iter()
-                            .filter(|p| p.starts_with(provider_prefix))
-                            .map(|p| {
-                                if is_save {
-                                    (format!("provider save {}", p), format!("Save and set active provider to {}", p))
-                                } else if is_set {
-                                    (format!("provider set {} key", p), format!("Set API key for provider {}", p))
-                                } else {
-                                    (format!("provider {}", p), format!("Switch active provider to {}", p))
-                                }
-                            })
-                            .collect();
-                        
-                        if rest_part.is_empty() && !is_save && !is_set {
-                            let mut results = vec![
-                                ("provider save".to_string(), "Save and set active provider permanently in .env".to_string()),
-                                ("provider set".to_string(), "Configure provider settings".to_string()),
-                                ("provider edit".to_string(), "Open model_providers.yaml in system editor".to_string())
-                            ];
-                            results.extend(provider_options);
-                            results
                         } else {
-                            provider_options
+                            let provider_prefix = if is_save {
+                                rest_part["save".len()..].trim_start()
+                            } else if is_set {
+                                rest_part["set".len()..].trim_start()
+                            } else {
+                                rest_part
+                            };
+                            
+                            let mut providers: Vec<String> = if let Some(ref r) = state.model_router.registry() {
+                                r.providers().iter().map(|p| p.id.clone()).collect()
+                            } else {
+                                vec![
+                                    "openrouter".to_string(),
+                                    "openai".to_string(),
+                                    "ollama".to_string(),
+                                    "lmstudio".to_string(),
+                                    "custom".to_string(),
+                                ]
+                            };
+                            providers.sort();
+                            providers.dedup();
+                            
+                            let provider_options: Vec<_> = providers.into_iter()
+                                .filter(|p| p.starts_with(provider_prefix))
+                                .map(|p| {
+                                    if is_save {
+                                        (format!("provider save {}", p), format!("Save and set active provider to {}", p))
+                                    } else if is_set {
+                                        (format!("provider set {} key", p), format!("Set API key for provider {}", p))
+                                    } else {
+                                        (format!("provider {}", p), format!("Switch active provider to {}", p))
+                                    }
+                                })
+                                .collect();
+                            
+                            if rest_part.is_empty() && !is_save && !is_set {
+                                let mut results = vec![
+                                    ("provider add".to_string(), "Register a custom OpenAI-compatible endpoint".to_string()),
+                                    ("provider save".to_string(), "Save and set active provider permanently in .env".to_string()),
+                                    ("provider set".to_string(), "Configure provider settings".to_string()),
+                                    ("provider edit".to_string(), "Open model_providers.yaml in system editor".to_string())
+                                ];
+                                results.extend(provider_options);
+                                results
+                            } else {
+                                provider_options
+                            }
                         }
                     }
                     _ => Vec::new()
@@ -4234,7 +4459,7 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
 
             // Show indicator if there are items scrolled off the top
             if start_idx > 0 {
-                let _ = write!(stdout, "\n  \x1b[2m▲ ({} more above)\x1b[0m", start_idx);
+                let _ = write!(stdout, "\r\n  \x1b[2m▲ ({} more above)\x1b[0m", start_idx);
                 lines_to_clear += 1;
             }
 
@@ -4242,9 +4467,9 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                 let (cmd, desc) = &matching_cmds[idx];
                 let is_selected = idx == selected_idx;
                 let line_str = if is_selected {
-                    format!("\n  \x1b[30;46m/{:<32}\x1b[0m \x1b[36m— {}\x1b[0m", cmd, desc)
+                    format!("\r\n  \x1b[30;46m/{:<32}\x1b[0m \x1b[36m— {}\x1b[0m", cmd, desc)
                 } else {
-                    format!("\n  \x1b[36m/{:<32}\x1b[0m \x1b[2m— {}\x1b[0m", cmd, desc)
+                    format!("\r\n  \x1b[36m/{:<32}\x1b[0m \x1b[2m— {}\x1b[0m", cmd, desc)
                 };
                 let _ = write!(stdout, "{}", line_str);
                 lines_to_clear += 1;
@@ -4252,7 +4477,7 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
 
             // Show indicator if there are more items below
             if end_idx < total {
-                let _ = write!(stdout, "\n  \x1b[2m▼ ({} more below)\x1b[0m", total - end_idx);
+                let _ = write!(stdout, "\r\n  \x1b[2m▼ ({} more below)\x1b[0m", total - end_idx);
                 lines_to_clear += 1;
             }
 
@@ -4261,6 +4486,9 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                 let _ = write!(stdout, "\x1b[{}A", lines_to_clear);
             }
         }
+
+        // 4. Position terminal cursor exactly at cur_pos
+        let _ = write!(stdout, "\r\x1b[{}C", prompt_len + cur_pos);
 
         let _ = stdout.flush();
 
@@ -4287,13 +4515,35 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                 return Ok(None);
             }
 
-            // Backspace -> Delete character
+            // Backspace -> Delete the character immediately before the cursor
             if code == KeyCode::Backspace {
-                if !line.is_empty() {
-                    line.pop();
-                    selected_idx = 0;
-                    history_idx = None; // Exit history mode on edit
+                if cur_pos > 0 {
+                    // Convert char index to byte index and remove that char.
+                    let byte_pos: usize = line.char_indices()
+                        .nth(cur_pos - 1)
+                        .map(|(b, _)| b)
+                        .unwrap_or(0);
+                    let ch_len = line[byte_pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                    line.drain(byte_pos..byte_pos + ch_len);
+                    cur_pos -= 1;
                 }
+                selected_idx = 0;
+                history_idx = None;
+                continue;
+            }
+
+            // Delete key -> Delete the character at the cursor (forward delete)
+            if code == KeyCode::Delete {
+                if cur_pos < line.chars().count() {
+                    let byte_pos: usize = line.char_indices()
+                        .nth(cur_pos)
+                        .map(|(b, _)| b)
+                        .unwrap_or(line.len());
+                    let ch_len = line[byte_pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                    line.drain(byte_pos..byte_pos + ch_len);
+                }
+                selected_idx = 0;
+                history_idx = None;
                 continue;
             }
 
@@ -4301,9 +4551,13 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
             if code == KeyCode::Tab {
                 if is_slash && !matching_cmds.is_empty() {
                     if selected_idx < matching_cmds.len() {
-                        line = format!("/{} ", &matching_cmds[selected_idx].0);
-                        selected_idx = 0;
-                        history_idx = None; // Exit history mode on edit
+                        let cmd_name = &matching_cmds[selected_idx].0;
+                        if !cmd_name.contains('<') && !cmd_name.contains('[') {
+                            line = format!("/{} ", cmd_name);
+                            cur_pos = line.chars().count();
+                            selected_idx = 0;
+                            history_idx = None;
+                        }
                     }
                 }
                 continue;
@@ -4326,6 +4580,7 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                     }
                     if let Some(idx) = history_idx {
                         line = state.input_history[idx].clone();
+                        cur_pos = line.chars().count();
                     }
                 }
                 continue;
@@ -4347,7 +4602,51 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                         history_idx = None;
                         line = saved_line.clone();
                     }
+                    cur_pos = line.chars().count();
                 }
+                continue;
+            }
+
+            // Left Arrow -> move cursor left
+            if code == KeyCode::Left {
+                if modifiers.contains(KeyModifiers::CONTROL) {
+                    // Ctrl+Left: jump over previous word
+                    let chars: Vec<char> = line.chars().collect();
+                    let mut p = cur_pos;
+                    while p > 0 && chars[p - 1] == ' ' { p -= 1; }
+                    while p > 0 && chars[p - 1] != ' ' { p -= 1; }
+                    cur_pos = p;
+                } else if cur_pos > 0 {
+                    cur_pos -= 1;
+                }
+                continue;
+            }
+
+            // Right Arrow -> move cursor right
+            if code == KeyCode::Right {
+                let len = line.chars().count();
+                if modifiers.contains(KeyModifiers::CONTROL) {
+                    // Ctrl+Right: jump over next word
+                    let chars: Vec<char> = line.chars().collect();
+                    let mut p = cur_pos;
+                    while p < len && chars[p] != ' ' { p += 1; }
+                    while p < len && chars[p] == ' ' { p += 1; }
+                    cur_pos = p;
+                } else if cur_pos < len {
+                    cur_pos += 1;
+                }
+                continue;
+            }
+
+            // Home -> jump to start of line
+            if code == KeyCode::Home {
+                cur_pos = 0;
+                continue;
+            }
+
+            // End -> jump to end of line
+            if code == KeyCode::End {
+                cur_pos = line.chars().count();
                 continue;
             }
 
@@ -4355,12 +4654,15 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
             if code == KeyCode::Enter {
                 if is_slash && !matching_cmds.is_empty() {
                     let cmd_name = &matching_cmds[selected_idx].0;
-                    let expected_prefix = format!("/{}", cmd_name);
-                    if line != expected_prefix && !line.starts_with(&format!("/{} ", cmd_name)) {
-                        // Autocomplete instead of submitting
-                        line = expected_prefix;
-                        selected_idx = 0;
-                        continue;
+                    if !cmd_name.contains('<') && !cmd_name.contains('[') {
+                        let expected_prefix = format!("/{}", cmd_name);
+                        if line != expected_prefix && !line.starts_with(&format!("/{} ", cmd_name)) {
+                            // Autocomplete instead of submitting - add space and update cursor position to the end
+                            line = format!("/{} ", cmd_name);
+                            cur_pos = line.chars().count();
+                            selected_idx = 0;
+                            continue;
+                        }
                     }
                 }
 
@@ -4430,11 +4732,17 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                 continue;
             }
 
-            // Normal printable character
+            // Normal printable character — insert at cursor position
             if let KeyCode::Char(c) = code {
-                line.push(c);
+                // Convert char-index cur_pos to byte offset
+                let byte_pos: usize = line.char_indices()
+                    .nth(cur_pos)
+                    .map(|(b, _)| b)
+                    .unwrap_or(line.len());
+                line.insert(byte_pos, c);
+                cur_pos += 1;
                 selected_idx = 0;
-                history_idx = None; // Exit history mode on edit
+                history_idx = None;
             }
         }
     }

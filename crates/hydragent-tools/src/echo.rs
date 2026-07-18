@@ -12,7 +12,7 @@ impl Tool for EchoTool {
     }
 
     fn description(&self) -> &str {
-        "Echoes the input message back. Used for testing."
+        "TESTING ONLY: Returns the exact input back unchanged. Use ONLY to verify tool-calling pipelines work. DO NOT use this to reply to the user — put your reply in the 'answer' field instead."
     }
 
     fn params_schema(&self) -> &str {

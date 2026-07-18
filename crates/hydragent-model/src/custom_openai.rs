@@ -287,20 +287,28 @@ impl CustomOpenAIClient {
         }
 
         let mut full_content = String::new();
+        let mut line_buffer = String::new();
         let mut stream = resp.bytes_stream();
-
         use tokio_stream::StreamExt;
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.context("SSE chunk error")?;
             let text = std::str::from_utf8(&bytes)?;
+            line_buffer.push_str(text);
 
-            for line in text.lines() {
-                if let Some(data) = line.strip_prefix("data: ") {
-                    let trimmed = data.trim();
-                    if trimmed == "[DONE]" {
+            while let Some(pos) = line_buffer.find('\n') {
+                let line = line_buffer[..pos].to_string();
+                line_buffer.drain(..pos + 1);
+                
+                let trimmed = line.trim();
+                if trimmed.starts_with(':') {
+                    continue;
+                }
+                if let Some(data) = trimmed.strip_prefix("data: ") {
+                    let trimmed_data = data.trim();
+                    if trimmed_data == "[DONE]" {
                         break;
                     }
-                    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                    if let Ok(v) = serde_json::from_str::<Value>(trimmed_data) {
                         if let Some(err) = v.get("error") {
                             let msg = err
                                 .get("message")

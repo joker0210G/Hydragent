@@ -241,6 +241,9 @@ pub async fn run_dream_cycle(
     // not just to new appends). Compaction is non-fatal — a failure logs at
     // WARN and the cycle continues.
     {
+        if !is_background {
+            println!("  [1/5] Checking and enforcing memory budgets on USER.md and SOUL.md...");
+        }
         let mut user_md_compacted = false;
         let mut soul_md_compacted = false;
         if let Err(e) = startup_compaction_check(
@@ -256,6 +259,9 @@ pub async fn run_dream_cycle(
     }
 
     // 1. Fetch distinct pages that have requires_consolidation messages
+    if !is_background {
+        println!("  [2/5] Scanning for unconsolidated chat sessions...");
+    }
     let pages = sqlx::query(
         "SELECT DISTINCT page_id FROM messages WHERE requires_consolidation = 1 LIMIT 5"
     )
@@ -263,6 +269,9 @@ pub async fn run_dream_cycle(
     .await?;
 
     if pages.is_empty() {
+        if !is_background {
+            println!("        No unconsolidated chat sessions found. Memory is up-to-date!");
+        }
         debug!("Dream cycle: no unconsolidated messages, going back to sleep.");
         return Ok(stats);
     }
@@ -273,6 +282,10 @@ pub async fn run_dream_cycle(
         .map(|row| row.get::<String, _>("page_id"))
         .collect();
 
+    if !is_background {
+        println!("        Found {} page(s) with unconsolidated messages. Extracting semantic details...", page_ids.len());
+    }
+
     info!(
         page_count = page_ids.len(),
         "Dream cycle: processing pages sequentially via queue"
@@ -281,7 +294,11 @@ pub async fn run_dream_cycle(
     // 2. Process pages sequentially in a queue (FIFO)
     let mut success_count = 0usize;
     let mut fail_count = 0usize;
-    for page_id in page_ids {
+    let total_pages = page_ids.len();
+    for (idx, page_id) in page_ids.into_iter().enumerate() {
+        if !is_background {
+            println!("        → [{}/{}] Processing page: {}...", idx + 1, total_pages, page_id);
+        }
         match process_page(
             page_id,
             store.clone(),
@@ -327,6 +344,9 @@ pub async fn run_dream_cycle(
     // and the pages would race for the same book ids otherwise. One
     // serial pass at the end keeps the per-page work isolated and
     // the clusterer deterministic.
+    if !is_background {
+        println!("  [3/5] Running Graphify: clustering pages into Books and Shelves...");
+    }
     let library = Library::new(&store);
     match library.run_clustering_pass().await {
         Ok(lib_stats) => {
@@ -356,6 +376,9 @@ pub async fn run_dream_cycle(
     }
 
     // Trigger the Python graph generator to rebuild the D3 graph at ~/.hydragent/data/graph.html
+    if !is_background {
+        println!("  [4/5] Regenerating D3 memory graph visualization...");
+    }
     let python_bin = if cfg!(target_os = "windows") {
         let local_venv = std::path::Path::new(".venv").join("Scripts").join("python.exe");
         let installed_venv = paths::hydragent_home().join(".venv").join("Scripts").join("python.exe");
@@ -378,10 +401,19 @@ pub async fn run_dream_cycle(
         }
     };
 
+    // The `graphing` package lives under the install root's `src/`
+    // directory (e.g. %HYDRAGENT_HOME%/src/graphing). The binary can be
+    // launched from anywhere, so we must point Python at that directory
+    // explicitly — otherwise `python -m graphing.main` fails with
+    // ModuleNotFoundError and the graph silently never gets written.
+    let src_dir = paths::hydragent_home().join("src");
     let mut cmd = tokio::process::Command::new(python_bin);
     cmd.args(&["-m", "graphing.main"]);
+    cmd.current_dir(&src_dir);
+    cmd.env("PYTHONPATH", &src_dir);
+    // Keep stderr visible (routed through the tracing log) so a graph
+    // generation failure is diagnosable instead of silent.
     cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
     match cmd.spawn() {
         Ok(mut child) => {
             tokio::spawn(async move {
@@ -421,6 +453,9 @@ pub async fn run_dream_cycle(
             };
 
             if should_run {
+                if !is_background {
+                    println!("  [5/5] Running Curator: cleaning up and pruning old memory files...");
+                }
                 info!("Curator run starting under the hood of dreaming...");
                 let start_time = chrono::Utc::now();
                 let llm_client = ModelRouterLlmClient(model_router.clone());
