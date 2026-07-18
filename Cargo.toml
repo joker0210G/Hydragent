@@ -59,6 +59,7 @@ futures-util   = "0.3"   # buffer_unordered for bounded-concurrency feed polling
 rand           = "0.8"
 
 # Security pipeline (Merkle + Ed25519)
+# Security pipeline (Merkle + Ed25519)
 ed25519-dalek  = { version = "2", features = ["std", "zeroize", "rand_core"] }
 hex            = "0.4"
 zeroize        = { version = "1.7", features = ["derive"] }
@@ -73,3 +74,7 @@ dashmap        = "6"
 # Column-AES (AES-256-GCM) + HKDF
 aes-gcm        = "0.10"
 hkdf           = "0.12"
+
+# Unified Dependencies for Version De-duplication
+thiserror      = "2"
+windows-sys    = { version = "0.59", features = ["Win32_System_Memory"] }

@@ -12,7 +12,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
-thiserror = "1"
+thiserror = { workspace = true }
 clap = { workspace = true }
 
 petgraph = "0.6"

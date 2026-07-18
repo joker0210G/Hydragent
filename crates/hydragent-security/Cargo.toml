@@ -17,7 +17,7 @@ hex         = { workspace = true }
 zeroize     = { workspace = true }
 rand        = { workspace = true }
 anyhow      = { workspace = true }
-thiserror   = "1"
+thiserror   = { workspace = true }
 tracing     = { workspace = true }
 uuid        = { workspace = true }
 chrono      = { workspace = true }

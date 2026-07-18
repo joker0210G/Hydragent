@@ -195,8 +195,8 @@ pub fn print_banner(brand: &BrandInfo) {
 
 /// Run the REPL. Returns the process exit code.
 pub async fn run(mut state: ReplState) -> i32 {
-    // ── Ollama Active Model Resolution ──────────────────────────────
-    if state.model_router.provider_label() == "ollama" {
+    // ── Ollama Active Model Resolution & Auto-Discovery ──────────────────────
+    {
         let ollama_base = std::env::var("OLLAMA_API_BASE")
             .unwrap_or_else(|_| "http://localhost:11434".to_string());
         let ollama_base = ollama_base.trim_end_matches('/')
@@ -240,17 +240,19 @@ pub async fn run(mut state: ReplState) -> i32 {
                         state.model_router.update_registry(Arc::new(new_reg));
                     }
                     
-                    // Now check if our active model is pulled
-                    let active_model = state.app_config.effective_active_model();
-                    let has_active_model = tags.iter().any(|t| t.name == active_model || t.model == active_model);
-                    if !has_active_model {
-                        // Switch to the first discovered tag!
-                        let first_model_name = &tags[0].name;
-                        let full_ref = format!("ollama/{}", first_model_name);
-                        state.model_router.set_primary_model(full_ref.clone());
-                        state.app_config.active_model = first_model_name.clone();
-                        state.app_config.brain_model = first_model_name.clone();
-                        state.brand.model = full_ref;
+                    // Only auto-switch the active model if the active provider is actually ollama
+                    if state.model_router.provider_label() == "ollama" {
+                        let active_model = state.app_config.effective_active_model();
+                        let has_active_model = tags.iter().any(|t| t.name == active_model || t.model == active_model);
+                        if !has_active_model {
+                            // Switch to the first discovered tag!
+                            let first_model_name = &tags[0].name;
+                            let full_ref = format!("ollama/{}", first_model_name);
+                            state.model_router.set_primary_model(full_ref.clone());
+                            state.app_config.active_model = first_model_name.clone();
+                            state.app_config.brain_model = first_model_name.clone();
+                            state.brand.model = full_ref;
+                        }
                     }
                 }
             }

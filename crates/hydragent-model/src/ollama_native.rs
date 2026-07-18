@@ -1190,28 +1190,24 @@ impl OllamaNativeClient {
     }
 
     pub async fn warmup_model(&self, model: &str) -> Result<bool> {
-        let url = format!("{}/api/chat", self.config.base_url);
+        let url = format!("{}/api/generate", self.config.base_url);
         
         let body = serde_json::json!({
             "model": model,
-            "messages": [{"role": "user", "content": "warmup"}],
-            "stream": false,
-            "options": {
-                "num_predict": 1
-            }
+            "keep_alive": -1
         });
 
         let resp = self.client.post(&url)
             .json(&body)
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(60))
             .send()
             .await?;
 
         if resp.status().is_success() {
-            info!("Ollama model '{}' warmup completed", model);
+            info!("Ollama model '{}' loaded into VRAM", model);
             Ok(true)
         } else {
-            warn!("Ollama model '{}' warmup failed: HTTP {}", model, resp.status());
+            warn!("Ollama model '{}' load failed: HTTP {}", model, resp.status());
             Ok(false)
         }
     }
@@ -1230,6 +1226,22 @@ impl OllamaNativeClient {
         // Ensure server is running
         if self.config.auto_serve {
             let _ = self.ensure_server().await;
+        }
+
+        // Fast intercept for background warmup requests
+        let is_warmup = request.messages.last().map(|m| m.content.as_str()) == Some("warmup") && request.max_tokens == Some(1);
+        if is_warmup {
+            let start = std::time::Instant::now();
+            let success = self.warmup_model(model).await.unwrap_or(false);
+            if success {
+                let load_dur = start.elapsed().as_millis();
+                println!(
+                    "\n  ✓ Brain cache warm [Model loaded in VRAM] · load: {}ms",
+                    load_dur
+                );
+                let _ = tx.send("".to_string()).await;
+                return Ok("".to_string());
+            }
         }
 
         // Get model info for context window and capabilities
