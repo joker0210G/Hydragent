@@ -1078,15 +1078,23 @@ Write-Info "Mode:         $(if ($Source) { 'source' } else { 'prebuilt' })"
 Ensure-Directory $BinDir
 Ensure-Directory $DataDir
 
-$alreadyInstalled = Test-Path (Join-Path $BinDir $BinName)
+# Detect an existing installation by *running* the binary, not just by
+# checking whether the file exists. A stale exe left behind by a failed
+# uninstall will be present on disk but won't count as "installed" unless
+# it actually executes and returns a version string. This prevents the
+# installer from silently skipping the download when uninstall failed
+# to delete the old binary (e.g. due to a Windows file-lock race).
+$existingBin = Join-Path $BinDir $BinName
+$existingVer = $null
+if (Test-Path $existingBin) {
+    try {
+        $existingVer = (& $existingBin --version 2>$null | Out-String).Trim()
+    } catch { $existingVer = $null }
+}
+$alreadyInstalled = (-not [string]::IsNullOrWhiteSpace($existingVer))
 
 if ($alreadyInstalled -and -not $Force) {
-    $existing = & (Join-Path $BinDir $BinName) --version 2>$null
-    if ($existing) {
-        Write-OK "Hydragent is already installed: $existing"
-    } else {
-        Write-OK "Hydragent is already installed at $(Join-Path $BinDir $BinName)"
-    }
+    Write-OK "Hydragent is already installed: $existingVer"
     Show-UpdateStatus
     Write-Info "Pass -Force to reinstall, run 'hydragent update' to update, or 'hydragent uninstall' to remove."
     # Re-run the PATH/launcher steps in case the user nuked them.

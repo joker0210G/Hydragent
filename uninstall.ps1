@@ -2,6 +2,8 @@
 # Uninstaller for Hydragent (Windows)
 # ---------------------------------------------------------------------------
 
+$script:exitCode = 0
+
 # ── Self-Relaunch with Bypass ExecutionPolicy if restricted ──────────────────
 if ($args -notcontains "--bypassed") {
     $policy = Get-ExecutionPolicy -ErrorAction SilentlyContinue
@@ -17,14 +19,32 @@ if ($args -notcontains "--bypassed") {
 Write-Host "Stopping any running Hydragent processes..." -ForegroundColor Cyan
 Stop-Process -Name hydragent -Force -ErrorAction SilentlyContinue
 
+# Give Windows a moment to release file locks after the process exits.
+# On Windows, killing a process does not immediately free handles on the exe;
+# without this pause Remove-Item can race the kernel cleanup and fail.
+Start-Sleep -Milliseconds 500
+
 $InstallDir = "$env:USERPROFILE\.hydragent"
 if (Test-Path $InstallDir) {
     Write-Host "Removing installation directory: $InstallDir" -ForegroundColor Yellow
-    try {
-        Remove-Item -Recurse -Force $InstallDir -ErrorAction Stop
-        Write-Host "Successfully removed $InstallDir" -ForegroundColor Green
-    } catch {
-        Write-Host "Warning: Could not remove installation directory. It might be locked: $_" -ForegroundColor Red
+    $removed = $false
+    for ($i = 1; $i -le 5; $i++) {
+        try {
+            Remove-Item -Recurse -Force $InstallDir -ErrorAction Stop
+            Write-Host "Successfully removed $InstallDir" -ForegroundColor Green
+            $removed = $true
+            break
+        } catch {
+            if ($i -lt 5) {
+                Write-Host "Waiting for file locks to release (attempt $i/5)..." -ForegroundColor Yellow
+                Start-Sleep -Milliseconds (500 * $i)
+            } else {
+                Write-Host "Warning: Could not remove installation directory after $i attempts." -ForegroundColor Red
+                Write-Host "  Error: $_" -ForegroundColor Red
+                Write-Host "  Please close any running 'hydragent' processes and run the uninstaller again." -ForegroundColor Red
+                $script:exitCode = 1
+            }
+        }
     }
 } else {
     Write-Host "Installation directory not found: $InstallDir" -ForegroundColor Gray
@@ -91,4 +111,10 @@ if ($UserPath) {
     Write-Host "Successfully removed $TargetBin and cleaned up User PATH." -ForegroundColor Green
 }
 
-Write-Host "Hydragent has been successfully uninstalled from your PC!" -ForegroundColor Green
+if ($script:exitCode -eq 0) {
+    Write-Host "Hydragent has been successfully uninstalled from your PC!" -ForegroundColor Green
+} else {
+    Write-Host "Hydragent uninstall completed with errors. Some files may remain." -ForegroundColor Red
+}
+
+exit $script:exitCode
