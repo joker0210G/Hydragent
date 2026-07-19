@@ -223,15 +223,19 @@ pub async fn run_dream_cycle(
 
     // ── Circuit breaker check ──────────────────────────────────────────────
     // If too many consecutive cycles failed, skip this one to avoid burning
-    // API quota on a dead or rate-limited brain.
-    let failures = CONSECUTIVE_FAILURES.load(Ordering::SeqCst);
-    if failures >= MAX_CONSECUTIVE_FAILURES {
-        warn!(
-            failures,
-            max = MAX_CONSECUTIVE_FAILURES,
-            "Dream cycle: circuit breaker open — skipping cycle"
-        );
-        return Ok(stats);
+    // API quota on a dead or rate-limited brain. Bypassed and reset on manual runs.
+    if is_background {
+        let failures = CONSECUTIVE_FAILURES.load(Ordering::SeqCst);
+        if failures >= MAX_CONSECUTIVE_FAILURES {
+            warn!(
+                failures,
+                max = MAX_CONSECUTIVE_FAILURES,
+                "Dream cycle: circuit breaker open — skipping cycle"
+            );
+            return Ok(stats);
+        }
+    } else {
+        CONSECUTIVE_FAILURES.store(0, Ordering::SeqCst);
     }
 
     // ── Step 0: Startup compaction check ─────────────────────────────────
@@ -271,9 +275,10 @@ pub async fn run_dream_cycle(
     if pages.is_empty() {
         if !is_background {
             println!("        No unconsolidated chat sessions found. Memory is up-to-date!");
+        } else {
+            debug!("Dream cycle: no unconsolidated messages, going back to sleep.");
+            return Ok(stats);
         }
-        debug!("Dream cycle: no unconsolidated messages, going back to sleep.");
-        return Ok(stats);
     }
 
     use sqlx::Row;
@@ -282,7 +287,7 @@ pub async fn run_dream_cycle(
         .map(|row| row.get::<String, _>("page_id"))
         .collect();
 
-    if !is_background {
+    if !page_ids.is_empty() && !is_background {
         println!("        Found {} page(s) with unconsolidated messages. Extracting semantic details...", page_ids.len());
     }
 
@@ -306,17 +311,29 @@ pub async fn run_dream_cycle(
             pool.clone(),
             skill_library.clone(),
             &dreaming_mode,
+            is_background,
         )
         .await
         {
             Ok(page_stats) => {
+                let page_had_failures = page_stats.pages_failed > 0;
                 stats.merge(&page_stats);
-                success_count += 1;
+                if page_had_failures {
+                    fail_count += 1;
+                    if !is_background {
+                        println!("          ✗ Extraction failed for this page (check model configuration/API keys).");
+                    }
+                } else {
+                    success_count += 1;
+                }
             }
             Err(e) => {
                 error!(error = %e, "Dream cycle: page task failed");
                 stats.pages_failed += 1;
                 fail_count += 1;
+                if !is_background {
+                    println!("          ✗ Page task failed with error: {}", e);
+                }
             }
         }
     }
@@ -411,9 +428,18 @@ pub async fn run_dream_cycle(
     cmd.args(&["-m", "graphing.main"]);
     cmd.current_dir(&src_dir);
     cmd.env("PYTHONPATH", &src_dir);
-    // Keep stderr visible (routed through the tracing log) so a graph
-    // generation failure is diagnosable instead of silent.
+
+    // Redirect stderr to graphing.log to prevent log leaking to terminal
+    let log_file_path = paths::hydragent_home().join("data").join("logs").join("graphing.log");
+    if let Some(parent) = log_file_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let stderr_file = std::fs::File::create(&log_file_path)
+        .map(std::process::Stdio::from)
+        .unwrap_or_else(|_| std::process::Stdio::null());
+
     cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(stderr_file);
     match cmd.spawn() {
         Ok(mut child) => {
             tokio::spawn(async move {
@@ -499,6 +525,7 @@ async fn process_page(
     pool: SqlitePool,
     skill_library: Option<Arc<SkillLibrary>>,
     dreaming_mode: &str,
+    is_background: bool,
 ) -> anyhow::Result<DreamStats> {
     use sqlx::Row;
     let mut stats = DreamStats::default();
@@ -519,6 +546,10 @@ async fn process_page(
     }
 
     info!(page_id = %page_id, batch_size = rows.len(), "Dream cycle: processing message batch for page");
+
+    if !is_background {
+        println!("          ↳ Reading and formatting {} messages from this page...", rows.len());
+    }
 
     // Format as conversation log
     let mut log_lines = Vec::new();
@@ -552,7 +583,7 @@ async fn process_page(
     let extraction = if dreaming_mode == "turbo" {
         extract_turbo(&log_text, &page_id)
     } else {
-        match extract_with_retry(&model_router, &log_text, &page_id, &mut stats, dreaming_mode).await {
+        match extract_with_retry(&model_router, &log_text, &page_id, &mut stats, dreaming_mode, is_background).await {
             Some(ex) => ex,
             None => {
                 warn!(page_id = %page_id, "Dream cycle: extraction failed after all retries — deferring consolidation for a future retry");
@@ -580,6 +611,12 @@ async fn process_page(
                 .collect()
         })
         .unwrap_or_default();
+
+    if !is_background {
+        if let Some(ref facts) = extraction.extracted_facts {
+            println!("          ↳ Analyzing and filtering {} extracted facts...", facts.len());
+        }
+    }
 
     // Store extracted facts. Each fact is dedup-checked against the
     // current store (C3 fix: dream worker previously re-stored facts
@@ -631,6 +668,9 @@ async fn process_page(
     // ── Step 5a: Append style habits → USER.md (bounded) ─────────────────
     if let Some(habits) = extraction.style_habits {
         if !habits.is_empty() {
+            if !is_background {
+                println!("          ↳ Appending {} style habit(s) to USER.md...", habits.len());
+            }
             let user_bmd = BoundedMd::new(crate::paths::config_dir().join("USER.md"), USER_MD_CHAR_LIMIT);
             match user_bmd.append_curated(
                 &habits,
@@ -656,6 +696,9 @@ async fn process_page(
     // ── Step 5c: Append behavior rules → SOUL.md (bounded) ───────────────
     if let Some(rules) = extraction.behavior_rules {
         if !rules.is_empty() {
+            if !is_background {
+                println!("          ↳ Appending {} behavior rule(s) to SOUL.md...", rules.len());
+            }
             let soul_bmd = BoundedMd::new(crate::paths::config_dir().join("SOUL.md"), SOUL_MD_CHAR_LIMIT);
             match soul_bmd.append_curated(
                 &rules,
@@ -699,6 +742,9 @@ async fn process_page(
     if has_meaningful_data {
         if let Some(ref summary_text) = extraction.summary {
             if !summary_text.trim().is_empty() {
+                if !is_background {
+                    println!("          ↳ Upserting Page node into the Library Knowledge Graph...");
+                }
                 // Update page_meta summary for compaction context
                 if let Err(e) = store.update_page_summary(&page_id, summary_text).await {
                     error!(page_id = %page_id, error = %e, "Dream cycle: failed to update page_meta summary");
@@ -770,11 +816,15 @@ async fn process_page(
     // dream cycle. Skip in Turbo mode to avoid model calls.
     if dreaming_mode != "turbo" {
         if let Some(lib) = skill_library {
+            if !is_background {
+                println!("          ↳ Scanning page to extract repeatable developer skills...");
+            }
             let stats_ind = crate::skill_induction::induce_skill_from_page_with_library_and_router(
                 lib,
                 &pool,
                 &page_id,
                 Some(model_router),
+                is_background,
             )
             .await;
             if stats_ind.skills_inserted > 0 {
@@ -963,6 +1013,7 @@ async fn extract_with_retry(
     page_id: &str,
     stats: &mut DreamStats,
     dreaming_mode: &str,
+    is_background: bool,
 ) -> Option<ExtractionResponse> {
     let (system_prompt, user_prompt) = build_extraction_prompt(log_text);
 
@@ -973,6 +1024,10 @@ async fn extract_with_retry(
     ];
 
     for (attempt, user) in attempts.iter().enumerate() {
+        if !is_background {
+            println!("          ↳ [Attempt {}/3] Extracting facts & style rules via LLM model...", attempt + 1);
+        }
+
         if attempt > 0 {
             stats.extraction_retries += 1;
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -996,14 +1051,23 @@ async fn extract_with_retry(
             Ok((raw_json, _)) => {
                 let _ = drain.await;
                 if let Some(extraction) = parse_json_extraction(&raw_json) {
+                    if !is_background {
+                        println!("          ✓ Facts and rules successfully extracted!");
+                    }
                     return Some(extraction);
                 }
                 stats.extraction_failures += 1;
                 warn!(page_id = %page_id, attempt = attempt + 1, "Dream cycle: JSON parse failed");
+                if !is_background {
+                    eprintln!("          ✗ Attempt {} failed: JSON parse error", attempt + 1);
+                }
             }
             Err(e) => {
                 let _ = drain.await;
                 error!(page_id = %page_id, attempt = attempt + 1, error = %e, "Dream cycle: LLM call failed");
+                if !is_background {
+                    eprintln!("          ✗ Attempt {} failed: {}", attempt + 1, e);
+                }
                 if attempt < attempts.len() - 1 {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }

@@ -86,8 +86,9 @@
 
     /* ── Force simulation ─────────────────────────────────────────────────── */
     const simulation = d3.forceSimulation(graphData.nodes)
-        .force("link", d3.forceLink(graphData.links)
+        .force("link", d3.forceLink()
             .id(d => d.id)
+            .links(graphData.links)
             .distance(d => {
                 if (d.relation === "belongs_to") return 55;
                 if (d.relation === "sits_on")    return 130;
@@ -116,7 +117,9 @@
         .data(graphData.links)
         .join("line")
         .attr("class", d => `link ${d.relation}`)
-        .attr("stroke-width", d => d.relation === "belongs_to" ? 2 : 1.2);
+        .attr("stroke", d => d.relation === "belongs_to" ? "#3b82f6" : (d.relation === "sits_on" ? "#a855f7" : (d.relation === "tag" ? "#f59e0b" : "#3d3858")))
+        .attr("stroke-opacity", 0.85)
+        .attr("stroke-width", d => d.relation === "belongs_to" ? 3.5 : (d.relation === "sits_on" ? 2.5 : 2.0));
 
     /* ── Node layer ───────────────────────────────────────────────────────── */
     const nodeGroup = g.append("g").attr("class", "nodes");

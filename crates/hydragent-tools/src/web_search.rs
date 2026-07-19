@@ -587,11 +587,15 @@ impl Tool for WebSearchTool {
             }
         };
 
-        let query = val
-            .get("query")
-            .and_then(|q| q.as_str())
-            .unwrap_or("")
-            .trim();
+        let query_raw = if val.is_string() {
+            val.as_str().unwrap_or("")
+        } else {
+            val.get("query")
+                .or_else(|| val.get("q"))
+                .and_then(|q| q.as_str())
+                .unwrap_or("")
+        };
+        let query = query_raw.trim();
         if query.is_empty() {
             return ToolResult {
                 call_id: String::new(),

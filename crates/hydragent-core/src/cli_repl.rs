@@ -1047,6 +1047,7 @@ async fn handle_slash_command(
                 println!("  Current settings:");
                 println!("    stream_raw     = {}", if state.stream_raw { "on" } else { "off" });
                 println!("    show_reasoning = {}", if state.show_reasoning { "on" } else { "off" });
+                println!("    max_steps      = {}", state.max_react_steps);
             } else {
                 let mut parts = rest.splitn(2, char::is_whitespace);
                 let key = parts.next().unwrap_or("").to_lowercase();
@@ -1071,8 +1072,19 @@ async fn handle_slash_command(
                     } else {
                         eprintln!("  ✗ Invalid value for show_reasoning. Use on|off.");
                     }
+                } else if key == "max_steps" {
+                    if let Ok(steps) = val.parse::<u8>() {
+                        if steps > 0 && steps <= 30 {
+                            state.max_react_steps = steps;
+                            println!("  ✓ max_steps is now {}", steps);
+                        } else {
+                            eprintln!("  ✗ Invalid value. max_steps must be between 1 and 30.");
+                        }
+                    } else {
+                        eprintln!("  ✗ Invalid value for max_steps. Must be a number.");
+                    }
                 } else {
-                    eprintln!("  ✗ Unknown setting: {}. Available: stream_raw, show_reasoning.", key);
+                    eprintln!("  ✗ Unknown setting: {}. Available: stream_raw, show_reasoning, max_steps.", key);
                 }
             }
         }
@@ -1691,19 +1703,378 @@ async fn handle_slash_command(
                         println!("  - {:<14} {}", p.id, p.display_name);
                     }
                 }
-                println!("\n  💡 Tip: The `/provider` command is simplified. You can switch models directly");
-                println!("     using `/model <name>` (or Ctrl+P picker), and the active provider will automatically switch.");
-                println!("     To configure API keys or URLs, use `/model set <provider_id> key <your-api-key>`.");
-                println!("  (Use `/provider <id>` to switch, `/provider save <id>` to persist)");
-                println!("  (Use `/provider set <id> <field> [value]` to configure key/url)");
-                println!("  (Use `/provider add [id]` to register a custom OpenAI-compatible endpoint)");
-                println!("  (Use `/provider edit` to open the registry YAML file)");
+                println!("\n  🚀 How to use `/provider` (Quick Guide):");
+                println!("  ----------------------------------------");
+                println!("  • Switch Provider       : Type `/provider <name>` (e.g. `/provider openrouter` or `/provider ollama`)");
+                println!("  • Set API Key           : Type `/provider set <name> key` (e.g. `/provider set openrouter key`)");
+                println!("  • Add a New Provider    : Type `/provider add openrouter` (walks you through a friendly setup wizard!)");
+                println!("  • Manage API Keys       : Type `/provider key` (view, add, or remove keys for rotation)");
+                println!("  • Manage Favorites      : Type `/provider favorite` (favourite or list OpenRouter models)");
+                println!("  • Advanced Settings     : Type `/provider edit` (opens config file in your text editor)");
+            } else if args[0] == "favorite" || args[0] == "favourite" {
+                if args.len() < 2 {
+                    // List current favorite OpenRouter models
+                    let path = state.app_config.effective_model_providers_path();
+                    let yaml_path = std::path::PathBuf::from(&path);
+                    println!("------------------------------------------------------------------------");
+                    println!("  ⭐ OpenRouter Favorite Models");
+                    println!("------------------------------------------------------------------------");
+                    if let Ok(yaml_str) = std::fs::read_to_string(&yaml_path) {
+                        if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_str) {
+                            let mut found = false;
+                            if let Some(providers) = val.get("providers").and_then(|p| p.as_sequence()) {
+                                for p in providers {
+                                    if p.get("id").and_then(|i| i.as_str()) == Some("openrouter") {
+                                        if let Some(models) = p.get("models").and_then(|m| m.as_sequence()) {
+                                            if models.is_empty() {
+                                                println!("  No favorite models added yet.");
+                                            } else {
+                                                for m in models {
+                                                    let id = m.get("id").and_then(|i| i.as_str()).unwrap_or_default();
+                                                    let name = m.get("name").and_then(|n| n.as_str()).unwrap_or_default();
+                                                    let api_model_id = m.get("api_model_id").and_then(|a| a.as_str()).unwrap_or_default();
+                                                    println!("  - {} (id: {}, api_model_id: {})", name, id, api_model_id);
+                                                }
+                                                found = true;
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            if !found {
+                                println!("  No favorite models found.");
+                            }
+                        }
+                    }
+                    println!("\n  💡 How to manage favorites:");
+                    println!("    • To add a model: Type `/provider favorite add <model_name>` (e.g. `/provider favorite add deepseek/deepseek-r1`)");
+                    println!("    • To remove a model: Type `/provider favorite remove <model_name>` (e.g. `/provider favorite remove deepseek-r1`)");
+                    return SlashExit::Continue;
+                }
+
+                let action = args[1].to_lowercase();
+                if action == "add" {
+                    if args.len() < 3 {
+                        eprintln!("  ✗ Usage: /provider favorite add <openrouter_model_id> (e.g. anthropic/claude-3.5-sonnet)");
+                        return SlashExit::Continue;
+                    }
+                    let model_id = args[2].to_string();
+                    let short_id = model_id.split('/').last().unwrap_or(&model_id).to_string();
+
+                    // Read OpenRouter Key from Vault / Environment to verify
+                    let env_key = "BRAIN_OPENROUTER_KEY".to_string();
+                    let mut api_key = std::env::var(&env_key).unwrap_or_default();
+                    if api_key.is_empty() {
+                        // Try loading from Vault
+                        let vault_path = crate::paths::data_dir().join("vault/.hydravault");
+                        let vault = hydragent_vault::Vault::new(vault_path);
+                        let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+                        if vault.exists() {
+                            if let Ok(secrets) = vault.load(&passphrase) {
+                                if let Some(key_val) = secrets.get(&env_key) {
+                                    api_key = key_val.expose_secret().to_string();
+                                }
+                            }
+                        }
+                    }
+
+                    if api_key.is_empty() {
+                        eprintln!("  ✗ Error: OpenRouter API key is not configured. Run `/provider add openrouter` first.");
+                        return SlashExit::Continue;
+                    }
+
+                    println!("  ⚡ Verifying model '{}' with OpenRouter...", model_id);
+                    let api_keys = api_key.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    let client = hydragent_model::openrouter::OpenRouterClient::new(api_keys);
+                    let models = client.fetch_models().await;
+
+                    let matched_model = models.iter().find(|m| m.id.to_lowercase() == model_id.to_lowercase());
+                    if matched_model.is_none() {
+                        eprintln!("  ✗ Warning: Model '{}' was not found in the fetched list from OpenRouter.", model_id);
+                        println!("  Do you still want to add it anyway? [y/N]: ");
+                        let _ = std::io::stdout().flush();
+                        let _ = crossterm::terminal::disable_raw_mode();
+                        let mut confirm = String::new();
+                        let _ = std::io::stdin().read_line(&mut confirm);
+                        let _ = crossterm::terminal::enable_raw_mode();
+                        if confirm.trim().to_lowercase() != "y" {
+                            println!("  ✗ Canceled.");
+                            return SlashExit::Continue;
+                        }
+                    }
+
+                    // Append to model_providers.yaml
+                    let path = state.app_config.effective_model_providers_path();
+                    let yaml_path = std::path::PathBuf::from(&path);
+                    if let Ok(yaml_str) = std::fs::read_to_string(&yaml_path) {
+                        if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_str) {
+                            let mut success = false;
+                            if let Some(providers) = val.get_mut("providers").and_then(|p| p.as_sequence_mut()) {
+                                for p in providers {
+                                    if p.get("id").and_then(|i| i.as_str()) == Some("openrouter") {
+                                        if let Some(models_val) = p.get_mut("models").and_then(|m| m.as_sequence_mut()) {
+                                            let mut exists = false;
+                                            for mv in models_val.iter() {
+                                                if mv.get("id").and_then(|id_str| id_str.as_str()) == Some(&short_id) {
+                                                    exists = true;
+                                                    break;
+                                                }
+                                            }
+
+                                            if exists {
+                                                println!("  ⚠ Model '{}' is already in your favorites.", short_id);
+                                                return SlashExit::Continue;
+                                            }
+
+                                            let mut new_model = serde_yaml::Mapping::new();
+                                            new_model.insert(serde_yaml::Value::String("id".to_string()), serde_yaml::Value::String(short_id.clone()));
+                                            new_model.insert(serde_yaml::Value::String("name".to_string()), serde_yaml::Value::String(short_id.clone()));
+                                            new_model.insert(serde_yaml::Value::String("api_model_id".to_string()), serde_yaml::Value::String(model_id.clone()));
+                                            new_model.insert(serde_yaml::Value::String("tool_calling".to_string()), serde_yaml::Value::Bool(true));
+                                            new_model.insert(serde_yaml::Value::String("streaming".to_string()), serde_yaml::Value::Bool(true));
+                                            models_val.push(serde_yaml::Value::Mapping(new_model));
+                                            success = true;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if success {
+                                if let Ok(new_yaml) = serde_yaml::to_string(&val) {
+                                    if std::fs::write(&yaml_path, new_yaml).is_ok() {
+                                        println!("  ✓ Added '{}' to your OpenRouter favorites!", model_id);
+                                        if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                                            state.model_router.update_registry(Arc::new(new_reg));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if action == "remove" {
+                    if args.len() < 3 {
+                        eprintln!("  ✗ Usage: /provider favorite remove <short_model_id> (e.g. claude-3.5-sonnet)");
+                        return SlashExit::Continue;
+                    }
+                    let target_id = args[2].to_string();
+
+                    let path = state.app_config.effective_model_providers_path();
+                    let yaml_path = std::path::PathBuf::from(&path);
+                    if let Ok(yaml_str) = std::fs::read_to_string(&yaml_path) {
+                        if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_str) {
+                            let mut removed = false;
+                            if let Some(providers) = val.get_mut("providers").and_then(|p| p.as_sequence_mut()) {
+                                for p in providers {
+                                    if p.get("id").and_then(|i| i.as_str()) == Some("openrouter") {
+                                        if let Some(models_val) = p.get_mut("models").and_then(|m| m.as_sequence_mut()) {
+                                            let initial_len = models_val.len();
+                                            models_val.retain(|mv| {
+                                                mv.get("id").and_then(|id_str| id_str.as_str()) != Some(&target_id)
+                                                    && mv.get("api_model_id").and_then(|id_str| id_str.as_str()) != Some(&target_id)
+                                            });
+                                            if models_val.len() < initial_len {
+                                                removed = true;
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if removed {
+                                if let Ok(new_yaml) = serde_yaml::to_string(&val) {
+                                    if std::fs::write(&yaml_path, new_yaml).is_ok() {
+                                        println!("  ✓ Removed '{}' from your OpenRouter favorites!", target_id);
+                                        if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                                            state.model_router.update_registry(Arc::new(new_reg));
+                                        }
+                                    }
+                                }
+                            } else {
+                                eprintln!("  ✗ Model '{}' was not found in your OpenRouter favorites.", target_id);
+                            }
+                        }
+                    }
+                } else {
+                    eprintln!("  ✗ Unknown action '{}'. Available: list, add, remove", action);
+                }
+                return SlashExit::Continue;
+            } else if args[0] == "key" || args[0] == "keys" {
+                // CRUD OpenRouter API keys with key rotation
+                if args.len() < 2 {
+                    // List keys
+                    let env_key = "BRAIN_OPENROUTER_KEY".to_string();
+                    let mut api_key = std::env::var(&env_key).unwrap_or_default();
+                    if api_key.is_empty() {
+                        let vault_path = crate::paths::data_dir().join("vault/.hydravault");
+                        let vault = hydragent_vault::Vault::new(vault_path);
+                        let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+                        if vault.exists() {
+                            if let Ok(secrets) = vault.load(&passphrase) {
+                                if let Some(key_val) = secrets.get(&env_key) {
+                                    api_key = key_val.expose_secret().to_string();
+                                }
+                            }
+                        }
+                    }
+
+                    println!("------------------------------------------------------------------------");
+                    println!("  🔑 OpenRouter API Keys (Key Rotation List)");
+                    println!("------------------------------------------------------------------------");
+                    let keys: Vec<String> = api_key.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    if keys.is_empty() {
+                        println!("  No OpenRouter API keys configured.");
+                    } else {
+                        for (i, key) in keys.iter().enumerate() {
+                            println!("  [{}] {}", i + 1, mask(key));
+                        }
+                        println!("\n  ✓ Key rotation is active with {} keys.", keys.len());
+                    }
+                    println!("\n  💡 How to manage OpenRouter rotation keys:");
+                    println!("    • To add a new key: Type `/provider key add <api_key>`");
+                    println!("    • To remove a key: Type `/provider key remove <number>` (e.g. `/provider key remove 2`)");
+                    println!("    • To clear all keys: Type `/provider key clear`");
+                    return SlashExit::Continue;
+                }
+
+                let sub_action = args[1].to_lowercase();
+                let env_key = "BRAIN_OPENROUTER_KEY".to_string();
+                let vault_path = crate::paths::data_dir().join("vault/.hydravault");
+                let vault = hydragent_vault::Vault::new(vault_path.clone());
+                let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+
+                // Load existing keys
+                let mut current_keys_str = std::env::var(&env_key).unwrap_or_default();
+                if current_keys_str.is_empty() && vault.exists() {
+                    if let Ok(secrets) = vault.load(&passphrase) {
+                        if let Some(key_val) = secrets.get(&env_key) {
+                            current_keys_str = key_val.expose_secret().to_string();
+                        }
+                    }
+                }
+                let mut keys: Vec<String> = current_keys_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+
+                if sub_action == "list" || sub_action == "show" {
+                    println!("------------------------------------------------------------------------");
+                    println!("  🔑 OpenRouter API Keys (Key Rotation List)");
+                    println!("------------------------------------------------------------------------");
+                    if keys.is_empty() {
+                        println!("  No OpenRouter API keys configured.");
+                    } else {
+                        for (i, key) in keys.iter().enumerate() {
+                            println!("  [{}] {}", i + 1, mask(key));
+                        }
+                        println!("\n  ✓ Key rotation is active with {} keys.", keys.len());
+                    }
+                    println!("\n  💡 How to manage OpenRouter rotation keys:");
+                    println!("    • To add a new key: Type `/provider key add <api_key>`");
+                    println!("    • To remove a key: Type `/provider key remove <number>` (e.g. `/provider key remove 2`)");
+                    println!("    • To clear all keys: Type `/provider key clear`");
+                } else if sub_action == "add" {
+                    if args.len() < 3 {
+                        eprintln!("  ✗ Usage: /provider key add <openrouter_api_key>");
+                        return SlashExit::Continue;
+                    }
+                    let new_key = args[2].to_string();
+                    if keys.contains(&new_key) {
+                        eprintln!("  ✗ Error: This API key is already in the rotation list.");
+                        return SlashExit::Continue;
+                    }
+
+                    println!("  ⚡ Verifying the new key with OpenRouter...");
+                    let client = hydragent_model::openrouter::OpenRouterClient::new(vec![new_key.clone()]);
+                    let models = client.fetch_models().await;
+                    if models.is_empty() {
+                        eprintln!("  ✗ Error: Verification failed. The key appears to be invalid or rate-limited.");
+                        return SlashExit::Continue;
+                    }
+
+                    keys.push(new_key.clone());
+                    let new_keys_str = keys.join(",");
+
+                    // Save to Vault
+                    if !vault.exists() {
+                        let _ = vault.init(&passphrase);
+                    }
+                    if let Ok(mut secrets) = vault.load(&passphrase) {
+                        secrets.insert(env_key.clone(), hydragent_vault::TaintedString::credential(new_keys_str.clone()));
+                        if let Ok(_) = vault.save(&passphrase, &secrets) {
+                            std::env::set_var(&env_key, &new_keys_str);
+                            println!("  ✓ Successfully verified and added new key to rotation list.");
+                            state.model_router.update_registry(state.model_router.registry().unwrap());
+                        } else {
+                            eprintln!("  ✗ Failed to save to Vault.");
+                        }
+                    } else {
+                        eprintln!("  ✗ Failed to load Vault.");
+                    }
+                } else if sub_action == "remove" {
+                    if args.len() < 3 {
+                        eprintln!("  ✗ Usage: /provider key remove <index> (e.g. /provider key remove 1)");
+                        return SlashExit::Continue;
+                    }
+                    let idx_str = args[2];
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if idx > 0 && idx <= keys.len() {
+                            let removed = keys.remove(idx - 1);
+                            let new_keys_str = keys.join(",");
+
+                            // Save to Vault
+                            if let Ok(mut secrets) = vault.load(&passphrase) {
+                                secrets.insert(env_key.clone(), hydragent_vault::TaintedString::credential(new_keys_str.clone()));
+                                if let Ok(_) = vault.save(&passphrase, &secrets) {
+                                    std::env::set_var(&env_key, &new_keys_str);
+                                    println!("  ✓ Successfully removed key [{}] ({}) from rotation list.", idx, mask(&removed));
+                                    state.model_router.update_registry(state.model_router.registry().unwrap());
+                                } else {
+                                    eprintln!("  ✗ Failed to save to Vault.");
+                                }
+                            } else {
+                                eprintln!("  ✗ Failed to load Vault.");
+                            }
+                        } else {
+                            eprintln!("  ✗ Error: Invalid key index '{}'. Total keys: {}", idx_str, keys.len());
+                        }
+                    } else {
+                        eprintln!("  ✗ Error: Index must be a valid number.");
+                    }
+                } else if sub_action == "clear" || sub_action == "reset" {
+                    // Confirm clear
+                    println!("  Are you sure you want to clear all OpenRouter API keys? [y/N]: ");
+                    let _ = std::io::stdout().flush();
+                    let _ = crossterm::terminal::disable_raw_mode();
+                    let mut confirm = String::new();
+                    let _ = std::io::stdin().read_line(&mut confirm);
+                    let _ = crossterm::terminal::enable_raw_mode();
+                    if confirm.trim().to_lowercase() != "y" {
+                        println!("  ✗ Canceled.");
+                        return SlashExit::Continue;
+                    }
+
+                    if let Ok(mut secrets) = vault.load(&passphrase) {
+                        secrets.remove(&env_key);
+                        if let Ok(_) = vault.save(&passphrase, &secrets) {
+                            std::env::remove_var(&env_key);
+                            println!("  ✓ All OpenRouter API keys cleared.");
+                            state.model_router.update_registry(state.model_router.registry().unwrap());
+                        } else {
+                            eprintln!("  ✗ Failed to save to Vault.");
+                        }
+                    } else {
+                        eprintln!("  ✗ Failed to load Vault.");
+                    }
+                } else {
+                    eprintln!("  ✗ Unknown action '{}'. Available: list, add, remove, clear", sub_action);
+                }
+                return SlashExit::Continue;
             } else if args[0] == "add" {
                 let id = if args.len() >= 2 {
                     args[1].to_lowercase()
                 } else {
                     let _ = crossterm::terminal::disable_raw_mode();
-                    print!("  Enter provider ID (lowercase, e.g. nvidia): ");
+                    print!("  Enter provider ID (lowercase, e.g. nvidia, openrouter): ");
                     let _ = std::io::stdout().flush();
                     let mut input = String::new();
                     let _ = std::io::stdin().read_line(&mut input);
@@ -1715,6 +2086,425 @@ async fn handle_slash_command(
                     }
                     cleaned
                 };
+
+                if id == "openrouter" {
+                    let _ = crossterm::terminal::disable_raw_mode();
+                    println!("\n  🐉 OpenRouter Interactive Setup");
+                    println!("  --------------------------------");
+                    println!("  OpenRouter gives you access to 100+ AI models (DeepSeek, Llama, Gemini, GPT, etc.).");
+                    println!("  You can find or create your API keys at: https://openrouter.ai/keys\n");
+
+                    // Load existing keys from Vault/Env to offer a guided update option
+                    let env_key = "BRAIN_OPENROUTER_KEY".to_string();
+                    let mut current_keys_str = std::env::var(&env_key).unwrap_or_default();
+                    if current_keys_str.is_empty() {
+                        let vault_path = crate::paths::data_dir().join("vault/.hydravault");
+                        let vault = hydragent_vault::Vault::new(vault_path);
+                        let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+                        if vault.exists() {
+                            if let Ok(secrets) = vault.load(&passphrase) {
+                                if let Some(key_val) = secrets.get(&env_key) {
+                                    current_keys_str = key_val.expose_secret().to_string();
+                                }
+                            }
+                        }
+                    }
+                    let existing_keys: Vec<String> = current_keys_str
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+
+                    let mut api_keys = Vec::new();
+
+                    if !existing_keys.is_empty() {
+                        println!("  Current configured OpenRouter keys:");
+                        for (i, k) in existing_keys.iter().enumerate() {
+                            println!("    [{}] {}", i + 1, mask(k));
+                        }
+                        println!("\n  What would you like to do with your OpenRouter keys?");
+                        println!("  [1] Keep current keys & continue (Recommended)");
+                        println!("  [2] Add another key to the rotation list");
+                        println!("  [3] Replace all keys (clear and enter new ones)");
+                        
+                        let choice = loop {
+                            print!("\n  Choose option [1-3, default: 1]: ");
+                            let _ = std::io::stdout().flush();
+                            let mut input = String::new();
+                            let _ = std::io::stdin().read_line(&mut input);
+                            let trimmed = input.trim();
+                            if trimmed.is_empty() || trimmed == "1" || trimmed == "2" || trimmed == "3" {
+                                break trimmed.to_string();
+                            }
+                        };
+                        
+                        match choice.as_str() {
+                            "1" | "" => {
+                                api_keys = existing_keys.clone();
+                            }
+                            "2" => {
+                                api_keys = existing_keys.clone();
+                                loop {
+                                    let idx = api_keys.len() + 1;
+                                    let key_input = rpassword::prompt_password(format!("  Enter OpenRouter API Key #{idx} (press Enter to finish): "))
+                                        .ok()
+                                        .map(|s| s.trim().to_string())
+                                        .unwrap_or_default();
+                                    
+                                    if key_input.is_empty() {
+                                        break;
+                                    }
+                                    
+                                    if api_keys.contains(&key_input) {
+                                        println!("  ✗ Warning: This key is already in your rotation list!");
+                                        continue;
+                                    }
+                                    
+                                    println!("  ⚡ Verifying key...");
+                                    let test_client = hydragent_model::openrouter::OpenRouterClient::new(vec![key_input.clone()]);
+                                    if test_client.fetch_models().await.is_empty() {
+                                        println!("  ✗ Warning: Verification failed. The key appears to be invalid or rate-limited.");
+                                        print!("  Do you still want to add it anyway? [y/N]: ");
+                                        let _ = std::io::stdout().flush();
+                                        let mut confirm = String::new();
+                                        let _ = std::io::stdin().read_line(&mut confirm);
+                                        if confirm.trim().to_lowercase() != "y" {
+                                            println!("  ✗ Key discarded.");
+                                            continue;
+                                        }
+                                    }
+                                    
+                                    api_keys.push(key_input);
+                                    println!("  ✓ Key added!");
+                                }
+                            }
+                            "3" => {
+                                loop {
+                                    let idx = api_keys.len() + 1;
+                                    let key_input = rpassword::prompt_password(format!("  Enter OpenRouter API Key #{idx} (press Enter to finish): "))
+                                        .ok()
+                                        .map(|s| s.trim().to_string())
+                                        .unwrap_or_default();
+                                    
+                                    if key_input.is_empty() {
+                                        if api_keys.is_empty() {
+                                            println!("  ✗ Error: You must enter at least one API key.");
+                                            continue;
+                                        }
+                                        break;
+                                    }
+                                    
+                                    if api_keys.contains(&key_input) {
+                                        println!("  ✗ Warning: This key has already been added.");
+                                        continue;
+                                    }
+                                    
+                                    println!("  ⚡ Verifying key...");
+                                    let test_client = hydragent_model::openrouter::OpenRouterClient::new(vec![key_input.clone()]);
+                                    if test_client.fetch_models().await.is_empty() {
+                                        println!("  ✗ Warning: Verification failed. The key appears to be invalid or rate-limited.");
+                                        print!("  Do you still want to add it anyway? [y/N]: ");
+                                        let _ = std::io::stdout().flush();
+                                        let mut confirm = String::new();
+                                        let _ = std::io::stdin().read_line(&mut confirm);
+                                        if confirm.trim().to_lowercase() != "y" {
+                                            println!("  ✗ Key discarded.");
+                                            continue;
+                                        }
+                                    }
+                                    
+                                    api_keys.push(key_input);
+                                    println!("  ✓ Key added!");
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        // No keys exist, enter them one by one
+                        loop {
+                            let idx = api_keys.len() + 1;
+                            let key_input = rpassword::prompt_password(format!("  Enter OpenRouter API Key #{idx} (press Enter to finish): "))
+                                .ok()
+                                .map(|s| s.trim().to_string())
+                                .unwrap_or_default();
+                            
+                            if key_input.is_empty() {
+                                if api_keys.is_empty() {
+                                    println!("  ✗ Error: You must enter at least one API key.");
+                                    continue;
+                                }
+                                break;
+                            }
+                            
+                            if api_keys.contains(&key_input) {
+                                println!("  ✗ Warning: This key has already been added.");
+                                continue;
+                            }
+                            
+                            println!("  ⚡ Verifying key...");
+                            let test_client = hydragent_model::openrouter::OpenRouterClient::new(vec![key_input.clone()]);
+                            if test_client.fetch_models().await.is_empty() {
+                                println!("  ✗ Warning: Verification failed. The key appears to be invalid or rate-limited.");
+                                print!("  Do you still want to add it anyway? [y/N]: ");
+                                let _ = std::io::stdout().flush();
+                                let mut confirm = String::new();
+                                let _ = std::io::stdin().read_line(&mut confirm);
+                                if confirm.trim().to_lowercase() != "y" {
+                                    println!("  ✗ Key discarded.");
+                                    continue;
+                                }
+                            }
+                            
+                            api_keys.push(key_input);
+                            println!("  ✓ Key added!");
+                        }
+                    }
+
+                    if api_keys.is_empty() {
+                        println!("  ✗ Setup aborted: API key is required.");
+                        let _ = crossterm::terminal::enable_raw_mode();
+                        return SlashExit::Continue;
+                    }
+
+                    let secret = api_keys.join(",");
+
+                    println!("  ⚡ Testing connection and fetching available models from OpenRouter...");
+                    let _ = std::io::stdout().flush();
+
+                    // Create a temporary client to fetch models
+                    let client = hydragent_model::openrouter::OpenRouterClient::new(api_keys);
+                    let models = client.fetch_models().await;
+
+                    if models.is_empty() {
+                        println!("  ✗ Error: Failed to fetch models. Please verify that your API key is valid.");
+                        let _ = crossterm::terminal::enable_raw_mode();
+                        return SlashExit::Continue;
+                    }
+
+                    println!("\n  ✓ Connection successful! Fetched {} models.", models.len());
+                    
+                    // Show a list of top popular/recommended models to select from
+                    let popular_models = vec![
+                        ("google/gemini-2.5-flash", "Gemini 2.5 Flash (Fast & Cheap)"),
+                        ("openai/gpt-4o-mini", "GPT-4o Mini (OpenAI general-purpose)"),
+                        ("meta-llama/llama-3.3-70b-instruct", "Llama 3.3 70B (Meta high-quality)"),
+                        ("deepseek/deepseek-r1", "DeepSeek R1 (Premium Reasoning)"),
+                    ];
+
+                    println!("\n  Select a primary model:");
+                    for (i, (model_id, label)) in popular_models.iter().enumerate() {
+                        println!("  [{}] {} ({})", i + 1, label, model_id);
+                    }
+                    println!("  [5] Custom Search & Add (interactive search of all 100+ OpenRouter models)");
+
+                    let choice = loop {
+                        print!("\n  Choose model [1-5, default: 1]: ");
+                        let _ = std::io::stdout().flush();
+                        let mut choice_input = String::new();
+                        let _ = std::io::stdin().read_line(&mut choice_input);
+                        let cleaned = choice_input.trim();
+                        if cleaned.is_empty() || cleaned == "1" || cleaned == "2" || cleaned == "3" || cleaned == "4" || cleaned == "5" {
+                            break cleaned.to_string();
+                        }
+                    };
+
+                    let primary_model_id = match choice.as_str() {
+                        "1" | "" => "google/gemini-2.5-flash".to_string(),
+                        "2" => "openai/gpt-4o-mini".to_string(),
+                        "3" => "meta-llama/llama-3.3-70b-instruct".to_string(),
+                        "4" => "deepseek/deepseek-r1".to_string(),
+                        "5" => {
+                            let query = loop {
+                                print!("  Enter search query (e.g. gemini, llama, claude): ");
+                                let _ = std::io::stdout().flush();
+                                let mut search_input = String::new();
+                                let _ = std::io::stdin().read_line(&mut search_input);
+                                let cleaned = search_input.trim().to_lowercase();
+                                if !cleaned.is_empty() {
+                                    break cleaned;
+                                }
+                            };
+
+                            // Filter fetched models by query
+                            let mut matches = Vec::new();
+                            for m in models {
+                                if m.id.to_lowercase().contains(&query) || m.name.to_lowercase().contains(&query) {
+                                    matches.push(m.clone());
+                                }
+                            }
+
+                            if matches.is_empty() {
+                                println!("  No models matched '{}'.", query);
+                                print!("  Enter exact OpenRouter model ID manually: ");
+                                let _ = std::io::stdout().flush();
+                                let mut manual_input = String::new();
+                                let _ = std::io::stdin().read_line(&mut manual_input);
+                                let cleaned = manual_input.trim().to_string();
+                                if cleaned.is_empty() {
+                                    "google/gemini-2.5-flash".to_string()
+                                } else {
+                                    cleaned
+                                }
+                            } else {
+                                println!("\n  Search Results (showing top 15):");
+                                let limit = std::cmp::min(15, matches.len());
+                                for i in 0..limit {
+                                    let m = &matches[i];
+                                    println!(
+                                        "  [{}] {} (id: {}) - Price: Prompt ${:.4}/M, Completion ${:.4}/M",
+                                        i + 1,
+                                        m.name,
+                                        m.id,
+                                        m.pricing_prompt,
+                                        m.pricing_completion
+                                    );
+                                }
+                                println!("  [{}] Enter model ID manually", limit + 1);
+                                
+                                print!("\n  Choose model [1-{}, default: 1]: ", limit + 1);
+                                let _ = std::io::stdout().flush();
+                                let mut choose_input = String::new();
+                                let _ = std::io::stdin().read_line(&mut choose_input);
+                                let choice_idx = choose_input.trim();
+                                
+                                if choice_idx.is_empty() || choice_idx == "1" {
+                                    matches[0].id.clone()
+                                } else if let Ok(idx) = choice_idx.parse::<usize>() {
+                                    if idx > 0 && idx <= limit {
+                                        matches[idx - 1].id.clone()
+                                    } else {
+                                        print!("  Enter custom OpenRouter model ID: ");
+                                        let _ = std::io::stdout().flush();
+                                        let mut manual_input = String::new();
+                                        let _ = std::io::stdin().read_line(&mut manual_input);
+                                        let cleaned = manual_input.trim().to_string();
+                                        if cleaned.is_empty() {
+                                            "google/gemini-2.5-flash".to_string()
+                                        } else {
+                                            cleaned
+                                        }
+                                    }
+                                } else {
+                                    print!("  Enter custom OpenRouter model ID: ");
+                                    let _ = std::io::stdout().flush();
+                                    let mut manual_input = String::new();
+                                    let _ = std::io::stdin().read_line(&mut manual_input);
+                                    let cleaned = manual_input.trim().to_string();
+                                    if cleaned.is_empty() {
+                                        "google/gemini-2.5-flash".to_string()
+                                    } else {
+                                        cleaned
+                                    }
+                                }
+                            }
+                        }
+                        _ => "google/gemini-2.5-flash".to_string(),
+                    };
+
+                    let _ = crossterm::terminal::enable_raw_mode();
+
+                    // Now, write to model_providers.yaml
+                    let path = state.app_config.effective_model_providers_path();
+                    let yaml_path = std::path::PathBuf::from(&path);
+                    
+                    let yaml_str = match std::fs::read_to_string(&yaml_path) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            eprintln!("  ✗ model_providers.yaml not found at {}", path);
+                            return SlashExit::Continue;
+                        }
+                    };
+
+                    let short_model_id = primary_model_id.split('/').last().unwrap_or(&primary_model_id).to_string();
+
+                    if !yaml_str.is_empty() {
+                        if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&yaml_str) {
+                            let mut openrouter_provider_exists = false;
+                            if let Some(providers) = val.get_mut("providers").and_then(|p| p.as_sequence_mut()) {
+                                for p in providers {
+                                    if p.get("id").and_then(|i| i.as_str()) == Some("openrouter") {
+                                        openrouter_provider_exists = true;
+                                        
+                                        if let Some(models_val) = p.get_mut("models").and_then(|m| m.as_sequence_mut()) {
+                                            let mut model_exists = false;
+                                            for mv in models_val.iter() {
+                                                if mv.get("id").and_then(|id_str| id_str.as_str()) == Some(&short_model_id) {
+                                                    model_exists = true;
+                                                    break;
+                                                }
+                                            }
+                                            
+                                            if !model_exists {
+                                                let mut new_model = serde_yaml::Mapping::new();
+                                                new_model.insert(serde_yaml::Value::String("id".to_string()), serde_yaml::Value::String(short_model_id.clone()));
+                                                new_model.insert(serde_yaml::Value::String("name".to_string()), serde_yaml::Value::String(short_model_id.clone()));
+                                                new_model.insert(serde_yaml::Value::String("api_model_id".to_string()), serde_yaml::Value::String(primary_model_id.clone()));
+                                                new_model.insert(serde_yaml::Value::String("tool_calling".to_string()), serde_yaml::Value::Bool(true));
+                                                new_model.insert(serde_yaml::Value::String("streaming".to_string()), serde_yaml::Value::Bool(true));
+                                                models_val.push(serde_yaml::Value::Mapping(new_model));
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Update defaults mapping to point to the new model
+                            if let Some(defaults) = val.get_mut("defaults").and_then(|d| d.as_mapping_mut()) {
+                                let full_ref = format!("openrouter/{}", short_model_id);
+                                defaults.insert(serde_yaml::Value::String("chat".to_string()), serde_yaml::Value::String(full_ref.clone()));
+                                defaults.insert(serde_yaml::Value::String("planning".to_string()), serde_yaml::Value::String(full_ref.clone()));
+                                defaults.insert(serde_yaml::Value::String("coding".to_string()), serde_yaml::Value::String(full_ref.clone()));
+                                defaults.insert(serde_yaml::Value::String("research".to_string()), serde_yaml::Value::String(full_ref.clone()));
+                                defaults.insert(serde_yaml::Value::String("utility".to_string()), serde_yaml::Value::String(full_ref.clone()));
+                            }
+
+                            if openrouter_provider_exists {
+                                if let Ok(new_yaml) = serde_yaml::to_string(&val) {
+                                    if std::fs::write(&yaml_path, new_yaml).is_ok() {
+                                        println!("  ✓ Registered OpenRouter model '{}' inside {}", primary_model_id, path);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Save key to Vault
+                    let vault_path = crate::paths::data_dir().join("vault/.hydravault");
+                    let vault = hydragent_vault::Vault::new(vault_path);
+                    let passphrase = std::env::var("HYDRAGENT_VAULT_PASSPHRASE").unwrap_or_default();
+                    if !vault.exists() {
+                        let _ = vault.init(&passphrase);
+                    }
+                    if let Ok(mut secrets) = vault.load(&passphrase) {
+                        let env_key = "BRAIN_OPENROUTER_KEY".to_string();
+                        secrets.insert(env_key.clone(), hydragent_vault::TaintedString::credential(secret.clone()));
+                        if vault.save(&passphrase, &secrets).is_ok() {
+                            std::env::set_var(&env_key, &secret);
+                            println!("  ✓ Securely saved OpenRouter API key(s) to Vault.");
+                        }
+                    }
+
+                    // Reload registry
+                    if let Ok(new_reg) = hydragent_model::ProviderRegistry::load_from_yaml(&yaml_path) {
+                        state.model_router.update_registry(Arc::new(new_reg));
+                        
+                        let client = state.model_router.get_or_build_provider("openrouter");
+                        state.model_router.set_provider(client);
+                        state.app_config.active_provider = "openrouter".to_string();
+                        state.app_config.brain_provider = "openrouter".to_string();
+                        
+                        let full_ref = format!("openrouter/{}", short_model_id);
+                        state.model_router.set_primary_model(full_ref.clone());
+                        state.app_config.active_model = short_model_id.clone();
+                        state.app_config.brain_model = short_model_id.clone();
+                        state.brand.model = full_ref;
+                        
+                        println!("  ✓ Switched active provider to 'openrouter' and model to '{}'!", short_model_id);
+                    }
+
+                    return SlashExit::Continue;
+                }
 
                 let _ = crossterm::terminal::disable_raw_mode();
                 
@@ -2376,11 +3166,19 @@ async fn handle_slash_command(
 
                     match stats_result {
                         Ok(stats) => {
-                            println!("  ✓ Dream cycle completed successfully!");
-                            println!("    - Messages consolidated  : {}", stats.messages_processed);
+                            let has_failures = stats.pages_failed > 0;
+                            if has_failures {
+                                println!("  ⚠ Dream cycle completed (with deferred page extraction failures):");
+                            } else {
+                                println!("  ✓ Dream cycle completed successfully!");
+                            }
+                            println!("    - Messages processed     : {}", stats.messages_processed);
                             println!("    - Facts stored in Library: {}", stats.facts_stored);
                             println!("    - Style habits stored    : {}", stats.style_habits_stored);
                             println!("    - Behavior rules stored  : {}", stats.behavior_rules_stored);
+                            if has_failures {
+                                println!("    - Pages failed/deferred  : {}", stats.pages_failed);
+                            }
                             if stats.compactions_user_md > 0 {
                                 println!("    - USER.md compacted      : {} times", stats.compactions_user_md);
                             }
@@ -4344,8 +5142,66 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                         let is_save = rest_part.starts_with("save");
                         let is_set = rest_part.starts_with("set");
                         let is_add = rest_part.starts_with("add");
+                        let is_favorite = rest_part.starts_with("favorite") || rest_part.starts_with("favourite");
+                        let is_key = rest_part.starts_with("key") || rest_part.starts_with("keys");
                         
-                        if is_add {
+                        if is_key {
+                            let key_rest = if rest_part.starts_with("keys") {
+                                rest_part["keys".len()..].trim_start()
+                            } else {
+                                rest_part["key".len()..].trim_start()
+                            };
+                            
+                            if key_rest.starts_with("add") {
+                                vec![
+                                    ("provider key add <openrouter_api_key>".to_string(), "Add an OpenRouter API key to the rotation list".to_string())
+                                ]
+                            } else if key_rest.starts_with("remove") {
+                                vec![
+                                    ("provider key remove <index>".to_string(), "Remove an OpenRouter API key by index".to_string())
+                                ]
+                            } else {
+                                let subs = &[
+                                    ("add", "Add an OpenRouter API key to rotation"),
+                                    ("remove", "Remove an OpenRouter API key by index"),
+                                    ("clear", "Clear all OpenRouter API keys"),
+                                    ("list", "List all OpenRouter API keys in rotation"),
+                                ];
+                                subs.iter()
+                                    .filter(|(sub, _)| sub.starts_with(key_rest))
+                                    .map(|(sub, desc)| (format!("provider key {}", sub), desc.to_string()))
+                                    .collect()
+                            }
+                        } else if is_favorite {
+                            let fav_rest = if rest_part.starts_with("favorite") {
+                                rest_part["favorite".len()..].trim_start()
+                            } else {
+                                rest_part["favourite".len()..].trim_start()
+                            };
+                            
+                            if fav_rest.starts_with("add") {
+                                vec![
+                                    ("provider favorite add <openrouter_model_id>".to_string(), "Add an OpenRouter model to favorites (e.g. anthropic/claude-3.5-sonnet)".to_string())
+                                ]
+                            } else if fav_rest.starts_with("remove") {
+                                vec![
+                                    ("provider favorite remove <model_id>".to_string(), "Remove an OpenRouter model from favorites".to_string())
+                                ]
+                            } else {
+                                let subs = &[
+                                    ("add", "Add an OpenRouter model to favorites"),
+                                    ("remove", "Remove an OpenRouter model from favorites"),
+                                    ("list", "List favorite OpenRouter models"),
+                                ];
+                                subs.iter()
+                                    .filter(|(sub, _)| sub.starts_with(fav_rest))
+                                    .map(|(sub, desc)| {
+                                        let spelling = if rest_part.starts_with("favorite") { "favorite" } else { "favourite" };
+                                        (format!("provider {} {}", spelling, sub), desc.to_string())
+                                    })
+                                    .collect()
+                            }
+                        } else if is_add {
                             vec![
                                 ("provider add <id> [base_url]".to_string(), "Start interactive setup for a custom OpenAI provider (e.g. nvidia)".to_string())
                             ]
@@ -4390,6 +5246,8 @@ fn read_line_interactive(state: &mut ReplState, paste_mode: bool) -> anyhow::Res
                                     ("provider add".to_string(), "Register a custom OpenAI-compatible endpoint".to_string()),
                                     ("provider save".to_string(), "Save and set active provider permanently in .env".to_string()),
                                     ("provider set".to_string(), "Configure provider settings".to_string()),
+                                    ("provider key".to_string(), "Manage OpenRouter API keys & key rotation".to_string()),
+                                    ("provider favorite".to_string(), "Manage favorite OpenRouter models".to_string()),
                                     ("provider edit".to_string(), "Open model_providers.yaml in system editor".to_string())
                                 ];
                                 results.extend(provider_options);

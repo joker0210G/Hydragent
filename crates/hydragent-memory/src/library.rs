@@ -405,15 +405,15 @@ impl<'a> Library<'a> {
     /// books. Designed to be called after the LLM-driven ingestion
     /// has upserted all the new pages.
     pub async fn run_clustering_pass(&self) -> Result<LibraryStats> {
+        // Reset previous clustering to start with a clean slate
+        self.reset_cluster().await?;
+
         let mut stats = LibraryStats::default();
         let pages = self.unlinked_pages().await?;
         let pages_clustered = self.cluster_pages_into_books(&pages).await?;
         stats.pages_clustered = pages_clustered;
         let books_organized = self.organize_books_onto_shelves().await?;
         stats.books_organized = books_organized;
-
-        // Prune orphaned book/shelf nodes and dangling edges to maintain referential integrity
-        self.prune_orphaned_nodes_and_edges().await?;
 
         Ok(stats)
     }
@@ -460,13 +460,33 @@ impl<'a> Library<'a> {
     /// can re-derive them from scratch. Useful after manual
     /// corrections or schema upgrades. Page nodes are preserved.
     pub async fn reset_cluster(&self) -> Result<u64> {
-        let result = sqlx::query(
+        let pool = self.store.pool();
+        
+        // 1. Delete all belongs_to and sits_on edges
+        let edges_deleted = sqlx::query(
             "DELETE FROM edges WHERE relation_type IN ('belongs_to', 'sits_on')"
         )
-        .execute(self.store.pool())
+        .execute(pool)
         .await
-        .context("reset_cluster")?;
-        Ok(result.rows_affected() as u64)
+        .context("reset_cluster_edges")?;
+
+        // 2. Delete all book and shelf nodes
+        sqlx::query(
+            "DELETE FROM nodes WHERE type IN ('book', 'shelf')"
+        )
+        .execute(pool)
+        .await
+        .context("reset_cluster_nodes")?;
+
+        // 3. Delete any dangling tag edges (edges with source that no longer exists)
+        sqlx::query(
+            "DELETE FROM edges WHERE relation_type = 'tag' AND source_node_id NOT IN (SELECT node_id FROM nodes)"
+        )
+        .execute(pool)
+        .await
+        .context("reset_cluster_tags")?;
+
+        Ok(edges_deleted.rows_affected() as u64)
     }
 
     /// Count nodes of a given kind.
@@ -714,9 +734,11 @@ async fn cluster_pages_into_books(
             for t in &page_tags_set { *counts.entry(t.clone()).or_insert(0) += 1; }
             let label = most_common_tag(&counts).unwrap_or_else(|| page_node.label.clone());
             let book_id = format!("book-{}", uuid::Uuid::new_v4());
-
+            let props = serde_json::json!({
+                "source": "graphify_cluster"
+            });
             // Persist the book.
-            lib.upsert_node(&book_id, NodeKind::Book, &label, page_tags, None).await?;
+            lib.upsert_node(&book_id, NodeKind::Book, &label, page_tags, Some(&props)).await?;
 
             // Link page -> book.
             lib.link(&page_node.id, &book_id, EdgeRelation::BelongsTo, 1.0).await?;
@@ -807,7 +829,10 @@ async fn organize_books_onto_shelves(lib: &Library<'_>) -> Result<u64> {
             for t in &book_tags_set { *counts.entry(t.clone()).or_insert(0) += 1; }
             let shelf_label = most_common_tag(&counts).unwrap_or_else(|| book_label.clone());
             let new_id = format!("shelf-{}", uuid::Uuid::new_v4());
-            lib.upsert_node(&new_id, NodeKind::Shelf, &shelf_label, &book_tags, None).await?;
+            let props = serde_json::json!({
+                "source": "graphify_cluster"
+            });
+            lib.upsert_node(&new_id, NodeKind::Shelf, &shelf_label, &book_tags, Some(&props)).await?;
             shelves.insert(new_id.clone(), (shelf_label, book_tags_set.clone()));
             created += 1;
             new_id

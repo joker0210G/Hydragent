@@ -172,7 +172,7 @@ pub async fn induce_skill_from_page_with_library(
     pool: &SqlitePool,
     page_id: &str,
 ) -> InductionStats {
-    induce_skill_from_page_with_library_and_router(library, pool, page_id, None).await
+    induce_skill_from_page_with_library_and_router(library, pool, page_id, None, true).await
 }
 
 /// As [`induce_skill_from_page_with_library`] but accepts a
@@ -183,7 +183,7 @@ pub async fn induce_skill_from_page_with_router(
     page_id: &str,
     router: Arc<ModelRouter>,
 ) -> InductionStats {
-    induce_skill_from_page_with_library_and_router(library, pool, page_id, Some(router)).await
+    induce_skill_from_page_with_library_and_router(library, pool, page_id, Some(router), true).await
 }
 
 pub(crate) async fn induce_skill_from_page_with_library_and_router(
@@ -191,6 +191,7 @@ pub(crate) async fn induce_skill_from_page_with_library_and_router(
     pool: &SqlitePool,
     page_id: &str,
     router: Option<Arc<ModelRouter>>,
+    is_background: bool,
 ) -> InductionStats {
     let mut stats = InductionStats::default();
 
@@ -217,9 +218,53 @@ pub(crate) async fn induce_skill_from_page_with_library_and_router(
 
     // Try LLM-based extraction first if a router is available
     let candidate = if let Some(ref r) = router {
-        match extractor.propose_with_llm(&ModelRouterLlmClient(r.clone()), &trajectory).await {
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let progress_task = if !is_background {
+            Some(tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
+                interval.tick().await;
+                use std::io::Write;
+                loop {
+                    tokio::select! {
+                        _ = &mut stop_rx => break,
+                        _ = interval.tick() => {
+                            print!(".");
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(45),
+            extractor.propose_with_llm(&ModelRouterLlmClient(r.clone()), &trajectory)
+        ).await;
+
+        if let Some(task) = progress_task {
+            let _ = stop_tx.send(());
+            let _ = task.await;
+            println!();
+        }
+
+        let res = match res {
+            Ok(inner_res) => inner_res,
+            Err(_) => {
+                if !is_background {
+                    println!("            ⚠ [Induction] LLM skill proposal timed out after 45 seconds. Falling back to deterministic extraction...");
+                }
+                Ok(None)
+            }
+        };
+
+        match res {
             Ok(Some(c)) => {
                 debug!(page_id, "skill induction: LLM proposed a candidate");
+                if !is_background {
+                    println!("            ↳ [Induction] Candidate skill proposed: '{}'", c.skill.name);
+                }
                 c
             }
             Ok(None) => {
@@ -269,6 +314,10 @@ pub(crate) async fn induce_skill_from_page_with_library_and_router(
         }
     };
 
+    if !is_background {
+        println!("            ↳ [Induction] Checking if Proposed skill is a duplicate of any existing skills...");
+    }
+
     let existing: Vec<Skill> = library.list_skills(hydragent_skills::library::SkillFilter::default()).await.unwrap_or_default();
     // Deduplicate: Jaccard first (fast), optional semantic second (slow but more accurate)
     let mut dup = extractor.is_duplicate(&candidate.skill, &existing, 0.6);
@@ -283,6 +332,9 @@ pub(crate) async fn induce_skill_from_page_with_library_and_router(
         }
     }
     if dup {
+        if !is_background {
+            println!("            ↳ [Induction] Proposed skill '{}' is a duplicate of an existing skill. Skipping...", candidate.skill.name);
+        }
         stats.duplicates_skipped += 1;
         return stats;
     }
@@ -294,6 +346,9 @@ pub(crate) async fn induce_skill_from_page_with_library_and_router(
                 skill = %candidate.skill.name,
                 "skill induction: stored Candidate"
             );
+            if !is_background {
+                println!("            ✓ [Induction] New repeatable developer skill registered successfully: '{}'!", candidate.skill.name);
+            }
             stats.skills_inserted += 1;
         }
         Err(e) => {

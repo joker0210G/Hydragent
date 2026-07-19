@@ -102,6 +102,8 @@ def main():
             template_content = f.read()
         
         output_content = template_content.replace("{{GRAPH_DATA_JSON}}", json.dumps(graph_data))
+        version_str = str(int(datetime.now().timestamp()))
+        output_content = output_content.replace("{{VERSION}}", version_str)
         
         output_dir = os.path.dirname(output_path)
         os.makedirs(output_dir, exist_ok=True)

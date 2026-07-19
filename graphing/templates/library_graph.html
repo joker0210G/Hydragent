@@ -7,7 +7,7 @@
     <title>Hydragent Library — Knowledge Graph</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="library_graph.css">
+    <link rel="stylesheet" href="library_graph.css?v={{VERSION}}">
 </head>
 <body>
 
@@ -83,6 +83,9 @@
                 <button class="filter-btn active" data-type="page" id="filter-page" aria-pressed="true">
                     <span class="dot" style="background:#10b981;"></span> Pages
                 </button>
+                <button class="filter-btn active" data-type="tag" id="filter-tag" aria-pressed="true">
+                    <span class="dot" style="background:#f59e0b;"></span> Tags
+                </button>
             </div>
         </div>
 
@@ -126,6 +129,6 @@
     <script>
         const graphData = {{GRAPH_DATA_JSON}};
     </script>
-    <script src="library_graph.js" defer></script>
+    <script src="library_graph.js?v={{VERSION}}" defer></script>
 </body>
 </html>

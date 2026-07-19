@@ -133,6 +133,7 @@ pub async fn run_react_loop(
         - Never call the same tool with the same parameters more than once per response. If you already have the result, use it.\n\
         - Trust live tool results over your training knowledge. If search results contradict what you know, believe the search.\n\
         - Stay STRICTLY on the user's topic. Do NOT rewrite their query into unrelated domains just because the first search is empty.\n\
+        - Always inspect the recent conversation history to identify the core subject (e.g., a topic, a programming language, or a project) and incorporate it into your web search queries so searches remain contextually relevant.\n\
         - If a search returns 0 results, say you could not find current information. Do NOT invent alternative queries about related topics.\n\
         - When search results contain promising URLs, use url_fetch to read the full page content before drawing conclusions.\n\
         - Do NOT answer from memory if you just ran a search — use what the search returned.\n\
@@ -459,7 +460,44 @@ pub async fn run_react_loop(
         }
     }
 
-    Err(anyhow::anyhow!("ReAct loop exceeded maximum steps ({}) without generating a final answer.", max_steps))
+    // ReAct loop exceeded maximum steps without hitting a return (meaning the model only ran tools).
+    // Perform one final LLM call to force the model to answer the user with the gathered observations.
+    info!("ReAct loop hit max steps ({}). Running final synthesis turn.", max_steps);
+    send_status(&response_tx, format!("\n`[Thinking (Synthesis)]` Synthesizing final answer from gathered details...\n")).await;
+    
+    messages.push(ModelChatMessage {
+        role: "user".to_string(),
+        content: "You have reached the maximum tool step limit. Based on the observations and facts you have gathered above, please provide your final answer to the user now in the required JSON format containing the 'answer' field.".to_string(),
+    });
+
+    let (token_tx, mut token_rx) = mpsc::channel(100);
+    let model_router_clone = model_router.clone();
+    let handle = tokio::spawn(async move {
+        model_router_clone.chat_stream(messages, token_tx, None).await
+    });
+
+    let mut raw_response = String::new();
+    while let Some(token) = token_rx.recv().await {
+        raw_response.push_str(&token);
+    }
+
+    let model_res = match handle.await {
+        Ok(Ok((content, _))) => content,
+        _ => {
+            return Err(anyhow::anyhow!("ReAct loop exceeded maximum steps ({}) and final synthesis failed.", max_steps));
+        }
+    };
+
+    if let Ok(parsed) = parse_react_response(&model_res) {
+        if let Some(answer) = parsed.answer {
+            send_token(&response_tx, format!("\n{}", answer)).await;
+            return Ok((answer, executed_tools));
+        }
+    }
+
+    // Fallback: if JSON parsing of the final response fails, treat the raw text as the final answer
+    send_token(&response_tx, format!("\n{}", model_res)).await;
+    Ok((model_res, executed_tools))
 }
 
 fn parse_react_response(raw: &str) -> anyhow::Result<ReActStepResponse> {

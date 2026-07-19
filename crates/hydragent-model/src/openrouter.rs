@@ -314,8 +314,15 @@ impl OpenRouterClient {
         }
     }
 
+    pub fn reset_invalid_keys(&self) {
+        if let Ok(mut invalid) = self.invalid_keys.write() {
+            invalid.clear();
+        }
+        self.active_key_index.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn rotate_key(&self) {
-        let old_idx = self.active_key_index.fetch_add(1, Ordering::Relaxed);
+        let old_idx = self.active_key_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         warn!("Rotating OpenRouter API key from index {}", old_idx);
     }
 
@@ -504,7 +511,7 @@ impl OpenRouterClient {
             model: &request.model,
             messages: &request.messages,
             stream: true,
-            max_tokens: request.max_tokens,
+            max_tokens: request.max_tokens.or(Some(4096)),
             models: request.models.clone(),
             provider,
             include_reasoning,

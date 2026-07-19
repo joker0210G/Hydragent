@@ -422,8 +422,9 @@ body {
     stroke-opacity: 0.5;
     transition: stroke-opacity 0.2s, stroke-width 0.2s;
 }
-.link.belongs_to { stroke: var(--blue);   stroke-opacity: 0.65; }
-.link.sits_on    { stroke: var(--purple); stroke-opacity: 0.65; }
+.link.belongs_to { stroke: #3b82f6;   stroke-opacity: 0.65; }
+.link.sits_on    { stroke: #a855f7; stroke-opacity: 0.65; }
+.link.tag        { stroke: #f59e0b; stroke-opacity: 0.65; }
 .link.faded      { stroke-opacity: 0.06 !important; }
 .link.active     { stroke-opacity: 0.9 !important; stroke-width: 2.5px !important; }
 

@@ -94,6 +94,15 @@ impl ModelRouter {
             
         let api_key = std::env::var(&env_key_key)
             .ok()
+            .or_else(|| {
+                if norm_id == "openrouter" {
+                    std::env::var("OPENROUTER_API_KEY")
+                        .ok()
+                        .or_else(|| std::env::var("OPENROUTER_API_KEYS").ok())
+                } else {
+                    None
+                }
+            })
             .or_else(|| provider_def.api_key.as_ref().and_then(|k| resolve_api_key(k)))
             .unwrap_or_else(|| std::env::var("BRAIN_KEY").unwrap_or_default());
 
@@ -286,10 +295,13 @@ impl ModelRouter {
             reasoning_effort: None,
         };
 
+        let mut errors = Vec::new();
+
         match primary_client.chat_stream(&request, token_tx.clone()).await {
             Ok(content) => return Ok((content, primary.clone())),
             Err(e) => {
                 warn!("Primary model {} failed: {}. Initiating fallbacks...", primary, e);
+                errors.push(format!("Primary model ({}) failed: {}", primary, e));
             }
         }
 
@@ -316,11 +328,17 @@ impl ModelRouter {
                 Ok(content) => return Ok((content, fallback.clone())),
                 Err(e) => {
                     warn!("Fallback model {} failed: {}", fallback, e);
+                    errors.push(format!("Fallback model ({}) failed: {}", fallback, e));
                 }
             }
         }
 
-        anyhow::bail!("All models (primary: {}, fallbacks: {:?}) failed to execute completion.", primary, self.fallbacks)
+        anyhow::bail!(
+            "All models (primary: {}, fallbacks: {:?}) failed to execute completion.\nDetails:\n  {}",
+            primary,
+            self.fallbacks,
+            errors.join("\n  ")
+        )
     }
 
     /// Non-streaming convenience wrapper.  See [`Self::chat_stream`]
