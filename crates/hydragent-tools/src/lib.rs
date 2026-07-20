@@ -15,6 +15,7 @@ pub mod rss_subscribe;
 pub mod security;
 pub mod agent_reach;
 pub mod url_fetch;
+pub mod code_execute;
 
 // ── Skill library tools ───────────────────────
 //

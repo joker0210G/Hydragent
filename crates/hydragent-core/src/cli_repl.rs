@@ -3519,6 +3519,12 @@ async fn dispatch_user_message(
     // that mode the response is printed raw and the markdown
     // renderer is bypassed.
     let stream_raw = state.stream_raw;
+    // `streamer` renders complete markdown lines as they arrive
+    // (so the user sees a live, typewriter-style stream with
+    // styled tables/code blocks) instead of buffering the whole
+    // reply and dumping it at end-of-stream. Used in the default
+    // (non-raw) mode; in raw mode tokens are echoed verbatim.
+    let mut streamer = crate::markdown_render::MarkdownStreamer::new(&state.renderer);
     // Local aliases for the format-string `{name}` syntax. The
     // streaming loop uses `{dim}` / `{cyan}` / `{reset}` heavily
     // so we re-bind the module-level constants once at the top
@@ -3579,17 +3585,17 @@ async fn dispatch_user_message(
         // ── Token frames ─────────────────────────────────────────
         if first_token {
             // Stop the spinner and put the assistant label on its
-            // own line. In render mode we deliberately skip the
-            // "hydra ▸" header here — the renderer will emit it
-            // (along with the rendered body) at end-of-stream so
-            // the user sees exactly one header per turn, not two.
+            // own line. In both modes we print the "hydra ▸" header
+            // here, before the first streamed chunk, so the user
+            // sees exactly one header per turn. (Previously the
+            // render-mode header was emitted at end-of-stream by
+            // the full-buffer renderer; now that we stream
+            // line-by-line, the header must come first.)
             if let Some(h) = spinner_handle.take() {
                 h.stop();
             }
-            if stream_raw {
-                println!();
-                println!("  {cyan}hydra ▸{reset}");
-            }
+            println!();
+            println!("  {cyan}hydra ▸{reset}");
             first_token = false;
         }
         // Strip a single leading newline (if any) so the response
@@ -3614,14 +3620,22 @@ async fn dispatch_user_message(
             }
             match kind {
                 TokenPart::Final => {
-                    // In render mode (the default), tokens are
-                    // collected silently and rendered as markdown
-                    // at end-of-stream. In stream-raw mode the
-                    // tokens are echoed to the terminal as they
-                    // arrive, just like before.
+                    // In stream-raw mode the tokens are echoed to
+                    // the terminal verbatim as they arrive. In the
+                    // default render mode we feed each chunk to the
+                    // `MarkdownStreamer`, which renders complete
+                    // lines (or whole code blocks) the moment they
+                    // land — so the reply streams live instead of
+                    // being buffered and dumped at end-of-stream.
                     if stream_raw {
                         let _ = write!(stdout, "{}", text);
                         let _ = stdout.flush();
+                    } else {
+                        let rendered = streamer.push(&text);
+                        if !rendered.is_empty() {
+                            let _ = write!(stdout, "{}", rendered);
+                            let _ = stdout.flush();
+                        }
                     }
                     collected.push_str(&text);
                 }
@@ -3671,6 +3685,12 @@ async fn dispatch_user_message(
                 if stream_raw {
                     let _ = write!(stdout, "{}", text);
                     let _ = stdout.flush();
+                } else {
+                    let rendered = streamer.push(&text);
+                    if !rendered.is_empty() {
+                        let _ = write!(stdout, "{}", rendered);
+                        let _ = stdout.flush();
+                    }
                 }
                 collected.push_str(&text);
             }
@@ -3686,23 +3706,19 @@ async fn dispatch_user_message(
 
     match thinker.await {
         Ok(Ok((final_answer, _tools))) => {
-            // Render the full response as styled markdown in
-            // render mode. The renderer prints its own header
-            // ("hydra ▸") and indentation, so we only need a
-            // blank line above it for visual separation from the
-            // spinner. In stream-raw mode the response has
-            // already been echoed to the terminal; we just emit
-            // a trailing newline so the next prompt has
-            // breathing room.
-            if !stream_raw && !collected.is_empty() {
-                let renderer = &state.renderer;
-                if let Err(e) = renderer.print_to(&collected, &mut stdout) {
-                    // Fall back to printing raw if the renderer
-                    // itself fails (e.g. broken pipe). Never
-                    // silently lose the model's reply.
-                    let _ = writeln!(stdout);
-                    let _ = writeln!(stdout, "  {}", collected);
-                    eprintln!("  (markdown render failed: {e})",);
+            // In render mode the reply has already been streamed
+            // line-by-line via the `MarkdownStreamer` above, so we
+            // only need to flush any text the streamer is still
+            // holding (the last line if it didn't end in a
+            // newline, or a code block whose closing fence never
+            // arrived). In stream-raw mode the response has
+            // already been echoed verbatim; we just emit a trailing
+            // newline so the next prompt has breathing room.
+            if !stream_raw {
+                let tail = streamer.finish();
+                if !tail.is_empty() {
+                    let _ = write!(stdout, "{}", tail);
+                    let _ = stdout.flush();
                 }
             } else if !final_answer.is_empty() {
                 let _ = writeln!(stdout);

@@ -365,6 +365,9 @@ enum Commands {
         /// Skip the confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Delete all user data (databases, memory, configs, and vault) as well
+        #[arg(long)]
+        completely: bool,
     },
     /// ⚙️ Manage environment configurations in the `.env` file
     Config {
@@ -1830,8 +1833,8 @@ async fn main() {
             update::run().await;
             std::process::exit(0);
         }
-        Some(Commands::Uninstall { yes }) => {
-            uninstall::run(*yes);
+        Some(Commands::Uninstall { yes, completely }) => {
+            uninstall::run(*yes, *completely);
             std::process::exit(0);
         }
         Some(Commands::Provider { action }) => {
@@ -3617,6 +3620,7 @@ async fn main() {
     registry.register(MemoryForgetTool::new(store.clone()));
     registry.register(hydragent_tools::standing_orders::SoulTool::new(crate::paths::config_dir()));
     registry.register(hydragent_tools::user_profile::UserProfileTool::new(crate::paths::config_dir()));
+    registry.register(hydragent_tools::code_execute::CodeExecuteTool::new(PathBuf::from(&workspace_dir)));
 
     // ── Security LLM-callable tools ────────────────────
     //

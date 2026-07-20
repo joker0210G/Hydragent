@@ -392,9 +392,8 @@ if [[ "\${1:-}" == "update" ]] || [[ "\${1:-}" == "uninstall" ]]; then
 fi
 
 if [[ \$# -eq 0 ]]; then
-    # The canonical .env lives at $HYDRAGENT_HOME/.env (top-level), not
-    # in the data dir. See crates/hydragent-core/src/paths.rs.
-    if [[ -f "\$HYDRAGENT_HOME/.env" ]]; then
+    # The canonical .env lives in the data dir ($HYDRAGENT_DATA_DIR/.env).
+    if [[ -f "\$HYDRAGENT_DATA_DIR/.env" ]]; then
         set -- serve
     else
         set -- onboard
@@ -458,7 +457,24 @@ info "Version:      $VERSION"
 info "OS/Arch:      $(uname -s) $(uname -m)"
 
 detect_downloader
-mkdir_p "$BIN_DIR" "$DATA_DIR"
+mkdir_p "$BIN_DIR"
+
+env_file="$INSTALL_ROOT/.env"
+db_file="$DATA_DIR/hydragent.db"
+if { [[ -f "$env_file" ]] || [[ -f "$db_file" ]]; } && [[ "${HYDRAGENT_FORCE:-0}" != "1" ]] && [[ "${HYDRAGENT_SKIP_ONBOARD:-0}" != "1" ]]; then
+    echo ""
+    echo -e "${C_YELLOW}⚠️  Existing Hydragent data (config or database) was found in $INSTALL_ROOT.${C_RESET}"
+    read -p "Do you want to keep and load this existing data? [Y/n] " -r choice
+    if [[ ! "$choice" =~ ^[Yy]*$ ]]; then
+        echo -e "${C_YELLOW}Removing existing data to start fresh...${C_RESET}"
+        rm -f "$env_file"
+        rm -rf "$DATA_DIR"
+    else
+        echo -e "${C_GREEN}Keeping existing data. Onboarding will load your previous configuration.${C_RESET}"
+    fi
+fi
+
+mkdir_p "$DATA_DIR"
 probe_uv || true
 
 already_installed=0

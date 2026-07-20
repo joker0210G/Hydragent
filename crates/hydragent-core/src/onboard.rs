@@ -50,6 +50,26 @@ pub async fn run(opts: OnboardOptions) -> i32 {
     let app_config = crate::config::AppConfig::load().unwrap_or_default();
     let target_registry_path = std::path::PathBuf::from(app_config.effective_model_providers_path());
 
+    let config_dir = paths::config_dir();
+    let soul_path = config_dir.join("SOUL.md");
+    let mut write_soul = true;
+    let mut skip_persona_setup = false;
+
+    if soul_path.exists() && !opts.non_interactive && !opts.force {
+        println!();
+        match prompt_yes_no(
+            &format!("An existing custom system persona (SOUL.md) was found at {}. Overwrite it? [y/N]", soul_path.display()),
+            false,
+        ) {
+            Some(true) => {}
+            _ => {
+                write_soul = false;
+                skip_persona_setup = true;
+                println!("  · Preserving existing custom SOUL.md. Persona selection will be skipped.");
+            }
+        }
+    }
+
     if let Some(ref import_path) = opts.import_providers {
         if import_path.exists() {
             if let Some(parent) = target_registry_path.parent() {
@@ -306,25 +326,27 @@ pub async fn run(opts: OnboardOptions) -> i32 {
         println!("------------------------------------------------------------------------");
         println!();
 
-        // 1. Agent Persona Selection
-        let personas = &[
-            "Developer (Default: Fact-focused, objective, coding-specialist)",
-            "Creative (Warm, expressive, brainstorming partner)",
-            "Minimalist (Extremely concise, direct answers)",
-            "Custom (Define your own custom system prompt)"
-        ];
-        let selected_p = select(personas, None).unwrap_or(0);
-        match selected_p {
-            0 => persona = "developer",
-            1 => persona = "creative",
-            2 => persona = "minimalist",
-            _ => {
-                persona = "custom";
-                println!();
-                if let Some(prompt_text) = prompt("  Enter your custom system prompt / soul guidelines:") {
-                    custom_soul_prompt = prompt_text;
-                } else {
-                    custom_soul_prompt = "You are a helpful AI assistant.".to_string();
+        if !skip_persona_setup {
+            // 1. Agent Persona Selection
+            let personas = &[
+                "Developer (Default: Fact-focused, objective, coding-specialist)",
+                "Creative (Warm, expressive, brainstorming partner)",
+                "Minimalist (Extremely concise, direct answers)",
+                "Custom (Define your own custom system prompt)"
+            ];
+            let selected_p = select(personas, None).unwrap_or(0);
+            match selected_p {
+                0 => persona = "developer",
+                1 => persona = "creative",
+                2 => persona = "minimalist",
+                _ => {
+                    persona = "custom";
+                    println!();
+                    if let Some(prompt_text) = prompt("  Enter your custom system prompt / soul guidelines:") {
+                        custom_soul_prompt = prompt_text;
+                    } else {
+                        custom_soul_prompt = "You are a helpful AI assistant.".to_string();
+                    }
                 }
             }
         }
@@ -445,24 +467,7 @@ pub async fn run(opts: OnboardOptions) -> i32 {
             }
         }
     };
-    let mut write_soul = true;
-    if soul_path.exists() {
-        if opts.non_interactive {
-            write_soul = opts.force;
-        } else {
-            println!();
-            match prompt_yes_no(
-                &format!("An existing custom system persona (SOUL.md) was found at {}. Overwrite it? [y/N]", soul_path.display()),
-                false,
-            ) {
-                Some(true) => {}
-                _ => {
-                    write_soul = false;
-                    println!("  · Preserving existing custom SOUL.md");
-                }
-            }
-        }
-    }
+
 
     if write_soul {
         if let Err(e) = std::fs::write(&soul_path, &soul_content) {

@@ -812,9 +812,8 @@ if /I "%~1"=="update" goto :do_update
 if /I "%~1"=="uninstall" goto :do_uninstall
 if not exist "%HYDRAGENT_BIN%\hydragent.exe" goto :do_install
 if "%~1"=="" (
-    rem The canonical .env lives at %HYDRAGENT_HOME%\.env (top-level),
-    rem not in the data dir. See crates\hydragent-core\src\paths.rs.
-    if exist "%HYDRAGENT_HOME%\.env" ( set "_CMD=serve" ) else ( set "_CMD=onboard" )
+    rem The canonical .env lives in the data dir (%HYDRAGENT_DATA_DIR%\.env).
+    if exist "%HYDRAGENT_DATA_DIR%\.env" ( set "_CMD=serve" ) else ( set "_CMD=onboard" )
     "%HYDRAGENT_BIN%\hydragent.exe" !_CMD!
     exit /b %ERRORLEVEL%
 )
@@ -1076,6 +1075,23 @@ Write-Info "Version:      $Version$(if ($CommitHash) { " ($CommitHash)" })"
 Write-Info "Mode:         $(if ($Source) { 'source' } else { 'prebuilt' })"
 
 Ensure-Directory $BinDir
+
+$envFile = Join-Path $DataDir ".env"
+$dbFile = Join-Path $DataDir "hydragent.db"
+$hasExistingData = (Test-Path $envFile) -or (Test-Path $dbFile)
+if ($hasExistingData -and -not $Force -and -not $SkipOnboard) {
+    Write-Host ""
+    Write-Host "⚠️  Existing Hydragent data (config or database) was found in $InstallRoot." -ForegroundColor Yellow
+    $choice = Read-Host "Do you want to keep and load this existing data? [Y/n]"
+    if ($choice -ne "" -and $choice -notlike "y*") {
+        Write-Host "Removing existing data to start fresh..." -ForegroundColor Yellow
+        Remove-Item -Force $envFile -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force $DataDir -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "Keeping existing data. Onboarding will load your previous configuration." -ForegroundColor Green
+    }
+}
+
 Ensure-Directory $DataDir
 
 # Detect an existing installation by *running* the binary, not just by

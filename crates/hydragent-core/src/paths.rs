@@ -113,8 +113,7 @@ pub fn data_dir() -> PathBuf {
 
 /// Resolve the config directory (USER.md, SOUL.md, keys, security policies, ...).
 ///
-/// Order: `HYDRAGENT_CONFIG_DIR` env > `{hydragent_home()}/config` (if exists) >
-/// `{hydragent_home()}/src/config` (if exists) > `{hydragent_home()}/config` (default).
+/// Order: `HYDRAGENT_CONFIG_DIR` env > `{data_dir()}/config`.
 pub fn config_dir() -> PathBuf {
     if let Ok(p) = std::env::var("HYDRAGENT_CONFIG_DIR") {
         let p = p.trim();
@@ -122,22 +121,13 @@ pub fn config_dir() -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    let home_config = hydragent_home().join("config");
-    if home_config.exists() {
-        return home_config;
-    }
-    let src_config = hydragent_home().join("src").join("config");
-    if src_config.exists() {
-        return src_config;
-    }
-    home_config
+    data_dir().join("config")
 }
 
-/// Resolve the path to the user's `.env` config file. Always at the top
-/// level of the install root — there is no override (use a symlink if
-/// you need it elsewhere).
+/// Resolve the path to the user's `.env` config file. Located inside the data directory
+/// to make user data backups and migrations simple.
 pub fn env_file() -> PathBuf {
-    hydragent_home().join(".env")
+    data_dir().join(".env")
 }
 
 /// Resolve the path to the bundled binary directory. Used by `update`

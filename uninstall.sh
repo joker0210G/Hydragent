@@ -9,9 +9,31 @@ pkill -f hydragent || true
 
 INSTALL_DIR="$HOME/.hydragent"
 if [[ -d "$INSTALL_DIR" ]]; then
-    echo "Removing installation directory: $INSTALL_DIR"
-    rm -rf "$INSTALL_DIR"
-    echo "Successfully removed $INSTALL_DIR"
+    completely=0
+    if [[ " $* " == *" --completely "* || " $* " == *" -c "* ]]; then
+        completely=1
+    elif [[ " $* " != *" --yes "* && " $* " != *" -y "* ]]; then
+        echo "How would you like to uninstall Hydragent?"
+        echo "  1. Delete ONLY the build/binaries (preserves your memory database, graphs, config .env, and vault)"
+        echo "  2. Delete ENTIRELY (deletes all config, databases, memory, and vault)"
+        read -p "Select option [1 or 2, default: 1]: " -r choice
+        if [[ "$choice" == "2" ]]; then
+            completely=1
+        elif [[ "$choice" != "1" && -n "$choice" ]]; then
+            echo "Uninstall cancelled."
+            exit 0
+        fi
+    fi
+
+    if (( completely == 1 )); then
+        echo "Removing installation directory entirely: $INSTALL_DIR"
+        rm -rf "$INSTALL_DIR"
+        echo "Successfully removed $INSTALL_DIR"
+    else
+        echo "Removing ONLY binaries and source directories (preserving data, config, and vault)..."
+        rm -rf "$INSTALL_DIR/bin" "$INSTALL_DIR/src"
+        echo "Successfully removed binaries and source. Data and config preserved."
+    fi
 else
     echo "Installation directory not found: $INSTALL_DIR"
 fi

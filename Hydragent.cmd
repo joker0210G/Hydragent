@@ -61,17 +61,17 @@ if "%~1"=="" goto :no_args
 
 REM --- 4. Forward everything else -------------------------------------------------
 REM Load .env if present, then exec the binary with all args.
-REM Canonical .env location: %HYDRAGENT_HOME%\.env (top-level, per paths.rs).
-if exist "%HYDRAGENT_HOME%\.env" call :load_env "%HYDRAGENT_HOME%\.env"
+REM Canonical .env location: %HYDRAGENT_DATA_DIR%\.env (data folder, per paths.rs).
+if exist "%HYDRAGENT_DATA_DIR%\.env" call :load_env "%HYDRAGENT_DATA_DIR%\.env"
 "%HYDRAGENT_BIN_EXE%" %*
 exit /b %ERRORLEVEL%
 
 :no_args
-REM Canonical .env location: %HYDRAGENT_HOME%\.env (top-level, per paths.rs).
+REM Canonical .env location: %HYDRAGENT_DATA_DIR%\.env (data folder, per paths.rs).
 REM If .env is absent the user has not onboarded yet: route to the staged wizard
 REM (lockbox -> brain -> desk/skills/Graphify -> safety posture).
 REM If .env exists, launch `serve` to start the gateway and channel adapters.
-if exist "%HYDRAGENT_HOME%\.env" (
+if exist "%HYDRAGENT_DATA_DIR%\.env" (
     set "HYDRAGENT_DEFAULT_CMD=serve"
 ) else (
     set "HYDRAGENT_DEFAULT_CMD=onboard"
@@ -89,14 +89,14 @@ if exist "%HYDRAGENT_HOME%\.env" (
         "Write-Host '[D] Safety Posture' -ForegroundColor Yellow; " ^
         "Write-Host ''"
 )
-if exist "%HYDRAGENT_HOME%\.env" call :load_env "%HYDRAGENT_HOME%\.env"
+if exist "%HYDRAGENT_DATA_DIR%\.env" call :load_env "%HYDRAGENT_DATA_DIR%\.env"
 "%HYDRAGENT_BIN_EXE%" %HYDRAGENT_DEFAULT_CMD%
 exit /b %ERRORLEVEL%
 
 :do_doctor
 REM Run health diagnostics: runtime, Python/Rust toolchain, SQLite, vault lockbox,
 REM model provider ping, sandbox (Docker/WASM), and skill discovery roots.
-if exist "%HYDRAGENT_HOME%\.env" call :load_env "%HYDRAGENT_HOME%\.env"
+if exist "%HYDRAGENT_DATA_DIR%\.env" call :load_env "%HYDRAGENT_DATA_DIR%\.env"
 "%HYDRAGENT_BIN_EXE%" doctor %2 %3 %4 %5 %6 %7 %8 %9
 exit /b %ERRORLEVEL%
 

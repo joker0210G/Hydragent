@@ -32,9 +32,9 @@ Hydragent's features are distilled from leading agent architectures (memU, Vellu
 - **Taint Tracking & Injection Guard**: Dynamic taint-checking on user inputs to block prompt injection and credential leakage.
 
 ### 1.3 Execution Sandbox
-- **WASM Sandbox (Wasmtime)**: CPU instruction-metered and memory-limited sandbox for executing custom scripts and tools without host filesystem/socket access.
-- **Docker Container Sandbox**: Ephemeral containerized environments for full code execution and browser automation (Playwright).
-- **MCP Server Connection**: Native integration with Model Context Protocol (MCP) servers (Notion, Linear, Postgres, GitHub, etc.).
+- **WASM Sandbox (Wasmtime)** *(Live)*: CPU instruction-metered and memory-limited sandbox for executing custom scripts and tools without host filesystem/socket access. Fuel metering + 64 MB memory cap + 5 s exec cap — implemented in `crates/hydragent-sandbox/src/{engine.rs, limits.rs, wasm_tool.rs}`.
+- **Docker Container Sandbox** *(Planned — not implemented)*: No Docker code in any Cargo.toml; `crates/hydragent-sandbox` only configures Wasmtime. The `bollard` crate, Playwright, and any container-launch path are absent. See the v0.8.0 roadmap for the planned edge-deployment direction.
+- **MCP Server Connection** *(Not started — not implemented)*: Zero MCP server or client code in any Rust crate (verified via grep across `crates/**/*.rs` and `crates/**/*.toml`). Native integration with Notion / Linear / Postgres / GitHub MCP servers does not exist.
 
 ---
 
@@ -51,7 +51,7 @@ Hydragent's features are distilled from leading agent architectures (memU, Vellu
 | `hydragent-memory` | SQLite session store, vector index, context injector | **Live** |
 | `hydragent-embed` | Local embedding provider (Candle + MiniLM) | **Live** |
 | `hydragent-vault` | Encrypted secrets store with key rotation | **Live** |
-| `hydragent-sandbox` | Sandboxed execution (Wasmtime + Docker) | **Live** |
+| `hydragent-sandbox` | Sandboxed execution (Wasmtime only — see §1.3) | **Live** |
 | `hydragent-gateway` | Multi-channel adapter hosting process | **Live** |
 | `hydragent-scheduler` | Cron scheduler + heartbeat engine | **Live** |
 | `hydragent-planner` | DAG planning and task decomposition | **Live** |
@@ -67,6 +67,8 @@ Hydragent's features are distilled from leading agent architectures (memU, Vellu
 - **Slack**: Bolt-style event handler.
 - **Email**: IMAP/SMTP inbox watcher and sender.
 - **Webhook**: Generic inbound HTTP triggers.
+- **WebSocket**: Bidirectional WS adapter for browser/edge clients (`adapters/channels/websocket/websocket_adapter.py`).
+- **Web**: Browser-based control UI served as a static SPA (`adapters/channels/web/control-ui/index.html` + `web_adapter.py`).
 
 ### 2.3 Registered Tools
 1. `echo`: Sanity check tool.
@@ -75,7 +77,7 @@ Hydragent's features are distilled from leading agent architectures (memU, Vellu
 4. `memory_store`: Persist semantic facts.
 5. `memory_search`: Hybrid BM25 + vector search.
 6. `memory_forget`: Delete semantic facts.
-7. `standing_orders`: Read/write persistent rules.
+7. `soul`: Read/write persistent rules. (Implemented by `crates/hydragent-tools/src/standing_orders.rs`, which exports `SoulTool`; its `name()` returns `"soul"`. The file is named after the feature, the tool is named after its semantic role.)
 8. `user_profile`: `USER.md` accessor.
 9. `send_message`: Channel-agnostic outbound message.
 10. `schedule_task`: Cron job registration.

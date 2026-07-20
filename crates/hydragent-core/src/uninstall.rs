@@ -4,17 +4,22 @@ use std::io::{self, Write};
 ///
 /// Removes the binary directory, data directory, and reverses PATH
 /// additions. Prompts for confirmation unless `yes` is true.
-pub fn run(yes: bool) {
+pub fn run(yes: bool, mut completely: bool) {
     if !yes {
-        print!("Are you sure you want to uninstall Hydragent? [y/N]: ");
+        println!("How would you like to uninstall Hydragent?");
+        println!("  1. Delete ONLY the build/binaries (preserves your memory database, graphs, config .env, and vault)");
+        println!("  2. Delete ENTIRELY (deletes all config, databases, memory, and vault)");
+        print!("Select option [1 or 2, default: 1]: ");
         let _ = io::stdout().flush();
         let mut input = String::new();
         if io::stdin().read_line(&mut input).is_err() {
             eprintln!("  Failed to read confirmation. Pass --yes to skip the prompt.");
             std::process::exit(1);
         }
-        let trimmed = input.trim().to_lowercase();
-        if trimmed != "y" && trimmed != "yes" {
+        let trimmed = input.trim();
+        if trimmed == "2" {
+            completely = true;
+        } else if trimmed != "1" && !trimmed.is_empty() {
             println!("  Uninstall cancelled.");
             std::process::exit(0);
         }
@@ -48,17 +53,39 @@ pub fn run(yes: bool) {
 
     let data_dir = install_root.join("data");
     let src_dir = install_root.join("src");
+    let config_dir = crate::paths::config_dir();
+    let env_file = crate::paths::env_file();
+    let vault_dir = install_root.join("vault");
 
     // Remove directories.
     if let Err(e) = remove_dir_if_exists(&bin_dir) {
         eprintln!("  Warning: could not remove binary directory: {}", e);
     }
-    if let Err(e) = remove_dir_if_exists(&data_dir) {
-        eprintln!("  Warning: could not remove data directory: {}", e);
+
+    if completely {
+        if let Err(e) = remove_dir_if_exists(&data_dir) {
+            eprintln!("  Warning: could not remove data directory: {}", e);
+        }
+        if let Err(e) = remove_dir_if_exists(&src_dir) {
+            eprintln!("  Warning: could not remove source directory: {}", e);
+        }
+        if let Err(e) = remove_dir_if_exists(&config_dir) {
+            eprintln!("  Warning: could not remove config directory: {}", e);
+        }
+        if let Err(e) = remove_dir_if_exists(&vault_dir) {
+            eprintln!("  Warning: could not remove vault directory: {}", e);
+        }
+        if env_file.exists() {
+            if let Err(e) = std::fs::remove_file(&env_file) {
+                eprintln!("  Warning: could not remove .env file: {}", e);
+            } else {
+                println!("  Removed: {}", env_file.display());
+            }
+        }
+    } else {
+        println!("  ℹ Keeping data directory, config folder, .env, and vault secrets.");
     }
-    if let Err(e) = remove_dir_if_exists(&src_dir) {
-        eprintln!("  Warning: could not remove source directory: {}", e);
-    }
+
     if src_dir.join(".git").exists() {
         println!("  ℹ Source directory contained a git repo. Any uncommitted work was removed.");
     }
