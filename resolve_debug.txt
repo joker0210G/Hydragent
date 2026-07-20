@@ -1,0 +1,1 @@
+provider_id=openrouter key=openrouter/hf.co/unsloth/gemma-4-E4B-it-GGUF:IQ4_XS alias_hit=false n_aliases=9 n_models=5

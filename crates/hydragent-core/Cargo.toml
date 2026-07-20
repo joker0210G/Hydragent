@@ -3,6 +3,10 @@ name    = "hydragent-core"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "hydragent_core"
+path = "src/lib.rs"
+
 [[bin]]
 name = "hydragent"
 path = "src/main.rs"

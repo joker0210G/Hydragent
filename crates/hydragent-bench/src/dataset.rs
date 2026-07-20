@@ -65,6 +65,60 @@ pub fn load_golden_set(path: &Path) -> Result<Vec<GoldenSetItem>, DatasetError> 
     load_jsonl(path)
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Task-completion benchmark (end-to-end)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Unlike SKILL-BENCH / golden set (which only measure *retrieval*
+// quality), this suite measures whether the agent actually *completes*
+// a task end-to-end through the real ReAct loop. Each row carries an
+// explicit, mostly-automatic pass/fail rule so we don't need an LLM
+// judge yet.
+//
+// Grading is intentionally simple and transparent:
+//
+//   * `must_contain`   — every string in this list must appear (case-
+//                        insensitive substring) in the agent's final
+//                        answer OR in any tool output it produced.
+//   * `must_not_contain` — if any string here appears, the task fails
+//                        (used to catch "I cannot" / "as an AI" refusals
+//                        or leaked secrets).
+//   * `required_tools` — if set, the agent must have invoked *all* of
+//                        these tool names at least once during the run.
+//                        (Order-independent; just a coverage check.)
+//
+// A task passes only if ALL of the above hold. This is deliberately
+// conservative: a missing keyword fails the task rather than guessing.
+
+/// One row in `task_bench_v1.jsonl`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TaskBenchItem {
+    pub id: String,
+    /// Human-readable difficulty bucket, mirrors the retrieval suites.
+    pub difficulty: String, // "easy" | "medium" | "hard"
+    /// The prompt we feed to the agent (stands in for a user message).
+    pub prompt: String,
+    /// Every string here must appear (case-insensitive) in the final
+    /// answer or in any tool output. Empty = no keyword requirement.
+    #[serde(default)]
+    pub must_contain: Vec<String>,
+    /// If any string here appears anywhere in the answer/tool output,
+    /// the task fails. Empty = no prohibition.
+    #[serde(default)]
+    pub must_not_contain: Vec<String>,
+    /// If set, the agent must call every one of these tools ≥1 time.
+    #[serde(default)]
+    pub required_tools: Vec<String>,
+    /// Free-text note for humans reading the report (not used for grading).
+    #[serde(default)]
+    pub note: String,
+}
+
+/// Convenience constructor: load the task-completion suite.
+pub fn load_task_bench(path: &Path) -> Result<Vec<TaskBenchItem>, DatasetError> {
+    load_jsonl(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,6 +156,24 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].relevant, vec!["a"]);
         assert_eq!(items[1].relevant.len(), 2);
+    }
+
+    #[test]
+    fn loads_task_bench_items_with_defaults() {
+        // `must_contain` / `must_not_contain` / `required_tools` / `note`
+        // are optional and should default to empty when omitted.
+        let f = write_tmp(
+            r#"{"id":"TB0001","difficulty":"easy","prompt":"say hello"}
+{"id":"TB0002","difficulty":"hard","prompt":"chain tools","must_contain":["done"],"required_tools":["web_search","memory_store"],"note":"needs 2 tools"}
+"#,
+        );
+        let tasks = load_task_bench(f.path()).unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks[0].must_contain.is_empty());
+        assert!(tasks[0].required_tools.is_empty());
+        assert_eq!(tasks[1].must_contain, vec!["done"]);
+        assert_eq!(tasks[1].required_tools, vec!["web_search", "memory_store"]);
+        assert_eq!(tasks[1].note, "needs 2 tools");
     }
 
     #[test]

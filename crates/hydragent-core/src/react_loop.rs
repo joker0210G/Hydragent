@@ -39,6 +39,21 @@ async fn send_token(tx: &mpsc::Sender<String>, token: String) {
     let _ = tx.send(msg.to_string()).await;
 }
 
+/// Emitted right before a tool is invoked, for every permission tier.
+/// Lets downstream consumers (e.g. benchmarks) observe which tools ran
+/// without needing the `ToolResult` struct to carry a `tool_id`.
+async fn send_tool_call(tx: &mpsc::Sender<String>, tool_id: &str, call_id: &str) {
+    let msg = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "response.tool_call",
+        "params": {
+            "tool_id": tool_id,
+            "call_id": call_id
+        }
+    });
+    let _ = tx.send(msg.to_string()).await;
+}
+
 pub async fn run_react_loop(
     page_id: &str,
     channel_id: &str,
@@ -351,6 +366,8 @@ pub async fn run_react_loop(
                 params_json: params_str.clone(),
                 tier,
             };
+
+            send_tool_call(&response_tx, &tool_name, &call_id).await;
 
             let tool_result = match tier {
                 hydragent_types::PermissionTier::AutoApprove => {

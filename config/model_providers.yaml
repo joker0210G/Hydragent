@@ -34,7 +34,31 @@ providers:
     supports_reasoning: true
     supports_tools: true
     supports_vision: true
-    models: []
+    models:
+      - id: nvidia/nemotron-3-ultra-550b-a55b:free
+        name: NVIDIA Nemotron 3 Ultra (free)
+        aliases:
+          - nemotron-ultra-free
+          - nemotron-3-ultra-free
+        api_model_id: nvidia/nemotron-3-ultra-550b-a55b:free
+        streaming: true
+        tool_calling: true
+        max_input_tokens: 1000000
+        max_output_tokens: 8192
+        cost_per_1k: 0.0
+        cost_tier: free
+      - id: tencent/hy3:free
+        name: Tencent Hunyuan Hy3 (free)
+        aliases:
+          - hy3-free
+          - tencent-hy3-free
+        api_model_id: tencent/hy3:free
+        streaming: true
+        tool_calling: true
+        max_input_tokens: 200000
+        max_output_tokens: 8192
+        cost_per_1k: 0.0
+        cost_tier: free
 
   - id: ollama
     display_name: Ollama (Local)
